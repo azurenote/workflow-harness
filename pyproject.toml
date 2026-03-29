@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "harness-core"
+version = "0.1.0"
+description = "Claude Code workflow automation — shared core modules"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harness_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
