@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
+from pathlib import Path
 
 
 class GitError(Exception):
@@ -179,3 +181,36 @@ def current_branch() -> str:
     """Return the name of the current branch."""
     result = _run_git("rev-parse", "--abbrev-ref", "HEAD")
     return result.stdout.strip()
+
+
+@functools.lru_cache(maxsize=1)
+def main_worktree_root() -> Path:
+    """Return the absolute path of the main worktree root.
+
+    In a linked worktree, `git rev-parse --git-common-dir` returns the shared
+    `.git` directory of the main worktree; its parent is the main worktree
+    root. In the main worktree itself, the common dir is the local `.git`,
+    so the result still resolves to the main worktree root.
+
+    Fallbacks:
+        - bare repository: returns Path.cwd().resolve() (no worktree root).
+        - non-git environment (git missing or CWD outside a repo):
+          returns Path.cwd().resolve().
+
+    Cached with lru_cache — tests that change CWD across worktrees must call
+    main_worktree_root.cache_clear() between assertions.
+    """
+    try:
+        common = subprocess.check_output(
+            ["git", "rev-parse", "--git-common-dir"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        bare = subprocess.check_output(
+            ["git", "rev-parse", "--is-bare-repository"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        if bare == "true":
+            return Path.cwd().resolve()
+        return Path(common).resolve().parent
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return Path.cwd().resolve()
