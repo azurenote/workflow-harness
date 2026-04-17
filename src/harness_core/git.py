@@ -70,6 +70,101 @@ def delete_branch(branch_name: str) -> None:
     _run_git("branch", "-D", branch_name)
 
 
+def clean_up_stale_branches(bases: list[str] | None = None) -> dict:
+    """Fetch --prune, then delete stale branches and their worktrees.
+
+    A branch is stale if its upstream ref is gone (`: gone]` in `git branch
+    -vv`) or it is fully merged into any branch listed in `bases`.
+
+    Worktrees on stale branches are removed with --force before branch
+    deletion. Merged branches use `-d` (safe); gone-only branches use `-D`.
+
+    Args:
+        bases: Base branches to check merged status against.
+               Defaults to ["develop", "main"]. Missing bases are skipped.
+
+    Returns:
+        {"removed_worktrees": [...], "deleted_branches": [...], "warnings": [...]}
+    """
+    if bases is None:
+        bases = ["develop", "main"]
+
+    _run_git("fetch", "--prune")
+
+    # Collect branches whose remote ref is gone
+    result = subprocess.run(["git", "branch", "-vv"], capture_output=True, text=True)
+    gone_branches: set[str] = set()
+    for line in result.stdout.splitlines():
+        if ": gone]" not in line:
+            continue
+        stripped = line.strip().lstrip("*+ ")
+        branch = stripped.split()[0]
+        if branch:
+            gone_branches.add(branch)
+
+    # Collect branches fully merged into any base
+    merged_branches: set[str] = set()
+    for base in bases:
+        try:
+            merged_result = _run_git("branch", "--merged", base)
+        except GitError:
+            continue  # base branch doesn't exist locally — skip
+        for line in merged_result.stdout.splitlines():
+            stripped = line.strip().lstrip("*+ ")
+            if stripped and stripped not in ("develop", "main"):
+                merged_branches.add(stripped)
+
+    stale = gone_branches | merged_branches
+    if not stale:
+        return {"removed_worktrees": [], "deleted_branches": [], "warnings": []}
+
+    # Build branch → worktree path map from porcelain output
+    worktree_result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], capture_output=True, text=True
+    )
+    worktree_map: dict[str, str] = {}
+    current_path: str | None = None
+    for line in worktree_result.stdout.splitlines():
+        if line.startswith("worktree "):
+            current_path = line[len("worktree "):]
+        elif line.startswith("branch refs/heads/") and current_path:
+            worktree_map[line[len("branch refs/heads/"):]] = current_path
+
+    # Remove worktrees before deleting their branches
+    removed_worktrees: list[str] = []
+    warnings: list[str] = []
+    for branch in stale:
+        if branch not in worktree_map:
+            continue
+        path = worktree_map[branch]
+        result = subprocess.run(
+            ["git", "worktree", "remove", "--force", path],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            removed_worktrees.append(path)
+        else:
+            warnings.append(f"Could not remove worktree {path}: {result.stderr.strip()}")
+
+    # Delete local branches
+    deleted_branches: list[str] = []
+    for branch in sorted(stale):
+        flag = "-d" if branch in merged_branches else "-D"
+        result = subprocess.run(
+            ["git", "branch", flag, branch], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            deleted_branches.append(branch)
+        else:
+            warnings.append(f"Could not delete {branch}: {result.stderr.strip()}")
+
+    return {
+        "removed_worktrees": removed_worktrees,
+        "deleted_branches": deleted_branches,
+        "warnings": warnings,
+    }
+
+
 def remove_worktree(worktree_path: str) -> None:
     """Remove a worktree (force)."""
     _run_git("worktree", "remove", "--force", worktree_path)
