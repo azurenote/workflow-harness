@@ -53,17 +53,91 @@ def branch_exists(branch_name: str) -> bool:
     return result.returncode == 0
 
 
-def create_branch(branch_name: str) -> str:
-    """Create and checkout a new branch. Returns branch name."""
-    _run_git("checkout", "-b", branch_name)
+def _resolve_base_ref(base_ref: str) -> str:
+    """Resolve a base branch name to a git ref that exists locally.
+
+    Resolution order:
+      1. If ``base_ref`` already resolves locally (local branch, tag, or commit),
+         use it verbatim.
+      2. If its remote-tracking ref ``origin/<base_ref>`` already resolves, use that.
+      3. Otherwise fetch the branch from origin and use ``origin/<base_ref>``.
+
+    Raises:
+        GitError: the ref cannot be resolved even after fetching. Raised before
+            any branch/worktree is created, so callers never leave partial state.
+    """
+    if branch_exists(base_ref):
+        return base_ref
+
+    remote_tracking = base_ref if base_ref.startswith("origin/") else f"origin/{base_ref}"
+    if branch_exists(remote_tracking):
+        return remote_tracking
+
+    fetch_target = base_ref[len("origin/"):] if base_ref.startswith("origin/") else base_ref
+    try:
+        _run_git("fetch", "origin", fetch_target)
+    except GitError as exc:
+        raise GitError(
+            f"fetch origin {fetch_target}",
+            f"base ref '{base_ref}' not found locally and could not be fetched: {exc.stderr}",
+        )
+    if branch_exists(remote_tracking):
+        return remote_tracking
+    raise GitError(
+        f"rev-parse {base_ref}",
+        f"base ref '{base_ref}' could not be resolved locally or as {remote_tracking}",
+    )
+
+
+def create_branch(branch_name: str, base_ref: str | None = None) -> str:
+    """Create and checkout a new branch. Returns branch name.
+
+    When ``base_ref`` is given the branch is cut from that ref (resolved via
+    :func:`_resolve_base_ref`, fetching from origin if it is remote-only). When
+    None, the branch is cut from the current HEAD (legacy behavior). ``--no-track``
+    keeps a remote base from being adopted as the new branch's upstream, which
+    would otherwise pollute ``git branch -vv`` and trip false "gone" cleanups.
+    """
+    if base_ref is None:
+        _run_git("checkout", "-b", branch_name)
+    else:
+        resolved = _resolve_base_ref(base_ref)
+        _run_git("checkout", "--no-track", "-b", branch_name, resolved)
     return branch_name
 
 
 def create_worktree(
-    worktree_path: str, branch_name: str
+    worktree_path: str, branch_name: str, base_ref: str | None = None
 ) -> str:
-    """Create a git worktree with a new branch. Returns worktree path."""
-    _run_git("worktree", "add", worktree_path, "-b", branch_name)
+    """Create a git worktree with a new branch. Returns worktree path.
+
+    ``base_ref`` behaves as in :func:`create_branch`. ``--no-track`` is used for
+    the same reason; on a git too old to accept it on ``worktree add`` (rejected
+    before any worktree is created), we fall back to creating the worktree and
+    then unsetting the upstream.
+    """
+    if base_ref is None:
+        _run_git("worktree", "add", worktree_path, "-b", branch_name)
+        return worktree_path
+
+    resolved = _resolve_base_ref(base_ref)
+    try:
+        _run_git(
+            "worktree", "add", "--no-track", "-b", branch_name, worktree_path, resolved
+        )
+    except GitError as exc:
+        # Only fall back when this git is too old to accept --no-track on
+        # `worktree add` (the option is rejected before any worktree is made).
+        # Any other failure (duplicate branch, dirty path) must propagate —
+        # retrying without --no-track would just fail again or mask the cause.
+        stderr = (exc.stderr or "").lower()
+        if not any(s in stderr for s in ("--no-track", "unknown option", "usage:")):
+            raise
+        _run_git("worktree", "add", "-b", branch_name, worktree_path, resolved)
+        try:
+            _run_git("-C", worktree_path, "branch", "--unset-upstream", branch_name)
+        except GitError:
+            pass  # no upstream was set — nothing to unset
     return worktree_path
 
 
@@ -72,7 +146,10 @@ def delete_branch(branch_name: str) -> None:
     _run_git("branch", "-D", branch_name)
 
 
-def clean_up_stale_branches(bases: list[str] | None = None) -> dict:
+def clean_up_stale_branches(
+    bases: list[str] | None = None,
+    plan_dir: "Path | str | None" = None,
+) -> dict:
     """Fetch --prune, then delete stale branches and their worktrees.
 
     A branch is stale if its upstream ref is gone (`: gone]` in `git branch
@@ -84,9 +161,15 @@ def clean_up_stale_branches(bases: list[str] | None = None) -> dict:
     Args:
         bases: Base branches to check merged status against.
                Defaults to ["develop", "main"]. Missing bases are skipped.
+        plan_dir: If given, every ``base_branch`` declared in ``plan-*.md``
+               frontmatter under this directory is protected from deletion even
+               when it looks stale — an integration branch that sub-task plans
+               still target must outlive its own merge into develop. Local scan
+               only; no network.
 
     Returns:
-        {"removed_worktrees": [...], "deleted_branches": [...], "warnings": [...]}
+        {"removed_worktrees": [...], "deleted_branches": [...],
+         "protected_branches": [...], "warnings": [...]}
     """
     if bases is None:
         bases = ["develop", "main"]
@@ -104,6 +187,10 @@ def clean_up_stale_branches(bases: list[str] | None = None) -> dict:
         if branch:
             gone_branches.add(branch)
 
+    # Never treat a base/default branch as stale, even if its upstream shows
+    # gone (e.g. a renamed remote default) — deleting develop/main is never safe.
+    gone_branches -= set(bases)
+
     # Collect branches fully merged into any base
     merged_branches: set[str] = set()
     for base in bases:
@@ -117,8 +204,22 @@ def clean_up_stale_branches(bases: list[str] | None = None) -> dict:
                 merged_branches.add(stripped)
 
     stale = gone_branches | merged_branches
+
+    # Protect integration branches that live plans still declare as their base.
+    protected: set[str] = set()
+    if plan_dir is not None:
+        from .local import collect_declared_base_branches
+
+        protected = collect_declared_base_branches(Path(plan_dir))
+        stale -= protected
+
     if not stale:
-        return {"removed_worktrees": [], "deleted_branches": [], "warnings": []}
+        return {
+            "removed_worktrees": [],
+            "deleted_branches": [],
+            "protected_branches": sorted(protected),
+            "warnings": [],
+        }
 
     # Build branch → worktree path map from porcelain output
     worktree_result = subprocess.run(
@@ -163,6 +264,7 @@ def clean_up_stale_branches(bases: list[str] | None = None) -> dict:
     return {
         "removed_worktrees": removed_worktrees,
         "deleted_branches": deleted_branches,
+        "protected_branches": sorted(protected),
         "warnings": warnings,
     }
 

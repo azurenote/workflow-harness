@@ -8,7 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from harness_core.git import derive_branch_name, main_worktree_root
+from harness_core.git import (
+    derive_branch_name,
+    main_worktree_root,
+    create_branch,
+    create_worktree,
+    branch_exists,
+    current_branch,
+    clean_up_stale_branches,
+    GitError,
+)
 
 
 class TestDeriveBranchName:
@@ -63,6 +72,250 @@ def _git(*args: str, cwd: Path) -> None:
         ["git", *args], cwd=str(cwd), env=env, check=True,
         capture_output=True,
     )
+
+
+def _rev(ref: str, cwd: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", ref], cwd=str(cwd),
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _is_ancestor(ancestor: str, descendant: str, cwd: Path) -> bool:
+    return subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=str(cwd), capture_output=True,
+    ).returncode == 0
+
+
+def _has_upstream(branch: str, cwd: Path) -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
+        cwd=str(cwd), capture_output=True,
+    ).returncode == 0
+
+
+def _init_repo(path: Path, default_branch: str = "develop") -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _git("init", "-b", default_branch, cwd=path)
+    (path / "f").write_text("0")
+    _git("add", ".", cwd=path)
+    _git("commit", "-m", "init", cwd=path)
+
+
+def _add_branch_with_commit(repo: Path, branch: str, from_branch: str = "develop") -> str:
+    """Create `branch` off `from_branch` with one extra commit; return its tip sha."""
+    _git("checkout", from_branch, cwd=repo)
+    _git("checkout", "-b", branch, cwd=repo)
+    (repo / branch.replace("/", "_")).write_text("x")
+    _git("add", ".", cwd=repo)
+    _git("commit", "-m", f"on {branch}", cwd=repo)
+    tip = _rev("HEAD", repo)
+    _git("checkout", from_branch, cwd=repo)
+    return tip
+
+
+class TestCreateBranchBaseRef:
+    def test_none_uses_current_head(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        chdir(repo)
+        head = _rev("HEAD", repo)
+        create_branch("feat/sub")
+        assert current_branch() == "feat/sub"
+        assert _rev("HEAD", repo) == head
+
+    def test_local_base_ref(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        integ = _add_branch_with_commit(repo, "feat/integration")
+        chdir(repo)  # currently on develop
+        create_branch("feat/sub", base_ref="feat/integration")
+        assert current_branch() == "feat/sub"
+        assert _rev("HEAD", repo) == integ
+        assert _is_ancestor("feat/integration", "feat/sub", repo)
+        assert not _has_upstream("feat/sub", repo)  # local base: no tracking
+
+    def test_remote_only_base_ref_fetches(self, tmp_path, chdir):
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        _git("init", "--bare", "-b", "develop", cwd=remote)
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _git("remote", "add", "origin", str(remote), cwd=repo)
+        _git("push", "origin", "develop", cwd=repo)
+        integ = _add_branch_with_commit(repo, "feat/integration")
+        _git("push", "origin", "feat/integration", cwd=repo)
+        # Forget the branch locally and its remote-tracking ref -> remote-only.
+        _git("branch", "-D", "feat/integration", cwd=repo)
+        _git("branch", "-dr", "origin/feat/integration", cwd=repo)
+        chdir(repo)
+        assert not branch_exists("feat/integration")
+        assert not branch_exists("origin/feat/integration")
+
+        create_branch("feat/sub", base_ref="feat/integration")
+        assert current_branch() == "feat/sub"
+        assert _rev("HEAD", repo) == integ
+        assert not _has_upstream("feat/sub", repo)  # --no-track
+
+    def test_missing_base_ref_raises_and_creates_nothing(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)  # no origin remote -> fetch fails
+        chdir(repo)
+        with pytest.raises(GitError):
+            create_branch("feat/sub", base_ref="no/such/branch")
+        assert not branch_exists("feat/sub")
+
+    def test_duplicate_branch_raises(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        chdir(repo)
+        create_branch("feat/sub")
+        _git("checkout", "develop", cwd=repo)
+        with pytest.raises(GitError):
+            create_branch("feat/sub")
+
+
+class TestCreateWorktreeBaseRef:
+    def test_none_back_compat(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        chdir(repo)
+        wt = tmp_path / "wt"
+        create_worktree(str(wt), "feat/sub")
+        assert (wt / ".git").exists()
+        assert _rev("HEAD", wt) == _rev("develop", repo)
+
+    def test_local_base_ref(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        integ = _add_branch_with_commit(repo, "feat/integration")
+        chdir(repo)
+        wt = tmp_path / "wt"
+        create_worktree(str(wt), "feat/sub", base_ref="feat/integration")
+        assert (wt / ".git").exists()
+        assert _rev("HEAD", wt) == integ
+        assert _is_ancestor("feat/integration", "feat/sub", repo)
+        assert not _has_upstream("feat/sub", repo)
+
+    def test_remote_only_base_ref_fetches(self, tmp_path, chdir):
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        _git("init", "--bare", "-b", "develop", cwd=remote)
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _git("remote", "add", "origin", str(remote), cwd=repo)
+        _git("push", "origin", "develop", cwd=repo)
+        integ = _add_branch_with_commit(repo, "feat/integration")
+        _git("push", "origin", "feat/integration", cwd=repo)
+        _git("branch", "-D", "feat/integration", cwd=repo)
+        _git("branch", "-dr", "origin/feat/integration", cwd=repo)
+        chdir(repo)
+        wt = tmp_path / "wt"
+        create_worktree(str(wt), "feat/sub", base_ref="feat/integration")
+        assert _rev("HEAD", wt) == integ
+        assert not _has_upstream("feat/sub", repo)
+
+    def test_missing_base_ref_raises(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        chdir(repo)
+        wt = tmp_path / "wt"
+        with pytest.raises(GitError):
+            create_worktree(str(wt), "feat/sub", base_ref="no/such/branch")
+        assert not branch_exists("feat/sub")
+
+
+def _repo_with_remote(tmp_path: Path) -> Path:
+    """Repo with an 'origin' bare remote and develop pushed (clean_up needs fetch)."""
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git("init", "--bare", "-b", "develop", cwd=remote)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git("remote", "add", "origin", str(remote), cwd=repo)
+    _git("push", "-u", "origin", "develop", cwd=repo)
+    return repo
+
+
+def _merged_branch(repo: Path, branch: str) -> None:
+    """Create `branch` with a commit and merge it into develop (so it is stale-merged)."""
+    _git("checkout", "-b", branch, cwd=repo)
+    (repo / branch.replace("/", "_")).write_text("x")
+    _git("add", ".", cwd=repo)
+    _git("commit", "-m", f"on {branch}", cwd=repo)
+    _git("checkout", "develop", cwd=repo)
+    _git("merge", "--no-ff", branch, "-m", f"merge {branch}", cwd=repo)
+
+
+def _gone_branch(repo: Path, branch: str) -> None:
+    """Create `branch` with a UNIQUE commit (not merged), push with upstream, then
+    delete the remote ref so its upstream is gone — stale via the gone path only."""
+    _git("checkout", "-b", branch, cwd=repo)
+    (repo / branch.replace("/", "_")).write_text("x")
+    _git("add", ".", cwd=repo)
+    _git("commit", "-m", f"on {branch}", cwd=repo)
+    _git("push", "-u", "origin", branch, cwd=repo)
+    _git("push", "origin", "--delete", branch, cwd=repo)
+    _git("checkout", "develop", cwd=repo)
+
+
+class TestCleanUpStaleBranchesGuard:
+    def test_declared_base_protected_others_deleted(self, tmp_path, chdir):
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/integration")  # declared as base by a plan
+        _merged_branch(repo, "feat/orphan")        # not declared
+
+        plan_dir = tmp_path / "plans"
+        plan_dir.mkdir()
+        (plan_dir / "plan-364.md").write_text(
+            "---\nbase_branch: feat/integration\nparent_issue: 364\n---\n# Plan: x"
+        )
+        (plan_dir / "plan-1.md").write_text("# Plan: no frontmatter")
+
+        chdir(repo)
+        result = clean_up_stale_branches(plan_dir=plan_dir)
+
+        assert "feat/integration" in result["protected_branches"]
+        assert "feat/integration" not in result["deleted_branches"]
+        assert branch_exists("feat/integration")
+        assert "feat/orphan" in result["deleted_branches"]
+        assert not branch_exists("feat/orphan")
+
+    def test_without_plan_dir_merged_branch_is_deleted(self, tmp_path, chdir):
+        # Proves the guard is what protects it: same branch, no plan_dir -> deleted.
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/integration")
+        chdir(repo)
+        result = clean_up_stale_branches()
+        assert "feat/integration" in result["deleted_branches"]
+        assert result["protected_branches"] == []
+
+    def test_declared_base_protected_on_gone_path(self, tmp_path, chdir):
+        # The primary real-world trigger: an integration branch whose remote was
+        # deleted (upstream gone), NOT merged into develop. Guard must protect it.
+        repo = _repo_with_remote(tmp_path)
+        _gone_branch(repo, "feat/integration")
+
+        plan_dir = tmp_path / "plans"
+        plan_dir.mkdir()
+        (plan_dir / "plan-364.md").write_text(
+            "---\nbase_branch: feat/integration\n---\n# Plan: x"
+        )
+
+        chdir(repo)
+        result = clean_up_stale_branches(plan_dir=plan_dir)
+        assert "feat/integration" in result["protected_branches"]
+        assert "feat/integration" not in result["deleted_branches"]
+        assert branch_exists("feat/integration")
+
+    def test_gone_branch_deleted_without_plan_dir(self, tmp_path, chdir):
+        repo = _repo_with_remote(tmp_path)
+        _gone_branch(repo, "feat/integration")
+        chdir(repo)
+        result = clean_up_stale_branches()
+        assert "feat/integration" in result["deleted_branches"]
+        assert not branch_exists("feat/integration")
 
 
 class TestMainWorktreeRoot:

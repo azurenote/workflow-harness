@@ -145,6 +145,17 @@ class TestValidateIssuePlanTitleSync:
             999, "Anything", tmp_path
         )
 
+    def test_matching_titles_with_frontmatter(self, tmp_path):
+        # Plan declares a base branch; the title check must skip the frontmatter
+        # and still match the GitHub issue title rather than the '---' fence.
+        (tmp_path / "plan-10.md").write_text(
+            "---\nbase_branch: feat/issue-9-parent\nparent_issue: 9\n---\n"
+            "# Plan: Harness Architecture Redesign"
+        )
+        StateValidator.validate_issue_plan_title_sync(
+            10, "Harness Architecture Redesign", tmp_path
+        )
+
 
 class TestValidateNoStaleTransaction:
     def test_no_state_file(self, tmp_path):
