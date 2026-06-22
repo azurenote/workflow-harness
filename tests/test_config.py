@@ -9,11 +9,21 @@ class TestFileNameRules:
             "plan-cf403d73-dccc-4b41-a0d9-bff26b89e0c1.md"
         )
 
+    def test_slug_draft_is_draft(self):
+        assert is_draft_plan("plan-draft-workflow-plan-readability.md")
+
+    def test_slug_draft_with_numeric_suffix_is_draft(self):
+        assert is_draft_plan("plan-draft-workflow-plan-readability-2.md")
+
     def test_number_is_not_draft(self):
         assert not is_draft_plan("plan-153.md")
 
     def test_arbitrary_name_is_not_draft(self):
         assert not is_draft_plan("harness-architecture-proposal.md")
+
+    def test_malformed_slug_draft_is_not_draft(self):
+        assert not is_draft_plan("plan-draft-.md")
+        assert not is_draft_plan("plan-draft-Workflow-Plan.md")
 
     def test_number_is_committed(self):
         assert is_committed_plan("plan-153.md")

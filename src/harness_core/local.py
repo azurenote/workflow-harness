@@ -32,14 +32,14 @@ class InvalidPlanFileError(Exception):
 
 
 def find_draft_plan_file(plan_dir: Path) -> Path:
-    """Find the unique draft plan file (UUID format) in plan_dir.
+    """Find the unique draft plan file in plan_dir.
 
     Returns:
         Path to the draft plan file.
 
     Raises:
-        NoPlanFileError: No UUID-named plan files found.
-        MultiplePlanFilesError: More than one UUID-named plan file.
+        NoPlanFileError: No supported draft plan files found.
+        MultiplePlanFilesError: More than one supported draft plan file.
     """
     if not plan_dir.exists():
         raise NoPlanFileError(
@@ -47,13 +47,13 @@ def find_draft_plan_file(plan_dir: Path) -> Path:
             "Run /project:plan first to create a plan."
         )
 
-    drafts = [
+    drafts = sorted(
         f.name for f in plan_dir.glob("plan-*.md") if is_draft_plan(f.name)
-    ]
+    )
 
     if len(drafts) == 0:
         raise NoPlanFileError(
-            f"No draft plan files (UUID format) in {plan_dir}/.\n"
+            f"No draft plan files in {plan_dir}/.\n"
             "Run /project:plan first to create a plan."
         )
     if len(drafts) > 1:
@@ -65,7 +65,7 @@ def find_draft_plan_file(plan_dir: Path) -> Path:
 def rename_plan_to_issue(
     plan_path: Path, issue_number: int
 ) -> Path:
-    """Rename plan-{uuid}.md to plan-{issue_number}.md.
+    """Rename a draft plan file to plan-{issue_number}.md.
 
     Returns:
         New path after rename.

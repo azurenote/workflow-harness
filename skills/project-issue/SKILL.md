@@ -1,6 +1,6 @@
 ---
 name: project-issue
-description: plan-draft-*.md 파일을 이슈 트래커(GitHub/Jira)에 티켓으로 등록하고, plan-draft-<slug>.md를 plan-<id>.md로 rename한다. Codex에서는 `$project-issue` 또는 "project-issue 스킬로 ..." 요청 시 실행.
+description: plan-draft-<slug>.md 또는 기존 plan-<uuid>.md draft를 이슈 트래커(GitHub/Jira)에 티켓으로 등록하고 plan-<id>.md로 rename한다. Codex에서는 `$project-issue` 또는 "project-issue 스킬로 ..." 요청 시 실행.
 ---
 
 # project-issue — 이슈 등록
@@ -9,7 +9,7 @@ description: plan-draft-*.md 파일을 이슈 트래커(GitHub/Jira)에 티켓�
 
 다음 상황에서 이 스킬을 적용한다:
 - Codex에서 `$project-issue` 또는 "project-issue 스킬로 이슈 등록" 형태로 요청할 때
-- `plan-draft-*.md` 파일이 존재하고 이슈 등록 의도가 감지될 때
+- `plan-draft-*.md` 또는 `plan-<uuid>.md` draft 파일이 존재하고 이슈 등록 의도가 감지될 때
 - "이슈 등록", "티켓 생성", "깃허브에 올려", "jira에 올려" 키워드
 
 ## 설정 읽기
@@ -27,8 +27,10 @@ description: plan-draft-*.md 파일을 이슈 트래커(GitHub/Jira)에 티켓�
 
 그 외 (또는 harness 없는 경우):
 ```bash
-ls .task/plan/plan-draft-*.md 2>/dev/null
+python -c 'from pathlib import Path; from harness_core.config import is_draft_plan; print("\n".join(str(p) for p in sorted(Path(".task/plan").glob("plan-*.md")) if is_draft_plan(p.name)))'
 ```
+
+fallback도 `harness_core.config.is_draft_plan`을 단일 계약으로 사용한다. draft 파일명은 `plan-draft-<lowercase-slug>.md` 또는 lowercase hex UUID `plan-<uuid>.md`만 유효하다.
 
 결과 처리:
 - **파일 없음**: `$project-plan` 먼저 실행하라고 안내. 중단.
@@ -38,23 +40,24 @@ ls .task/plan/plan-draft-*.md 2>/dev/null
 
 **2. 사용자 확인**
 
-파일 제목과 첫 30줄을 보여준 후 **반드시 확인**을 받는다.
-확인 없이 이슈를 생성하지 않는다. 미리보기에는 선두 frontmatter가 그대로 노출되므로(`read_plan_preview`), 플랜이 `base_branch`를 선언했다면 **머지 타겟 브랜치를 확인 시점에 사람에게 명시**한다.
+파일 제목, base branch, 첫 30 body 줄을 보여준 후 **반드시 확인**을 받는다.
+확인 없이 이슈를 생성하지 않는다. 이 단계는 filename/title 확인이 아니라 human layer 승인 체크포인트다. 사용자가 `Intent Summary`, `Current State`, `Target State`, `Non-Goals`, `Drift Guards`를 보고 "이 작업 의도가 맞다"고 확인해야 한다.
+미리보기에는 선두 frontmatter가 그대로 노출되므로(`read_plan_preview`), 플랜이 `base_branch`를 선언했다면 **머지 타겟 브랜치를 확인 시점에 사람에게 명시**한다. frontmatter가 없으면 `.claude/skill-config.yaml`의 프로젝트 기본 base를 표시한다.
 
 ```
-파일: .task/plan/plan-draft-<slug>.md
+파일: <draft-plan-path>
 제목: <# Plan: 이후 텍스트>          # frontmatter가 있어도 '---' 가 아닌 실제 제목 (frontmatter-aware)
-base branch: <frontmatter base_branch 값 — 없으면 "develop (default)">
-미리보기: <첫 30줄 (frontmatter 포함)>
+base branch: <frontmatter base_branch 값 — 없으면 "<프로젝트 기본 base> (default)">
+human preview: <frontmatter 전체 + 첫 30 body 줄>
 
-이 파일로 이슈를 생성합니까? [yes/no]
+Intent Summary와 base branch가 맞습니까? 이 파일로 이슈를 생성합니까? [yes/no]
 ```
 
 > 플랜 frontmatter(`base_branch`/`parent_issue`)는 **별도 작업 없이** 이슈에 전파된다 — Step 5의 `--body-file` 이 플랜 파일 전체를 이슈 본문으로 올리고, Step 7의 rename 은 내용을 바꾸지 않아 frontmatter 가 보존된다. 제목 추정(`--title`)·type/label 추정은 frontmatter-aware 파서를 쓰므로 선두 `---` 블록에 영향받지 않는다.
 
 **3. 이슈 타입 판단** (GitHub 전용)
 
-플랜 제목과 Background 키워드 분석:
+플랜 제목과 `Intent Summary` / `Current State` 키워드 분석:
 
 | 조건 | Type |
 |------|------|
@@ -62,11 +65,11 @@ base branch: <frontmatter base_branch 값 — 없으면 "develop (default)">
 | `feat`, `추가`, `개선`, `구현`, `도입`, `기능` | `Feature` |
 | 그 외 | `Task` |
 
-Bug 키워드 우선. 제목에서 명확하면 Background 생략.
+Bug 키워드 우선. 제목에서 명확하면 본문 분석은 생략한다.
 
 **4. 레이블 판단** (GitHub 전용)
 
-Scope의 "Files to modify" 분석:
+`Scope`의 "Files to modify" 또는 `Task Cards`의 "Files / Modules" 분석:
 
 | 조건 | Labels |
 |------|--------|
@@ -83,18 +86,20 @@ Scope의 "Files to modify" 분석:
 
 `harness_enabled: true` 인 경우:
 ```bash
+DRAFT_PLAN="<draft-plan-path>"
 <project_py> create-issue \
   --title "<플랜 제목>" \
-  --body-file ".task/plan/plan-draft-<slug>.md" \
+  --body-file "$DRAFT_PLAN" \
   --type "<Bug|Feature|Task>" \
   --label "<BE|FE>"
 ```
 
 `harness_enabled: false` 인 경우:
 ```bash
+DRAFT_PLAN="<draft-plan-path>"
 gh issue create \
   --title "<플랜 제목>" \
-  --body-file ".task/plan/plan-draft-<slug>.md"
+  --body-file "$DRAFT_PLAN"
 ```
 
 출력에서 `number` (ISSUE_NUMBER), `node_id` (ISSUE_NODE_ID) 획득.
@@ -102,10 +107,11 @@ gh issue create \
 ### Jira (`issue_tracker: jira`)
 
 ```bash
+DRAFT_PLAN="<draft-plan-path>"
 jira issue create \
   --project "<jira_project>" \
   --summary "<플랜 제목>" \
-  --description "$(cat .task/plan/plan-draft-<slug>.md)" \
+  --description "$(cat "$DRAFT_PLAN")" \
   --type Task
 ```
 
@@ -137,11 +143,12 @@ jira issue create \
 이슈 등록 성공 후:
 
 ```bash
+DRAFT_PLAN="<draft-plan-path>"
 # GitHub
-mv .task/plan/plan-draft-<slug>.md .task/plan/plan-<ISSUE_NUMBER>.md
+mv "$DRAFT_PLAN" .task/plan/plan-<ISSUE_NUMBER>.md
 
 # Jira
-mv .task/plan/plan-draft-<slug>.md .task/plan/plan-<TICKET_ID>.md
+mv "$DRAFT_PLAN" .task/plan/plan-<TICKET_ID>.md
 # 예: plan-SYN-42.md
 ```
 
@@ -150,7 +157,8 @@ rename 실패 시: draft 파일 유지하고 사용자에게 이슈 ID 수동 �
 
 harness 있는 경우:
 ```bash
-<harness_cli> rename-plan ".task/plan/plan-draft-<slug>.md" <ISSUE_NUMBER>
+DRAFT_PLAN="<draft-plan-path>"
+<harness_cli> rename-plan "$DRAFT_PLAN" <ISSUE_NUMBER>
 ```
 
 **8. Output**
@@ -158,5 +166,5 @@ harness 있는 경우:
 - 이슈 번호 / URL (또는 Jira 티켓 ID)
 - 이슈 제목
 - 감지된 Type / Labels / Priority / Size (판단 근거 포함)
-- 파일 rename 결과: `plan-draft-<slug>.md` → `plan-<id>.md`
+- 파일 rename 결과: `<draft-plan-path>` → `plan-<id>.md`
 - 다음 단계: `$project-start <issue-number>`
