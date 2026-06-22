@@ -18,6 +18,7 @@
 | `project_py` | `.claude/scripts/project.py` | project 스크립트 경로 |
 | `github_repo` | (gh CLI 자동 감지) | `owner/repo` 형식 |
 | `jira_project` | — | Jira 프로젝트 키 (예: `SYN`) |
+| `review_profile` | `auto` | 리뷰 강도 기본값. `auto`, `full`, `docs-light` |
 | `hooks` | (없음) | lifecycle 훅 맵 — 키: `post_start` · `pre_done` · `post_done` |
 
 ## 분기 규칙
@@ -37,6 +38,61 @@ issue_tracker = jira   → jira CLI (ankitpokhrel/jira-cli 필요)
 harness_enabled = true  → harness_cli 경로의 스크립트 우선 사용, 실패 시 gh CLI fallback
 harness_enabled = false → gh CLI / jira CLI 직접 사용
 ```
+
+## Review Profile 공통 정책
+
+모든 글로벌 워크플로우 스킬은 리뷰 강도를 같은 의미로 해석한다.
+
+우선순위:
+
+1. 플랜 본문 `## Review Profile` 섹션의 값
+2. `.claude/skill-config.yaml` 의 `review_profile`
+3. 기본값 `auto`
+
+지원 값:
+
+| Profile | 의미 |
+|---------|------|
+| `auto` | 작업 범위와 변경 파일을 보고 `full` 또는 `docs-light`를 선택한다. 불확실하면 `full` |
+| `full` | 기존 설계자·구현자·테스트 엔지니어 관점의 적대적 리뷰 |
+| `docs-light` | 문서 전용 작업에 쓰는 단일 문서 리뷰 패스 |
+
+### `auto` 판정
+
+`docs-light`는 범위와 변경 파일이 문서 전용일 때만 선택한다.
+
+- Markdown/MDX 문서
+- `docs/`, `wiki/`, `content/`, `handbook/`, `manual/` 같은 문서 경로
+- 문서가 참조하는 이미지, 다이어그램, 예제 데이터처럼 실행되지 않는 정적 자산
+
+다음 항목이 하나라도 포함되면 `full`을 선택한다.
+
+- 실행 코드, 스크립트, 라이브러리 소스
+- 테스트 코드 또는 fixture
+- build 설정, CI workflow, package metadata, dependency lockfile
+- runtime config, infrastructure, deployment manifest
+- 생성물이더라도 실행·배포·런타임 동작에 관여하는 artifact
+- 문서 전용인지 확신할 수 없는 변경
+
+예시:
+
+- `docs/**/*.md`, `content/**/*.mdx`, 문서 이미지 파일만 변경 → `docs-light`
+- `src/**`, `tests/**`, `.github/**`, `pyproject.toml`, `package.json`, lockfile, runtime config 변경 포함 → `full`
+
+### Override 안전 규칙
+
+- 명시값 `full`은 그대로 `full`로 처리한다.
+- 명시값 `docs-light`라도 코드·테스트·빌드·CI·의존성·런타임 설정 변경이 섞이면 `full`로 승격한다.
+- `auto` 또는 override 승격 결과와 판단 근거를 최종 보고나 impl-report에 남긴다.
+
+### `docs-light` 리뷰 체크리스트
+
+`docs-light`는 리뷰 생략이 아니다. 최소 한 번의 문서 리뷰 패스로 아래를 확인한다.
+
+- 독자가 문서만 읽고 의도와 절차를 이해할 수 있는가?
+- 링크, 경로, 명령, 파일명이 현재 repo와 일치하는가?
+- 문서 변경이 코드 동작 변경을 암시하지 않는가?
+- LLM wiki/docs-as-code 구조의 index, frontmatter, tag, sidebar 계약을 깨지 않는가?
 
 ## base branch 우선순위 (작업별)
 

@@ -1,0 +1,8 @@
+config:
+  MD013: false  # line length: Korean workflow prose often exceeds 80 columns
+  MD031: false  # blanks around fenced code: existing skill docs use compact examples
+  MD032: false  # blanks around lists: existing trigger/rule blocks are compact
+  MD033: false  # inline HTML: placeholders such as <issue-id> are intentional
+  MD036: false  # emphasis as heading: numbered bold steps are the skill style
+  MD040: false  # fenced code language: pseudo-code/config snippets are common
+  MD060: false  # table pipe style: existing tables use compact separator rows

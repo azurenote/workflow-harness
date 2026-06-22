@@ -1,6 +1,6 @@
 ---
 name: project-plan
-description: 작업 description을 받아 코드베이스를 분석하고 .task/plan/에 plan-draft-<slug>.md 파일을 생성, 에이전트 팀 리뷰까지 수행. Codex에서는 `$project-plan ...` 또는 "project-plan 스킬로 ..." 요청 시 실행.
+description: 작업 description을 받아 코드베이스를 분석하고 .task/plan/에 plan-draft-<slug>.md 파일을 생성, Review Profile 정책에 따른 플랜 리뷰까지 수행. Codex에서는 `$project-plan ...` 또는 "project-plan 스킬로 ..." 요청 시 실행.
 ---
 
 # project-plan — Plan 작성
@@ -84,6 +84,11 @@ parent_issue: 364                                  # 선택 — 상위 user-stor
 ## Drift Guards
 - <agent가 위험하게 오해하기 쉬운 지점 또는 범위 이탈 금지사항>
 
+## Review Profile
+- Profile: `auto`
+- Expected mode: `<full | docs-light>`
+- Reason: <문서 전용이면 docs-light, 코드/테스트/빌드/CI/의존성/런타임 설정 변경이면 full>
+
 ## Requirements
 - [ ] <requirement 1>
 - [ ] <requirement 2>
@@ -143,6 +148,10 @@ Validation:
 - 코드 수준 알고리즘은 plan에 쓰지 않는다. 단, agent가 drift하지 않도록 파일/모듈 경계, 인터페이스, 호환성, 검증 계약은 plan에 명시한다.
 - `Task Cards`는 압축된 체크리스트가 아니라 task별 실행 계약이다. 큰 작업은 모든 필드를 채우고, 작은 작업은 `Intent`, `Files / Modules`, `Validation`만 써도 된다.
 - Definition of Done을 상세하게 — 이후 `$project-done` 에서 검증 기준이 된다.
+- `Review Profile`은 `~/.claude/skills/SKILL-CONFIG.md`의 공통 정책을 따른다. 기본은 `auto`이며, plan 시점에 예상 mode와 이유를 기록한다.
+- 문서 전용 작업 예시: `docs/**/*.md`, `content/**/*.mdx`, 문서 이미지 같은 정적 자산만 다루면 `docs-light`.
+- 코드 영향 작업 예시: `src/**`, `tests/**`, build/CI/dependency/runtime config가 포함되면 `full`.
+- 판단이 애매하면 비용이 낮은 쪽이 아니라 `full`을 선택한다.
 
 **base branch 선언 (frontmatter):**
 - 이 작업이 더 큰 user-story의 **서브이슈**이고, 프로젝트 기본 base에 직접 머지하지 않고 상위 이슈의 **통합 브랜치** 위로 머지된다면, 플랜 선두에 frontmatter로 선언한다:
@@ -176,6 +185,11 @@ Webhook delivery가 일시 실패할 때 운영자가 수동 재처리하지 않
 ## Drift Guards
 - retry 추가가 중복 delivery 허용으로 해석되면 안 된다.
 
+## Review Profile
+- Profile: `auto`
+- Expected mode: `full`
+- Reason: source code and tests are expected to change.
+
 ## Requirements
 - [ ] 일시 오류만 retry 대상이다.
 
@@ -199,15 +213,18 @@ Validation:
 - `pytest tests/test_webhook_delivery.py`
 ```
 
-**4. 에이전트 팀 리뷰**
+**4. Review Profile에 따른 플랜 리뷰**
 
-설계자·구현자·테스트 엔지니어 역할의 에이전트 팀을 구성하여 플랜을 검토한다.
+`## Review Profile`을 읽고 `~/.claude/skills/SKILL-CONFIG.md`의 공통 정책으로 리뷰 방식을 확정한다.
 
-- **설계자**: 아키텍처 적합성, 기존 패턴과의 일관성, 확장성
-- **구현자**: 구현 가능성, 누락된 엣지케이스, 기존 코드와의 충돌
-- **테스트 엔지니어**: 테스트 가능성, DoD 검증 가능 여부, 누락된 테스트 시나리오
+- `full`: 설계자·구현자·테스트 엔지니어 관점의 적대적 플랜 리뷰를 수행한다.
+  - **설계자**: 아키텍처 적합성, 기존 패턴과의 일관성, 확장성
+  - **구현자**: 구현 가능성, 누락된 엣지케이스, 기존 코드와의 충돌
+  - **테스트 엔지니어**: 테스트 가능성, DoD 검증 가능 여부, 누락된 테스트 시나리오
+- `docs-light`: 단일 문서 리뷰 패스로 독자 이해도, 사실 충실도, 링크/경로/명령 정확성, docs-as-code 구조 계약을 검토한다.
+- `auto`: 문서 전용이면 `docs-light`, 코드·테스트·빌드·CI·의존성·런타임 설정 변경이 있거나 불확실하면 `full`로 확정한다.
 
-각 팀원은 상호 비판적으로 검토하고, 피드백을 취합하여 플랜을 수정·확정한다.
+피드백을 취합하여 플랜을 수정·확정하고, 선택한 profile/mode와 판단 근거를 출력에 남긴다.
 
 **5. Output**
 

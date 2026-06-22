@@ -25,10 +25,10 @@ description: 이슈 번호를 받아 브랜치(또는 worktree)를 생성하고,
     ```
   - 금지: 백틱이 들어간 본문을 따옴표 없이 쓰거나, escaping 없이 double quote 안에 넣는 방식
 - Codex에서 GitHub API를 호출하는 `harness_cli.py`, `project.py`, `gh` 명령이 네트워크/sandbox 오류로 실패하면 즉시 `require_escalated`로 같은 명령을 재실행한다.
-- Codex에서 에이전트 팀 리뷰를 수행할 때는 셸 명령으로 별도 `codex`/`claude` 프로세스를 실행하지 않는다.
-  - `multi_agent_v1.spawn_agent` 도구가 노출되어 있고 사용자 요청 또는 스킬 절차가 에이전트 팀 리뷰를 요구하는 경우에만 해당 도구로 서브에이전트를 생성한다.
-  - 서브에이전트 도구가 없거나 권한 문제로 실패하면, 메인 에이전트가 아래 3개 관점을 분리된 적대적 리뷰 패스로 직접 수행한다.
-  - 리뷰 방식이 fallback 되었음을 최종 보고에 명시한다.
+- Codex에서 Review Profile이 `full`로 확정되어 에이전트 팀 리뷰를 수행할 때는 셸 명령으로 별도 `codex`/`claude` 프로세스를 실행하지 않는다.
+  - 서브에이전트 도구는 사용자 요청 또는 실행 환경 정책이 허용할 때만 사용한다.
+  - 서브에이전트 도구가 없거나 정책상 사용할 수 없으면, 메인 에이전트가 3개 관점을 분리된 적대적 리뷰 패스로 직접 수행한다.
+  - 리뷰 방식과 fallback 여부를 최종 보고에 명시한다.
 
 ### Claude Code 실행 규칙
 
@@ -140,8 +140,9 @@ ADR 커밋이 완료된 후에만 구현을 시작한다.
 2. `Current State` / `Target State`: 현재 동작과 완료 후 상태.
 3. `Non-Goals`: 이번 작업에서 하지 않는 것.
 4. `Drift Guards`: 위험한 오해와 범위 이탈 금지사항.
-5. `Requirements`와 `Definition of Done`: 검증 가능한 요구사항.
-6. `Implementation Contract`와 `Task Cards`: 파일/모듈, 계약, 완료 조건, 검증 방법.
+5. `Review Profile`: 리뷰 강도, 예상 mode, 판단 근거.
+6. `Requirements`와 `Definition of Done`: 검증 가능한 요구사항.
+7. `Implementation Contract`와 `Task Cards`: 파일/모듈, 계약, 완료 조건, 검증 방법.
 
 구형 plan에 `Task Cards`가 없고 `Task Breakdown`만 있으면 후자를 실행 단위로 사용하되, 가능한 범위에서 Requirements/DoD와 대조해 drift를 막는다.
 
@@ -152,7 +153,7 @@ ADR 커밋이 완료된 후에만 구현을 시작한다.
 
 **6. 구현 시작**
 
-Intent Summary와 Drift Guards를 먼저 요약한 뒤, `Task Cards`를 체크리스트로 출력하고 Task 1을 즉시 시작한다.
+Intent Summary, Drift Guards, Review Profile을 먼저 요약한 뒤, `Task Cards`를 체크리스트로 출력하고 Task 1을 즉시 시작한다.
 추가 지시를 기다리지 않는다.
 
 **7. 커밋 전 포매팅**
@@ -163,24 +164,40 @@ Intent Summary와 Drift Guards를 먼저 요약한 뒤, `Task Cards`를 체크�
 cargo fmt --all
 ```
 
-**8. 에이전트 팀 코드 리뷰**
+**8. Adaptive Review**
 
-작업 완료 판단 시, 아래 3개 관점의 적대적 리뷰를 수행한다. 목표는 승인이 아니라 결함 발견이다.
+작업 완료 판단 시 plan의 `## Review Profile` 값을 우선 읽고, 없으면 `~/.claude/skills/SKILL-CONFIG.md`의 `review_profile` 기본값을 사용한다. 목표는 승인이 아니라 결함 발견이다.
 
-Codex 실행 규칙:
-- 우선 `multi_agent_v1.spawn_agent` 도구가 사용 가능하면 3개 독립 서브에이전트로 병렬 리뷰를 위임한다.
-- 셸 명령으로 `codex`, `claude`, 기타 LLM CLI를 실행하여 서브에이전트를 만들지 않는다. sandbox 권한 실패가 반복되는 경로다.
-- 서브에이전트 도구가 없거나 실패하면 중단하지 말고, 메인 에이전트가 세 관점을 순서대로 분리해서 리뷰한다.
+Profile 확정 규칙:
 
-Claude Code 실행 규칙:
-- `Agent` 툴이 사용 가능하면 3개 독립 서브에이전트로 병렬 리뷰를 위임한다.
-- 셸 명령으로 `codex`, `claude` 등 LLM CLI를 실행하지 않는다 (Codex와 동일 원칙).
-- 서브에이전트 없이 진행할 때는 메인 에이전트가 세 관점을 순서대로 분리해서 리뷰한다.
+- `full`: 설계자·구현자·테스트 엔지니어 관점의 적대적 리뷰를 수행한다.
+- `docs-light`: 문서 전용 리뷰 패스를 수행한다. 단, 변경 파일에 코드·테스트·빌드·CI·의존성·런타임 설정·실행 artifact가 있으면 `full`로 승격한다.
+- `auto`: 변경 파일과 scope가 Markdown/MDX, docs/wiki/content 경로, 문서 정적 자산뿐이면 `docs-light`; 그 외 코드 영향 변경이 있거나 불확실하면 `full`.
 
-리뷰 관점:
+`full` 리뷰 관점:
+
 - **설계자**: 아키텍처 적합성, 기존 패턴 일관성, Scope 준수
 - **구현자**: 로직 오류, 보안, 엣지케이스
 - **테스트 엔지니어**: 테스트 누락, DoD 충족 여부
 
+Codex 실행 규칙:
+
+- `full`이고 서브에이전트 도구 사용이 허용되면 3개 독립 서브에이전트로 병렬 리뷰를 위임한다.
+- 셸 명령으로 `codex`, `claude`, 기타 LLM CLI를 실행하여 서브에이전트를 만들지 않는다. sandbox 권한 실패가 반복되는 경로다.
+- 서브에이전트 도구가 없거나 정책상 사용할 수 없으면 중단하지 말고, 메인 에이전트가 세 관점을 순서대로 분리해서 리뷰한다.
+
+Claude Code 실행 규칙:
+
+- `full`이고 `Agent` 툴 사용이 가능하면 3개 독립 서브에이전트로 병렬 리뷰를 위임한다.
+- 셸 명령으로 `codex`, `claude` 등 LLM CLI를 실행하지 않는다 (Codex와 동일 원칙).
+- 서브에이전트 없이 진행할 때는 메인 에이전트가 세 관점을 순서대로 분리해서 리뷰한다.
+
+`docs-light` 리뷰 체크리스트:
+
+- 독자가 문서만 읽고 의도와 절차를 이해할 수 있는가?
+- 링크, 경로, 명령, 파일명이 현재 repo와 일치하는가?
+- 문서 변경이 코드 동작 변경을 암시하지 않는가?
+- LLM wiki/docs-as-code 구조의 index, frontmatter, tag, sidebar 계약을 깨지 않는가?
+
 각 리뷰는 파일/라인 근거가 있는 findings 중심으로 출력한다. 피드백을 취합하여 즉시 수정 반영하고, 수정 후 필요한 검증을 다시 실행한다.
-최종 보고에는 리뷰 수행 방식(`subagents` 또는 `main-agent fallback`)과 반영한 지적사항을 요약한다.
+최종 보고에는 `review profile`, 확정 mode, 선택 근거, 리뷰 수행 방식(`subagents`, `main-agent fallback`, `docs-light`)과 반영한 지적사항을 요약한다.
