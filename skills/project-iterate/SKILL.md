@@ -38,7 +38,7 @@ $project-iterate <task description> [worktree] [adr]
 |-------|----------|----------|
 | Plan | 지원되는 draft plan 존재 | `$project-issue` Step 1과 같은 draft discovery 계약(`plan-draft-<lowercase-slug>.md` 또는 lowercase hex UUID `plan-<uuid>.md`) |
 | Issue | `plan-<id>.md` 존재 | `ls .task/plan/plan-<id>.md 2>/dev/null` (정확한 경로, glob 아님) |
-| Start | 이슈 ID 브랜치/워크트리 존재 | `git branch -a | grep <id>` 또는 `git worktree list` |
+| Start | 이슈 ID 브랜치/워크트리 존재 | `git branch -a \| grep <id>` 또는 `git worktree list` |
 | Done | PR 존재 또는 이슈 상태 "In Review" | `gh pr list --head <branch-name>` |
 
 완료된 Phase는 건너뛰고 다음 Phase부터 실행한다.
@@ -58,7 +58,7 @@ $project-iterate <task description> [worktree] [adr]
    - `plan-draft-<slug>.md` 생성
    - human layer(`Intent Summary`, `Current State`, `Target State`, `Non-Goals`, `Drift Guards`)와 agent layer(`Implementation Contract`, `Task Cards`, `Validation Plan`) 작성
    - **DoD를 상세하게 작성** — 이후 `$project-done` 검증 기준
-   - 에이전트 팀 리뷰
+   - `Review Profile` 정책에 따른 플랜 리뷰
 3. **사용자 확인**: 플랜 요약을 보여주고 승인을 받는다.
    - Intent Summary와 base branch가 맞는지 먼저 확인한다.
    - 수정 요청 시 반영 후 재확인.
@@ -82,7 +82,7 @@ $project-iterate <task description> [worktree] [adr]
    - `adr` 인자 전달 (해당 시) → 구현 전 ADR 작성
    - Intent Summary와 Drift Guards 숙지
    - Task Cards 체크리스트 출력 + 구현 착수
-   - 에이전트 팀 코드 리뷰
+   - `Review Profile` 정책에 따른 구현 리뷰
 2. **사용자 확인**: 구현 결과 요약 보여주고 승인을 받는다.
    - 수정 요청 시 반영 후 재확인.
    - 승인 시 Phase 4로 진행.

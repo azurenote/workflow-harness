@@ -55,6 +55,14 @@ $project-done <issue-id> [adr]
 - `null` 이거나 프로젝트 기본 base 와 같으면 → `<base_branch>` = 프로젝트 기본 base, 서브-PR 아님. 기존 동작.
 - harness 없을 때 fallback: 플랜 파일 `.task/plan/plan-<issue-id>.md` 선두 frontmatter 의 `base_branch:`/`parent_issue:` 를 직접 확인(없으면 프로젝트 기본 base).
 
+**1-C. Review Profile 판독**
+
+플랜의 `## Review Profile` 섹션을 읽는다. 없으면 `~/.claude/skills/SKILL-CONFIG.md`의 `review_profile` 기본값을 사용한다.
+
+- `project-done`은 리뷰를 새 의미로 재해석하지 않고, `project-start`에서 수행한 profile/mode/근거/수행 방식을 impl-report에 기록한다.
+- 수행 기록이 없으면 `not reported`로 명시하고, DoD 검증 중 필요한 추가 리뷰를 수행했는지 별도로 적는다.
+- 코드 영향 변경에 `docs-light`가 기록되어 있으면 안전 규칙 위반으로 보고하고 `full` 리뷰 보완 여부를 확인한다.
+
 **2. Definition of Done 검증**
 
 `.task/plan/plan-<issue-id>.md` 의 DoD 항목을 하나씩 확인한다.
@@ -94,6 +102,13 @@ ADR 커밋이 완료된 후 4단계로 진행한다.
 
 ## Definition of Done
 - [x] <condition>
+
+## Review
+- Review Profile: `<auto | full | docs-light | not reported>`
+- Resolved Mode: `<full | docs-light | not reported>`
+- Reason: `<선택 또는 승격 근거>`
+- Execution: `<subagents | main-agent fallback | docs-light | not reported>`
+- Findings / Fixes: `<반영한 리뷰 지적사항, 없으면 None>`
 
 ## Known Limitations / Follow-up
 <없으면 "None">
