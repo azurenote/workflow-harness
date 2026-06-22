@@ -36,7 +36,7 @@ $project-iterate <task description> [worktree] [adr]
 
 | Phase | 완료 신호 | 체크 방법 |
 |-------|----------|----------|
-| Plan | `plan-draft-*.md` 존재 | `ls .task/plan/plan-draft-*.md 2>/dev/null` |
+| Plan | 지원되는 draft plan 존재 | `$project-issue` Step 1과 같은 draft discovery 계약(`plan-draft-<lowercase-slug>.md` 또는 lowercase hex UUID `plan-<uuid>.md`) |
 | Issue | `plan-<id>.md` 존재 | `ls .task/plan/plan-<id>.md 2>/dev/null` (정확한 경로, glob 아님) |
 | Start | 이슈 ID 브랜치/워크트리 존재 | `git branch -a | grep <id>` 또는 `git worktree list` |
 | Done | PR 존재 또는 이슈 상태 "In Review" | `gh pr list --head <branch-name>` |
@@ -56,9 +56,11 @@ $project-iterate <task description> [worktree] [adr]
 2. `plan` 스킬 절차를 실행한다:
    - 코드베이스 분석
    - `plan-draft-<slug>.md` 생성
+   - human layer(`Intent Summary`, `Current State`, `Target State`, `Non-Goals`, `Drift Guards`)와 agent layer(`Implementation Contract`, `Task Cards`, `Validation Plan`) 작성
    - **DoD를 상세하게 작성** — 이후 `$project-done` 검증 기준
    - 에이전트 팀 리뷰
 3. **사용자 확인**: 플랜 요약을 보여주고 승인을 받는다.
+   - Intent Summary와 base branch가 맞는지 먼저 확인한다.
    - 수정 요청 시 반영 후 재확인.
    - 승인 시 Phase 2로 진행.
 
@@ -67,8 +69,8 @@ $project-iterate <task description> [worktree] [adr]
 ### Phase 2: Issue
 
 1. `issue` 스킬 절차를 실행한다:
-   - `plan-draft-<slug>.md` → 이슈 트래커 티켓 등록
-   - `plan-draft-<slug>.md` → `plan-<id>.md` rename
+   - `plan-draft-<slug>.md` 또는 기존 `plan-<uuid>.md` draft → 이슈 트래커 티켓 등록
+   - draft plan → `plan-<id>.md` rename
 2. 이슈 ID / 티켓 URL 출력 후 Phase 3로 자동 진행.
 
 ---
@@ -78,7 +80,8 @@ $project-iterate <task description> [worktree] [adr]
 1. Phase 2에서 획득한 이슈 ID로 `start` 스킬 절차를 실행한다:
    - `worktree` 인자 전달 (해당 시)
    - `adr` 인자 전달 (해당 시) → 구현 전 ADR 작성
-   - Task Breakdown 체크리스트 출력 + 구현 착수
+   - Intent Summary와 Drift Guards 숙지
+   - Task Cards 체크리스트 출력 + 구현 착수
    - 에이전트 팀 코드 리뷰
 2. **사용자 확인**: 구현 결과 요약 보여주고 승인을 받는다.
    - 수정 요청 시 반영 후 재확인.
@@ -102,7 +105,7 @@ $project-iterate <task description> [worktree] [adr]
 
 | 중단 시점 | 보존 결과물 |
 |-----------|------------|
-| Phase 1 후 | `plan-draft-<slug>.md` |
+| Phase 1 후 | `plan-draft-<slug>.md` 또는 기존 `plan-<uuid>.md` |
 | Phase 2 후 | 이슈 티켓 + `plan-<id>.md` |
 | Phase 3 후 | 위 + 구현 코드 (미커밋) |
 | Phase 4 완료 | 위 + 커밋 + PR + 이슈 코멘트 |

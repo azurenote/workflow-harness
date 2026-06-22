@@ -1,6 +1,6 @@
 ---
 name: project-start
-description: 이슈 번호를 받아 브랜치(또는 worktree)를 생성하고, 이슈 상태를 In Progress로 전환한 뒤 플랜 Task Breakdown부터 구현을 시작한다. Codex에서는 `$project-start ...` 또는 "project-start 스킬로 ..." 요청 시 실행.
+description: 이슈 번호를 받아 브랜치(또는 worktree)를 생성하고, 이슈 상태를 In Progress로 전환한 뒤 플랜 Intent Summary, Drift Guards, Task Cards를 숙지하고 구현을 시작한다. Codex에서는 `$project-start ...` 또는 "project-start 스킬로 ..." 요청 시 실행.
 ---
 
 # project-start — 작업 시작
@@ -132,7 +132,18 @@ ADR 커밋이 완료된 후에만 구현을 시작한다.
 
 **5. 플랜 로드**
 
-`.task/plan/plan-<issue-id>.md` 를 읽어 Requirements와 Definition of Done을 숙지한다.
+`.task/plan/plan-<issue-id>.md` 를 읽는다. 파일이 로컬에 없고 이슈 본문 접근이 가능하면 이슈 본문에 올라간 plan을 같은 기준으로 읽는다.
+
+구현 전에 다음 순서로 숙지한다:
+
+1. `Intent Summary`: 무엇을 바꾸고 왜 필요한지.
+2. `Current State` / `Target State`: 현재 동작과 완료 후 상태.
+3. `Non-Goals`: 이번 작업에서 하지 않는 것.
+4. `Drift Guards`: 위험한 오해와 범위 이탈 금지사항.
+5. `Requirements`와 `Definition of Done`: 검증 가능한 요구사항.
+6. `Implementation Contract`와 `Task Cards`: 파일/모듈, 계약, 완료 조건, 검증 방법.
+
+구형 plan에 `Task Cards`가 없고 `Task Breakdown`만 있으면 후자를 실행 단위로 사용하되, 가능한 범위에서 Requirements/DoD와 대조해 drift를 막는다.
 
 **5-H. `post_start` 훅 (있을 때만)**
 
@@ -141,7 +152,7 @@ ADR 커밋이 완료된 후에만 구현을 시작한다.
 
 **6. 구현 시작**
 
-Task Breakdown을 체크리스트로 출력하고, Task 1을 즉시 시작한다.
+Intent Summary와 Drift Guards를 먼저 요약한 뒤, `Task Cards`를 체크리스트로 출력하고 Task 1을 즉시 시작한다.
 추가 지시를 기다리지 않는다.
 
 **7. 커밋 전 포매팅**

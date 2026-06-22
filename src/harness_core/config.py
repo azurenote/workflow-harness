@@ -6,18 +6,21 @@ belong in each project's own config module.
 
 import re
 
-# Draft plan: plan-{uuid}.md  (UUID v4 hex pattern)
+# Legacy draft plan: plan-{uuid}.md  (UUID v4 hex pattern)
 UUID_PATTERN = re.compile(
     r"^plan-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md$"
 )
+
+# Human-readable draft plan: plan-draft-{slug}.md
+SLUG_DRAFT_PATTERN = re.compile(r"^plan-draft-[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
 
 # Committed plan: plan-{issue_number}.md
 ISSUE_NUMBER_PATTERN = re.compile(r"^plan-(\d+)\.md$")
 
 
 def is_draft_plan(filename: str) -> bool:
-    """Return True if filename matches the UUID draft plan pattern."""
-    return bool(UUID_PATTERN.match(filename))
+    """Return True if filename matches a supported draft plan pattern."""
+    return bool(UUID_PATTERN.match(filename) or SLUG_DRAFT_PATTERN.match(filename))
 
 
 def is_committed_plan(filename: str) -> bool:

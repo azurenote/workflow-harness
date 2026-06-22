@@ -17,10 +17,20 @@ from harness_core.local import (
 
 
 class TestFindDraftPlanFile:
-    def test_single_draft(self, tmp_path):
+    def test_single_uuid_draft(self, tmp_path):
         plan_dir = tmp_path / "plan"
         plan_dir.mkdir()
         draft = plan_dir / "plan-cf403d73-dccc-4b41-a0d9-bff26b89e0c1.md"
+        draft.write_text("# Plan: Test")
+        (plan_dir / "plan-100.md").write_text("# Plan: Old")
+
+        result = find_draft_plan_file(plan_dir)
+        assert result == draft
+
+    def test_single_slug_draft(self, tmp_path):
+        plan_dir = tmp_path / "plan"
+        plan_dir.mkdir()
+        draft = plan_dir / "plan-draft-workflow-plan-readability.md"
         draft.write_text("# Plan: Test")
         (plan_dir / "plan-100.md").write_text("# Plan: Old")
 
@@ -45,15 +55,29 @@ class TestFindDraftPlanFile:
             find_draft_plan_file(plan_dir)
         assert len(exc_info.value.files) == 2
 
+    def test_multiple_draft_styles_raise(self, tmp_path):
+        plan_dir = tmp_path / "plan"
+        plan_dir.mkdir()
+        (plan_dir / "plan-draft-readable-contract.md").write_text("")
+        (plan_dir / "plan-11111111-2222-3333-4444-555555555555.md").write_text("")
+
+        with pytest.raises(MultiplePlanFilesError) as exc_info:
+            find_draft_plan_file(plan_dir)
+        assert exc_info.value.files == [
+            "plan-11111111-2222-3333-4444-555555555555.md",
+            "plan-draft-readable-contract.md",
+        ]
+
     def test_missing_directory_raises(self, tmp_path):
         with pytest.raises(NoPlanFileError):
             find_draft_plan_file(tmp_path / "nonexistent")
 
-    def test_ignores_non_uuid_files(self, tmp_path):
+    def test_ignores_non_draft_files(self, tmp_path):
         plan_dir = tmp_path / "plan"
         plan_dir.mkdir()
         (plan_dir / "harness-proposal.md").write_text("")
         (plan_dir / "plan-100.md").write_text("")
+        (plan_dir / "plan-draft-.md").write_text("")
 
         with pytest.raises(NoPlanFileError):
             find_draft_plan_file(plan_dir)
@@ -62,6 +86,15 @@ class TestFindDraftPlanFile:
 class TestRenamePlanToIssue:
     def test_rename_success(self, tmp_path):
         src = tmp_path / "plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.md"
+        src.write_text("# Plan: Test")
+
+        result = rename_plan_to_issue(src, 153)
+        assert result == tmp_path / "plan-153.md"
+        assert result.exists()
+        assert not src.exists()
+
+    def test_rename_slug_draft_success(self, tmp_path):
+        src = tmp_path / "plan-draft-readable-contract.md"
         src.write_text("# Plan: Test")
 
         result = rename_plan_to_issue(src, 153)
@@ -261,3 +294,29 @@ class TestReadPlanPreview:
         preview = read_plan_preview(f, max_lines=2)
         # Frontmatter is shown in full; the 2-line budget applies to the body.
         assert preview == "---\nbase_branch: feat/issue-9-x\n---\n# Plan: Title\nline2"
+
+    def test_new_plan_shape_preview_starts_with_human_layer(self, tmp_path):
+        f = tmp_path / "plan.md"
+        f.write_text(
+            "---\nbase_branch: feat/issue-1-parent\n---\n"
+            "# Plan: Readable Workflow Contract\n\n"
+            "## Intent Summary\n"
+            "Make the plan understandable before task execution.\n\n"
+            "## Current State\n"
+            "Plans jump too quickly into checklist items.\n\n"
+            "## Target State\n"
+            "Directors can confirm intent from the first screen.\n\n"
+            "## Non-Goals\n"
+            "- Do not replace ADRs.\n\n"
+            "## Drift Guards\n"
+            "- Do not turn task cards into implementation algorithms.\n"
+        )
+
+        preview = read_plan_preview(f, max_lines=30)
+        assert "base_branch: feat/issue-1-parent" in preview
+        assert "## Intent Summary" in preview
+        assert "Make the plan understandable" in preview
+        assert "## Current State" in preview
+        assert "## Target State" in preview
+        assert "## Non-Goals" in preview
+        assert "## Drift Guards" in preview
