@@ -72,12 +72,14 @@ harness_enabled = false → gh CLI / jira CLI 직접 사용
 - build 설정, CI workflow, package metadata, dependency lockfile
 - runtime config, infrastructure, deployment manifest
 - 생성물이더라도 실행·배포·런타임 동작에 관여하는 artifact
+- Markdown이라도 동작을 정의하는 문서 — 에이전트/스킬 지침(`skills/**/SKILL.md` 등), 프롬프트 템플릿, agent 정의처럼 읽히는 즉시 실행 동작을 바꾸는 파일
 - 문서 전용인지 확신할 수 없는 변경
 
 예시:
 
 - `docs/**/*.md`, `content/**/*.mdx`, 문서 이미지 파일만 변경 → `docs-light`
 - `src/**`, `tests/**`, `.github/**`, `pyproject.toml`, `package.json`, lockfile, runtime config 변경 포함 → `full`
+- `skills/**/SKILL.md`처럼 에이전트 동작을 정의하는 문서 변경 → `full` (확장자가 `.md`여도 docs-light 아님)
 
 ### Override 안전 규칙
 

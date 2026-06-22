@@ -28,6 +28,10 @@ def test_common_review_profile_policy_is_defined() -> None:
     assert "문서 전용" in text
     assert "코드·테스트·빌드·CI·의존성·런타임 설정" in text
 
+    # Behavior-defining markdown (skill instructions) is not docs-light.
+    assert "동작을 정의하는 문서" in text
+    assert "skills/**/SKILL.md" in text
+
 
 def test_project_plan_template_declares_review_profile() -> None:
     text = read_skill("skills/project-plan/SKILL.md")

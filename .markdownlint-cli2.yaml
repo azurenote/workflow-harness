@@ -5,4 +5,4 @@ config:
   MD033: false  # inline HTML: placeholders such as <issue-id> are intentional
   MD036: false  # emphasis as heading: numbered bold steps are the skill style
   MD040: false  # fenced code language: pseudo-code/config snippets are common
-  MD060: false  # table pipe style: existing tables use compact separator rows
+  MD060: false  # table column style: existing tables use compact (unpadded) cells
