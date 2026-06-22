@@ -1,0 +1,6 @@
+issue_tracker: forgejo
+base_branch: main
+harness_enabled: false
+forgejo_host: forge.lab.internal
+forgejo_remote: lab
+forgejo_repo: my/workflow-harness

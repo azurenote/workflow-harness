@@ -6,8 +6,8 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 
 ## 2-layer 아키텍처
 
-1. **`harness_core`** (이 repo, `src/harness_core/`) — 제네릭 파이썬 패키지. git/io/state/local/config 모듈. 프로젝트 상수를 모른다(경로·base 브랜치 등은 호출측이 주입). `pip install -e .` 로 설치.
-2. **per-project harness** — 각 프로젝트의 `.claude/scripts/harness/`. `harness_core`를 프로젝트 기본값(PLAN_DIR, STATE_FILE, BASE_BRANCH 등)으로 감싸는 얇은 래퍼.
+1. **`harness_core`** (이 repo, `src/harness_core/`) — 제네릭 파이썬 패키지. git/io/state/local/config/preflight/scaffold 모듈. 프로젝트 상수를 모른다(경로·base 브랜치 등은 호출측이 주입). `pip install -e .` 로 설치.
+2. **per-project harness** — 각 프로젝트의 `.claude/scripts/harness/`. `harness_core`를 프로젝트 기본값(PLAN_DIR, STATE_FILE, BASE_BRANCH 등)으로 감싸는 얇은 래퍼. `harness-init`/`harness-update`가 canonical wrapper를 생성·갱신한다.
 3. **글로벌 스킬** (이 repo, `skills/`) — `harness_core`/`project.py`를 구동하는 오케스트레이션 레이어. 아래 참조.
 
 ## skills/
@@ -17,12 +17,14 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 | 스킬 | 역할 |
 |------|------|
 | `project-plan` | 플랜 문서 작성(frontmatter 선언 포함) |
-| `project-issue` | 플랜을 GitHub 이슈로 등록 |
+| `project-issue` | 플랜을 이슈 트래커에 등록 |
 | `project-start` | 브랜치/워크트리 생성 + 이슈 In Progress + 구현 시작 |
 | `project-done` | PR 생성 + 리뷰 상태 전환 |
 | `project-adr` | ADR 문서 작성 |
 | `project-clean` | stale 브랜치/워크트리 정리 |
 | `project-iterate` | 리뷰 피드백 반영 반복 |
+| `project-harness-init` | 새 프로젝트에 local harness scaffold 생성 |
+| `project-harness-update` | 기존 프로젝트 local harness를 canonical wrapper로 갱신 |
 | `SKILL-CONFIG.md` | 스킬 공통 설정/규약 |
 
 > 무관 스킬(`code-efficiency`/`fix-build`/`gemini-export` 등 일반 유틸리티)은 이 repo 범위 밖이며 `~/.claude/skills/` 에 그대로 둔다 — `install-skills.sh` 는 `skills/` 에 있는 항목만 심링크한다.
@@ -51,3 +53,15 @@ CLAUDE_SKILLS_DIR=/tmp/skills ./install-skills.sh
 uv sync                       # 의존성
 .venv/bin/python -m pytest tests/ -v
 ```
+
+### local harness scaffold
+
+```bash
+.venv/bin/python -m harness_core.scaffold init --target /path/to/project
+.venv/bin/python -m harness_core.scaffold init --target /path/to/project --apply
+
+.venv/bin/python -m harness_core.scaffold update --target /path/to/project
+.venv/bin/python -m harness_core.scaffold update --target /path/to/project --apply
+```
+
+설치된 console script를 사용할 수 있는 환경에서는 `harness-init`과 `harness-update`가 같은 동작을 수행한다. 두 명령은 write 전에 Python 최소 버전과 `uv`/`git` preflight를 수행하고, 실패 시 대상 프로젝트를 변경하지 않는다.

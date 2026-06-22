@@ -8,6 +8,10 @@ version = "0.1.0"
 description = "Claude Code workflow automation — shared core modules"
 requires-python = ">=3.11"
 
+[project.scripts]
+harness-init = "harness_core.scaffold:main_init"
+harness-update = "harness_core.scaffold:main_update"
+
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
