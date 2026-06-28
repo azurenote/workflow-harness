@@ -1,20 +1,29 @@
 ---
 name: project-iterate
-description: project-plan → project-issue → project-start → project-done 4단계를 한 번에 실행하는 원스톱 워크플로. 각 Phase 사이 사용자 확인 포함. Codex에서는 `$project-iterate ...` 또는 "project-iterate 스킬로 ..." 요청 시 실행.
+description: Run the one-stop workflow: project-plan -> project-issue -> project-start -> project-done. Includes user confirmation between each phase. In Codex, run this for `$project-iterate ...` or requests such as "use the project-iterate skill".
 ---
 
-# project-iterate — 원스톱 워크플로
+# project-iterate - One-stop Workflow
 
-## 트리거 조건
+## Trigger Conditions
 
-다음 상황에서 이 스킬을 적용한다:
-- Codex에서 `$project-iterate <작업 설명>` 또는 "project-iterate 스킬로 <작업 설명>" 형태로 요청할 때
-- "처음부터 끝까지", "원스톱", "iterate" 키워드
-- 플랜 작성부터 PR까지 한 번에 진행하고 싶을 때
+Apply this skill in the following situations:
+- Codex receives `$project-iterate <task description>` or a request such as "use the project-iterate skill for <task description>"
+- Keywords such as "from start to finish", "one-stop", or "iterate"
+- The user wants to go from plan writing to PR in one flow
 
-## 설정 읽기
+## Read Settings
 
-`~/.claude/skills/SKILL-CONFIG.md` 의 "설정 읽기" 절차를 먼저 실행한다.
+Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
+
+## Output Language Guard
+
+Generated workflow artifacts remain Korean by default even though the workflow `SKILL.md` files are written in English:
+- `$project-plan` writes plan prose, requirements, DoD, task cards, and validation notes in Korean.
+- `$project-adr` writes ADR documents in Korean.
+- `$project-done` writes the impl-report / issue-report body in Korean.
+
+Do not translate these artifacts to English while moving between phases unless the user explicitly requests English output for the artifact itself.
 
 ## Usage
 
@@ -22,95 +31,95 @@ description: project-plan → project-issue → project-start → project-done 4
 $project-iterate <task description> [worktree] [adr]
 ```
 
-- `<task description>`: 작업 설명 (필수)
-- `[worktree]`: worktree 분기 모드
-- `[adr]`: ADR 작성 포함 (start + done 양쪽에 전달)
+- `<task description>`: task description (required)
+- `[worktree]`: branch in worktree mode
+- `[adr]`: include ADR writing, passed to both start and done
 
-## 재진입 (중단 후 이어서)
+## Re-entry After Interruption
 
-재진입은 반드시 `$project-iterate <id>` 형식으로 이슈 ID를 명시해야 한다.
-- `<id>` 없이 호출하면 항상 Phase 1(Plan)부터 새로 시작한다.
-- `<id>` 는 GitHub 이슈 번호 또는 Jira 티켓 ID.
+Re-entry must explicitly provide an issue ID in the form `$project-iterate <id>`.
+- Without `<id>`, always start a new run from Phase 1 (Plan).
+- `<id>` is a GitHub issue number or Jira ticket ID.
 
-각 Phase의 완료 여부는 다음 체크포인트로 판단한다:
+Determine phase completion using these checkpoints:
 
-| Phase | 완료 신호 | 체크 방법 |
+| Phase | Completion Signal | Check Method |
 |-------|----------|----------|
-| Plan | 지원되는 draft plan 존재 | `$project-issue` Step 1과 같은 draft discovery 계약(`plan-draft-<lowercase-slug>.md` 또는 lowercase hex UUID `plan-<uuid>.md`) |
-| Issue | `plan-<id>.md` 존재 | `ls .task/plan/plan-<id>.md 2>/dev/null` (정확한 경로, glob 아님) |
-| Start | 이슈 ID 브랜치/워크트리 존재 | `git branch -a \| grep <id>` 또는 `git worktree list` |
-| Done | PR 존재 또는 이슈 상태 "In Review" | `gh pr list --head <branch-name>` |
+| Plan | supported draft plan exists | same draft discovery contract as `$project-issue` Step 1 (`plan-draft-<lowercase-slug>.md` or lowercase hex UUID `plan-<uuid>.md`) |
+| Issue | `plan-<id>.md` exists | `ls .task/plan/plan-<id>.md 2>/dev/null` (exact path, not glob) |
+| Start | issue ID branch/worktree exists | `git branch -a \| grep <id>` or `git worktree list` |
+| Done | PR exists or issue status is "In Review" | `gh pr list --head <branch-name>` |
 
-완료된 Phase는 건너뛰고 다음 Phase부터 실행한다.
+Skip completed phases and continue from the next phase.
 
 ## Instructions
 
-이 스킬은 4개 글로벌 스킬을 순차 호출한다.
-각 단계의 상세 절차는 해당 스킬 문서(`~/.claude/skills/<name>/SKILL.md`)를 따른다.
+This skill calls four global skills in sequence.
+For each phase's detailed procedure, follow that skill document (`~/.claude/skills/<name>/SKILL.md`).
 
 ---
 
 ### Phase 1: Plan
 
-1. `$ARGUMENTS` 에서 task description 추출 (`worktree`, `adr` 키워드 제외).
-2. `plan` 스킬 절차를 실행한다:
-   - 코드베이스 분석
-   - `plan-draft-<slug>.md` 생성
-   - human layer(`Intent Summary`, `Current State`, `Target State`, `Non-Goals`, `Drift Guards`)와 agent layer(`Implementation Contract`, `Task Cards`, `Validation Plan`) 작성
-   - **DoD를 상세하게 작성** — 이후 `$project-done` 검증 기준
-   - `Review Profile` 정책에 따른 플랜 리뷰
-3. **사용자 확인**: 플랜 요약을 보여주고 승인을 받는다.
-   - Intent Summary와 base branch가 맞는지 먼저 확인한다.
-   - 수정 요청 시 반영 후 재확인.
-   - 승인 시 Phase 2로 진행.
+1. Extract the task description from `$ARGUMENTS` (excluding `worktree` and `adr` keywords).
+2. Run the `plan` skill procedure:
+   - analyze the codebase
+   - create `plan-draft-<slug>.md`
+   - write the human layer (`Intent Summary`, `Current State`, `Target State`, `Non-Goals`, `Drift Guards`) and agent layer (`Implementation Contract`, `Task Cards`, `Validation Plan`)
+   - **write a detailed DoD** because `$project-done` later uses it as the verification standard
+   - review the plan according to `Review Profile` policy
+3. **User confirmation**: show the plan summary and get approval.
+   - Confirm first that the Intent Summary and base branch are correct.
+   - If changes are requested, apply them and confirm again.
+   - On approval, continue to Phase 2.
 
 ---
 
 ### Phase 2: Issue
 
-1. `issue` 스킬 절차를 실행한다:
-   - `plan-draft-<slug>.md` 또는 기존 `plan-<uuid>.md` draft → 이슈 트래커 티켓 등록
-   - draft plan → `plan-<id>.md` rename
-2. 이슈 ID / 티켓 URL 출력 후 Phase 3로 자동 진행.
+1. Run the `issue` skill procedure:
+   - register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as an issue-tracker ticket
+   - rename the draft plan to `plan-<id>.md`
+2. Print the issue ID / ticket URL, then automatically continue to Phase 3.
 
 ---
 
-### Phase 3: Start + 구현
+### Phase 3: Start + Implementation
 
-1. Phase 2에서 획득한 이슈 ID로 `start` 스킬 절차를 실행한다:
-   - `worktree` 인자 전달 (해당 시)
-   - `adr` 인자 전달 (해당 시) → 구현 전 ADR 작성
-   - Intent Summary와 Drift Guards 숙지
-   - Task Cards 체크리스트 출력 + 구현 착수
-   - `Review Profile` 정책에 따른 구현 리뷰
-2. **사용자 확인**: 구현 결과 요약 보여주고 승인을 받는다.
-   - 수정 요청 시 반영 후 재확인.
-   - 승인 시 Phase 4로 진행.
+1. Run the `start` skill procedure with the issue ID from Phase 2:
+   - pass the `worktree` argument when applicable
+   - pass the `adr` argument when applicable, to write an ADR before implementation
+   - read the Intent Summary and Drift Guards
+   - print the Task Cards checklist and start implementation
+   - review the implementation according to `Review Profile` policy
+2. **User confirmation**: show the implementation result summary and get approval.
+   - If changes are requested, apply them and confirm again.
+   - On approval, continue to Phase 4.
 
 ---
 
 ### Phase 4: Done
 
-1. Phase 2에서 획득한 이슈 ID로 `done` 스킬 절차를 실행한다:
-   - `adr` 인자 전달 (해당 시)
-   - DoD 검증
-   - impl-report 작성
-   - 커밋 → Push → PR 생성 (또는 Jira 머지)
-   - 이슈 상태 "In Review"
-2. 최종 결과 출력 (커밋 해시, PR URL).
+1. Run the `done` skill procedure with the issue ID from Phase 2:
+   - pass the `adr` argument when applicable
+   - verify the DoD
+   - write the impl-report
+   - commit -> push -> create PR, or merge for Jira
+   - set issue status to "In Review"
+2. Print the final result (commit hash, PR URL).
 
 ---
 
-## 중단 보존 상태
+## Preserved State After Interruption
 
-| 중단 시점 | 보존 결과물 |
+| Interruption Point | Preserved Artifact |
 |-----------|------------|
-| Phase 1 후 | `plan-draft-<slug>.md` 또는 기존 `plan-<uuid>.md` |
-| Phase 2 후 | 이슈 티켓 + `plan-<id>.md` |
-| Phase 3 후 | 위 + 구현 코드 (미커밋) |
-| Phase 4 완료 | 위 + 커밋 + PR + 이슈 코멘트 |
+| after Phase 1 | `plan-draft-<slug>.md` or existing `plan-<uuid>.md` |
+| after Phase 2 | issue ticket + `plan-<id>.md` |
+| after Phase 3 | above + implementation code (uncommitted) |
+| after Phase 4 complete | above + commit + PR + issue comment |
 
-중단 후 이어서 진행하려면 해당 스킬을 직접 호출한다:
-- Phase 2부터: `$project-issue`
-- Phase 3부터: `$project-start <id>`
-- Phase 4부터: `$project-done <id>`
+To resume after interruption, call the relevant skill directly:
+- From Phase 2: `$project-issue`
+- From Phase 3: `$project-start <id>`
+- From Phase 4: `$project-done <id>`

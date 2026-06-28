@@ -1,43 +1,48 @@
 ---
 name: project-start
-description: 이슈 번호를 받아 브랜치(또는 worktree)를 생성하고, 이슈 상태를 In Progress로 전환한 뒤 플랜 Intent Summary, Drift Guards, Task Cards를 숙지하고 구현을 시작한다. Codex에서는 `$project-start ...` 또는 "project-start 스킬로 ..." 요청 시 실행.
+description: Take an issue number, create a branch or worktree, move the issue to In Progress, read the plan Intent Summary, Drift Guards, and Task Cards, then start implementation. In Codex, run this for `$project-start ...` or requests such as "use the project-start skill".
 ---
 
-# project-start — 작업 시작
+# project-start - Start Work
 
-## 트리거 조건
+## Trigger Conditions
 
-다음 상황에서 이 스킬을 적용한다:
-- Codex에서 `$project-start <issue-id>` 또는 "project-start 스킬로 <issue-id> 시작" 형태로 요청할 때
-- `#<숫자>` 또는 이슈 ID + "시작", "착수", "구현", "브랜치" 키워드
-- `$project-issue` 완료 직후 "시작하자"는 사용자 의도
+Apply this skill in the following situations:
+- Codex receives `$project-start <issue-id>` or a request such as "use the project-start skill to start <issue-id>"
+- `#<number>` or issue ID plus keywords such as "start", "begin", "implement", or "branch"
+- Immediately after `$project-issue` completes, when the user says to start
 
-## 설정 읽기
+## Read Settings
 
-`~/.claude/skills/SKILL-CONFIG.md` 의 "설정 읽기" 절차를 먼저 실행한다.
+Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
-## 실행 안전 규칙
+## Output Language Guard
 
-- Markdown 백틱이 포함된 이슈 코멘트는 셸에서 명령 치환으로 해석되지 않도록 최종 본문을 단일 인자로 전달한다.
-  - 권장:
+When loading an existing plan, preserve its Korean prose and do not rewrite it into English.
+If the `adr` path calls `$project-adr`, the ADR document must follow the `$project-adr` Korean-output guard.
+
+## Execution Safety Rules
+
+- Issue comments containing Markdown backticks must pass the final body as a single argument so the shell does not interpret them as command substitution.
+  - Recommended:
     ```bash
     .claude/scripts/harness_cli.py add-comment 123 'ADR recorded: `docs/adr/example.md`'
     ```
-  - 금지: 백틱이 들어간 본문을 따옴표 없이 쓰거나, escaping 없이 double quote 안에 넣는 방식
-- Codex에서 GitHub API를 호출하는 `harness_cli.py`, `project.py`, `gh` 명령이 네트워크/sandbox 오류로 실패하면 즉시 `require_escalated`로 같은 명령을 재실행한다.
-- Codex에서 Review Profile이 `full`로 확정되어 에이전트 팀 리뷰를 수행할 때는 셸 명령으로 별도 `codex`/`claude` 프로세스를 실행하지 않는다.
-  - 서브에이전트 도구는 사용자 요청 또는 실행 환경 정책이 허용할 때만 사용한다.
-  - 서브에이전트 도구가 없거나 정책상 사용할 수 없으면, 메인 에이전트가 3개 관점을 분리된 적대적 리뷰 패스로 직접 수행한다.
-  - 리뷰 방식과 fallback 여부를 최종 보고에 명시한다.
+  - Forbidden: passing a body with backticks unquoted, or inside double quotes without escaping.
+- In Codex, if GitHub API commands such as `harness_cli.py`, `project.py`, or `gh` fail because of network/sandbox errors, immediately rerun the same command with `require_escalated`.
+- In Codex, when Review Profile resolves to `full` and team review is performed, do not spawn separate `codex`/`claude` shell processes.
+  - Use subagent tools only when user request or execution-environment policy allows them.
+  - If no subagent tool is available or policy disallows it, the main agent performs three separate adversarial review passes directly.
+  - State the review method and fallback, if any, in the final report.
 
-### Claude Code 실행 규칙
+### Claude Code Execution Rules
 
-Codex 전용 메커니즘 대신 다음을 적용한다:
+Apply the following instead of Codex-only mechanisms:
 
-- **`require_escalated` 없음**: GitHub API 호출(`harness_cli.py`, `gh`)이 실패하면 fallback 경로로 재시도하고, 그래도 실패하면 사용자에게 보고하고 중단한다.
-- **셸로 LLM 프로세스 spawn 금지**: `codex`, `claude` 등을 셸 명령으로 실행하지 않는다 (Codex와 동일 원칙).
-- **서브에이전트**: `multi_agent_v1.spawn_agent` 대신 `Agent` 툴로 서브에이전트를 생성한다.
-- **서브에이전트 불필요 시**: 메인 에이전트가 3개 관점을 순서대로 직접 리뷰한다 (fallback 방식과 동일).
+- **No `require_escalated`**: if GitHub API calls (`harness_cli.py`, `gh`) fail, retry via fallback paths; if they still fail, report to the user and stop.
+- **Do not spawn LLM processes through the shell**: do not run `codex`, `claude`, or similar commands through the shell to create subagents. Same principle as Codex.
+- **Subagents**: use the `Agent` tool instead of `multi_agent_v1.spawn_agent`.
+- **When subagents are unnecessary**: the main agent performs the three viewpoints directly in sequence, same as the fallback path.
 
 ## Usage
 
@@ -45,20 +50,20 @@ Codex 전용 메커니즘 대신 다음을 적용한다:
 $project-start <issue-id> [worktree] [adr]
 ```
 
-- `<issue-id>`: GitHub 이슈 번호 또는 Jira 티켓 ID (필수)
-- `[worktree]`: git worktree 모드
-- `[adr]`: 구현 전 ADR 작성 (`$project-adr` 내부 호출)
+- `<issue-id>`: GitHub issue number or Jira ticket ID (required)
+- `[worktree]`: git worktree mode
+- `[adr]`: write ADR before implementation (`$project-adr` internal call)
 
 ## Instructions
 
-**1. 이슈 정보 조회 및 브랜치명 도출**
+**1. Fetch issue info and derive branch name**
 
-`harness_enabled: true`:
+When `harness_enabled: true`:
 ```bash
 <harness_cli> get-issue <issue-id>
 ```
 
-`harness_enabled: false` (GitHub):
+When `harness_enabled: false` (GitHub):
 ```bash
 gh issue view <issue-id> --json title,id,labels
 ```
@@ -68,97 +73,97 @@ Jira:
 jira issue view <ticket-id>
 ```
 
-출력에서 `title`, `node_id`(GitHub) / 티켓 ID(Jira), 브랜치명을 획득한다.
-브랜치명 규칙: `feat/issue-<id>-<slug>` (GitHub) / `feat/<ticket-id>-<slug>` (Jira)
+Read `title`, `node_id` (GitHub) / ticket ID (Jira), and derive the branch name.
+Branch naming rule: `feat/issue-<id>-<slug>` for GitHub, or `feat/<ticket-id>-<slug>` for Jira.
 
-**1-B. base branch 판독 (frontmatter — 추론 없음)**
+**1-B. Read base branch (frontmatter - no inference)**
 
-플랜 frontmatter 가 선언한 base 를 읽는다. `/start` 는 base 를 **추론하지 않고** 이 값만 따른다.
+Read the base declared in plan frontmatter. `/start` does **not infer** the base; it only follows this value.
 
 ```bash
 <harness_cli> get-base <issue-id>    # {"base_branch": "<branch>" | null, "parent_issue": <num> | null}
 ```
 
-여기서 **"프로젝트 기본 base"** = "설정 읽기"에서 읽은 `skill-config.yaml` 의 `base_branch`(enseed-trader=`develop`, cosmos-forge=`main`). 리터럴 `develop` 으로 비교하지 말 것 — 이 스킬은 여러 프로젝트가 공유한다.
+Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, cosmos-forge=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
 
-- `base_branch` 가 **non-null 이고 프로젝트 기본 base 와 다르면** → 그 브랜치가 PR 리뷰·머지 타겟이자 분기 base 다. 아래 2-A/2-B 에서 `--base-ref "<base_branch>"` 로 전달한다.
-- `null` 또는 프로젝트 기본 base 와 같으면 → `--base-ref` 없이 **기존 동작**(현재 HEAD 에서 분기; 기본 base 위에서 시작한다는 가정 유지). 신규 프롬프트 없음.
-- harness 없을 때 fallback: 플랜 파일 `.task/plan/plan-<issue-id>.md` 선두 frontmatter 의 `base_branch:` 줄을 직접 확인한다(없으면 프로젝트 기본 base).
+- If `base_branch` is **non-null and different from the project default base**, that branch is both the PR review/merge target and the branch base. Pass `--base-ref "<base_branch>"` in 2-A/2-B below.
+- If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use **existing behavior** (branch from current HEAD, assuming the task starts on the default base). Do not add a new prompt.
+- Fallback without harness: inspect the leading `base_branch:` line in `.task/plan/plan-<issue-id>.md` frontmatter directly. If absent, use the project default base.
 
-**2-A. 일반 브랜치 (기본)**
+**2-A. Normal Branch (default)**
 
 ```bash
-# base 선언 있을 때
+# When base is declared
 <harness_cli> create-branch "<branch-name>" --base-ref "<base_branch>"
-# base 미선언(develop)일 때
+# When base is undeclared (default)
 <harness_cli> create-branch "<branch-name>"
-# fallback(선언): git fetch origin "<base_branch>" 2>/dev/null; git checkout --no-track -b "<branch-name>" "<base_branch | origin/base_branch>"
-# fallback(미선언): git checkout -b "<branch-name>"
+# fallback (declared): git fetch origin "<base_branch>" 2>/dev/null; git checkout --no-track -b "<branch-name>" "<base_branch | origin/base_branch>"
+# fallback (undeclared): git checkout -b "<branch-name>"
 ```
 
-브랜치 push는 `$project-done` 단계에서 수행한다. 여기서는 push하지 않는다.
+Branch push happens during `$project-done`. Do not push here.
 
-**2-B. Worktree 모드 (`worktree` 인자 있을 때)**
+**2-B. Worktree mode (when `worktree` argument is present)**
 
 ```bash
-# base 선언 있을 때
+# When base is declared
 <harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>" --base-ref "<base_branch>"
-# base 미선언(develop)일 때
+# When base is undeclared (default)
 <harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>"
 # fallback: git worktree add [--no-track] ".claude/worktrees/<project>-issue-<id>" -b "<branch-name>" ["<base_branch | origin/base_branch>"]
 ```
 
-이후 모든 작업은 `$WORKTREE_PATH` 안에서 수행한다.
+After this, perform all work inside `$WORKTREE_PATH`.
 
-**2-C. 탭 이름 설정**
+**2-C. Set tab name**
 
 ```bash
 cmux rename-tab "task #<id>" 2>/dev/null || true
 ```
 
-**3. 이슈 상태 → In Progress**
+**3. Issue status -> In Progress**
 
 ```bash
 <harness_cli> add-progress "<node-id>" --issue-number <id> --branch-name "<branch-name>"
-# fallback(GitHub): gh issue edit <id> --add-label "in-progress" 2>/dev/null || true
-# fallback(Jira):   jira issue move <ticket-id> "In Progress"
+# fallback (GitHub): gh issue edit <id> --add-label "in-progress" 2>/dev/null || true
+# fallback (Jira):   jira issue move <ticket-id> "In Progress"
 ```
 
-**4. ADR (조건부)**
+**4. ADR (conditional)**
 
-`adr` 인자가 있으면 `$project-adr <issue-id>` 절차를 실행한다.
-이때 위 "실행 안전 규칙"을 유지한다. 특히 ADR 경로를 이슈 코멘트에 게시할 때 Markdown 백틱을 셸 명령 치환으로 노출하지 않는다.
-ADR 커밋이 완료된 후에만 구현을 시작한다.
+If the `adr` argument is present, run the `$project-adr <issue-id>` procedure.
+Keep the "Execution Safety Rules" above. In particular, do not expose Markdown backticks to shell command substitution when posting the ADR path as an issue comment.
+Start implementation only after the ADR commit is complete.
 
-**5. 플랜 로드**
+**5. Load plan**
 
-`.task/plan/plan-<issue-id>.md` 를 읽는다. 파일이 로컬에 없고 이슈 본문 접근이 가능하면 이슈 본문에 올라간 plan을 같은 기준으로 읽는다.
+Read `.task/plan/plan-<issue-id>.md`. If the file is not local and the issue body is accessible, read the plan from the issue body using the same criteria.
 
-구현 전에 다음 순서로 숙지한다:
+Before implementation, read in this order:
 
-1. `Intent Summary`: 무엇을 바꾸고 왜 필요한지.
-2. `Current State` / `Target State`: 현재 동작과 완료 후 상태.
-3. `Non-Goals`: 이번 작업에서 하지 않는 것.
-4. `Drift Guards`: 위험한 오해와 범위 이탈 금지사항.
-5. `Review Profile`: 리뷰 강도, 예상 mode, 판단 근거.
-6. `Requirements`와 `Definition of Done`: 검증 가능한 요구사항.
-7. `Implementation Contract`와 `Task Cards`: 파일/모듈, 계약, 완료 조건, 검증 방법.
+1. `Intent Summary`: what changes and why.
+2. `Current State` / `Target State`: current behavior and desired completed state.
+3. `Non-Goals`: what this work intentionally does not do.
+4. `Drift Guards`: dangerous misunderstandings and scope boundaries.
+5. `Review Profile`: review intensity, expected mode, and rationale.
+6. `Requirements` and `Definition of Done`: verifiable requirements.
+7. `Implementation Contract` and `Task Cards`: files/modules, contracts, completion conditions, and validation method.
 
-구형 plan에 `Task Cards`가 없고 `Task Breakdown`만 있으면 후자를 실행 단위로 사용하되, 가능한 범위에서 Requirements/DoD와 대조해 drift를 막는다.
+If an old plan lacks `Task Cards` but has `Task Breakdown`, use the latter as execution units while checking against Requirements/DoD to prevent drift where possible.
 
-**5-H. `post_start` 훅 (있을 때만)**
+**5-H. `post_start` hook (only if present)**
 
-`.claude/skill-config.yaml`의 `hooks.post_start` 값이 있으면 Bash로 실행한다.
-실패해도 경고만 출력하고 계속 진행한다. (`SKILL-CONFIG.md` "훅 실행" 참조)
+If `.claude/skill-config.yaml` has `hooks.post_start`, run it through Bash.
+If it fails, print only a warning and continue. See "Hook Execution" in `SKILL-CONFIG.md`.
 
-**6. 구현 시작**
+**6. Start implementation**
 
-Intent Summary, Drift Guards, Review Profile을 먼저 요약한 뒤, `Task Cards`를 체크리스트로 출력하고 Task 1을 즉시 시작한다.
-추가 지시를 기다리지 않는다.
+First summarize Intent Summary, Drift Guards, and Review Profile. Then print `Task Cards` as a checklist and immediately start Task 1.
+Do not wait for additional instruction.
 
-**7. 커밋 전 포매팅**
+**7. Formatting before commit**
 
-구현이 완료되면 커밋 전에 반드시 실행한다:
+After implementation is complete, run this before committing:
 
 ```bash
 cargo fmt --all
@@ -166,38 +171,38 @@ cargo fmt --all
 
 **8. Adaptive Review**
 
-작업 완료 판단 시 plan의 `## Review Profile` 값을 우선 읽고, 없으면 `~/.claude/skills/SKILL-CONFIG.md`의 `review_profile` 기본값을 사용한다. 목표는 승인이 아니라 결함 발견이다.
+When deciding that work is complete, read `## Review Profile` from the plan first. If absent, use the `review_profile` default from `~/.claude/skills/SKILL-CONFIG.md`. The goal is defect discovery, not approval.
 
-Profile 확정 규칙:
+Profile resolution rules:
 
-- `full`: 설계자·구현자·테스트 엔지니어 관점의 적대적 리뷰를 수행한다.
-- `docs-light`: 문서 전용 리뷰 패스를 수행한다. 단, 변경 파일에 코드·테스트·빌드·CI·의존성·런타임 설정·실행 artifact가 있으면 `full`로 승격한다.
-- `auto`: 변경 파일과 scope가 Markdown/MDX, docs/wiki/content 경로, 문서 정적 자산뿐이면 `docs-light`; 그 외 코드 영향 변경이 있거나 불확실하면 `full`.
+- `full`: run adversarial review from architect, implementer, and test engineer viewpoints.
+- `docs-light`: run a documentation-only review pass. However, if changed files include code, tests, build, CI, dependencies, runtime config, or execution artifacts, escalate to `full`.
+- `auto`: resolve to `docs-light` only when changed files and scope are limited to Markdown/MDX, docs/wiki/content paths, or static documentation assets. Resolve to `full` for any code-impacting change or uncertainty.
 
-`full` 리뷰 관점:
+`full` review viewpoints:
 
-- **설계자**: 아키텍처 적합성, 기존 패턴 일관성, Scope 준수
-- **구현자**: 로직 오류, 보안, 엣지케이스
-- **테스트 엔지니어**: 테스트 누락, DoD 충족 여부
+- **Architect**: architecture fit, consistency with existing patterns, scope compliance
+- **Implementer**: logic bugs, security, edge cases
+- **Test engineer**: missing tests, DoD satisfaction
 
-Codex 실행 규칙:
+Codex execution rules:
 
-- `full`이고 서브에이전트 도구 사용이 허용되면 3개 독립 서브에이전트로 병렬 리뷰를 위임한다.
-- 셸 명령으로 `codex`, `claude`, 기타 LLM CLI를 실행하여 서브에이전트를 만들지 않는다. sandbox 권한 실패가 반복되는 경로다.
-- 서브에이전트 도구가 없거나 정책상 사용할 수 없으면 중단하지 말고, 메인 에이전트가 세 관점을 순서대로 분리해서 리뷰한다.
+- If mode is `full` and subagent tools are allowed, delegate review in parallel to three independent subagents.
+- Do not run `codex`, `claude`, or other LLM CLIs through shell commands to create subagents. That path repeatedly fails on sandbox permissions.
+- If no subagent tool is available or policy disallows it, do not stop; the main agent performs the three viewpoints directly and separately.
 
-Claude Code 실행 규칙:
+Claude Code execution rules:
 
-- `full`이고 `Agent` 툴 사용이 가능하면 3개 독립 서브에이전트로 병렬 리뷰를 위임한다.
-- 셸 명령으로 `codex`, `claude` 등 LLM CLI를 실행하지 않는다 (Codex와 동일 원칙).
-- 서브에이전트 없이 진행할 때는 메인 에이전트가 세 관점을 순서대로 분리해서 리뷰한다.
+- If mode is `full` and the `Agent` tool is available, delegate review in parallel to three independent subagents.
+- Do not run `codex`, `claude`, or other LLM CLIs through the shell. Same principle as Codex.
+- When proceeding without subagents, the main agent performs the three viewpoints directly and separately.
 
-`docs-light` 리뷰 체크리스트:
+`docs-light` review checklist:
 
-- 독자가 문서만 읽고 의도와 절차를 이해할 수 있는가?
-- 링크, 경로, 명령, 파일명이 현재 repo와 일치하는가?
-- 문서 변경이 코드 동작 변경을 암시하지 않는가?
-- LLM wiki/docs-as-code 구조의 index, frontmatter, tag, sidebar 계약을 깨지 않는가?
+- Can a reader understand the intent and procedure from the document alone?
+- Do links, paths, commands, and file names match the current repo?
+- Does the document change imply behavior changes in code?
+- Does it preserve LLM wiki/docs-as-code structure contracts such as index, frontmatter, tags, and sidebar?
 
-각 리뷰는 파일/라인 근거가 있는 findings 중심으로 출력한다. 피드백을 취합하여 즉시 수정 반영하고, 수정 후 필요한 검증을 다시 실행한다.
-최종 보고에는 `review profile`, 확정 mode, 선택 근거, 리뷰 수행 방식(`subagents`, `main-agent fallback`, `docs-light`)과 반영한 지적사항을 요약한다.
+Each review should output findings first, grounded in file/line evidence. Collect feedback, apply fixes immediately, then rerun needed validation.
+The final report must summarize `review profile`, resolved mode, rationale, review execution method (`subagents`, `main-agent fallback`, `docs-light`), and review findings that were addressed.

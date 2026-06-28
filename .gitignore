@@ -3,4 +3,4 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
-.task/plan/
+.task/
