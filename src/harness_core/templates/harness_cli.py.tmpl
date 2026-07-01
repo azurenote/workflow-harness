@@ -10,8 +10,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from harness.config import PLAN_DIR
-from harness_core.git import create_branch, create_worktree
+from harness.config import BASE_BRANCH, PLAN_DIR
+from harness_core.git import clean_up_stale_branches, create_branch, create_worktree
 from harness_core.io import print_json
 from harness_core.local import (
     extract_base_branch,
@@ -55,6 +55,12 @@ def _create_worktree(args: argparse.Namespace) -> int:
     return 0
 
 
+def _clean_up(_args: argparse.Namespace) -> int:
+    bases = sorted({BASE_BRANCH, "develop", "main"})
+    print_json(clean_up_stale_branches(bases=bases, plan_dir=PLAN_DIR))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harness_cli.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -81,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     worktree.add_argument("branch_name")
     worktree.add_argument("--base-ref")
     worktree.set_defaults(func=_create_worktree)
+
+    clean = sub.add_parser("clean-up")
+    clean.set_defaults(func=_clean_up)
 
     args = parser.parse_args(argv)
     return args.func(args)

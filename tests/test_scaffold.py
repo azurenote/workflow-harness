@@ -75,6 +75,7 @@ def test_init_apply_creates_project_local_harness_and_help_smoke(tmp_path):
     )
     assert help_result.returncode == 0
     assert "find-draft-plan" in help_result.stdout
+    assert "clean-up" in help_result.stdout
 
 
 def test_init_preflight_failure_writes_nothing(tmp_path):
