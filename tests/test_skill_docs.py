@@ -72,3 +72,123 @@ def test_project_done_reports_review_profile() -> None:
     assert "Review Profile:" in text
     assert "Resolved Mode:" in text
     assert "Execution:" in text
+
+
+RELEASE_DOC_SECTIONS = (
+    "## Release Summary",
+    "## Change Inventory",
+    "## Linked Issues",
+    "## DB Migrations",
+    "## Config Changes",
+    "## Risk Assessment",
+    "## Deployment Steps",
+    "## Rollback Plan",
+    "## Post-deploy Verification",
+)
+
+RELEASE_FRONTMATTER_KEYS = (
+    "schema",
+    "package",
+    "from_ref",
+    "to_ref",
+    "risk_level",
+    "generated",
+)
+
+
+def test_project_release_skill_contract() -> None:
+    text = read_skill("skills/project-release/SKILL.md")
+
+    # skill skeleton shared with the other workflow skills
+    for token in (
+        "## Trigger Conditions",
+        "## Read Settings",
+        "## Usage",
+        "## Non-execution Guard",
+        "## Output Language Guard",
+        "## Instructions",
+        "## Output",
+    ):
+        assert token in text
+
+    # canonical document sections (fixed parsing contract)
+    for section in RELEASE_DOC_SECTIONS:
+        assert section in text
+
+    # machine-layer frontmatter keys, pinned inside the template section itself
+    template = text.split("## Release Document Template", 1)[1]
+    for key in RELEASE_FRONTMATTER_KEYS:
+        assert f"{key}:" in template
+
+    # fixed step shape of the deployment/rollback checklist
+    for token in ("### Step 1:", "- [ ] Done", "### R1:"):
+        assert token in template
+
+    # version-range resolution: sort, reachability, first-release fallback, dirty tree
+    assert "--sort=-v:refname" in text
+    assert "merge-base --is-ancestor" in text
+    assert "rev-list --max-parents=0" in text
+    assert "git status --porcelain" in text
+
+    # risk rubric: levels, evidence duty, project constants delegated to config
+    for token in ("| High |", "| Medium |", "| Low |", "critical_globs", "shared_globs"):
+        assert token in text
+    assert "MUST cite evidence" in text
+
+    # issue lookup degrades to "미확인" instead of aborting; jira ref pattern differs
+    assert "미확인" in text
+    assert r"[A-Z]+-\d+" in text
+
+
+def test_skill_config_defines_release_block_and_forgejo() -> None:
+    text = read_skill("skills/SKILL-CONFIG.md")
+
+    for token in (
+        "release.doc_dir",
+        "release.tag_format",
+        ".kind",
+        ".paths",
+        "migrations_globs",
+        "config_globs",
+        "critical_globs",
+        "shared_globs",
+        "deploy_steps_template",
+        "docs/release",
+        "{package}-v{version}",
+        ":(glob)",
+    ):
+        assert token in text
+
+    # forgejo is a documented lookup path with an explicit degradation rule
+    assert "issue_tracker = forgejo" in text
+    assert "forgejo_host" in text
+    assert "미확인" in text
+
+
+def _parse_flat_frontmatter(block: str) -> dict[str, str]:
+    """Minimal flat `key: value` parser — the release frontmatter contract is flat."""
+    result: dict[str, str] = {}
+    for line in block.strip().splitlines():
+        key, sep, value = line.partition(":")
+        assert sep, f"not a `key: value` line: {line!r}"
+        result[key.strip()] = value.strip()
+    return result
+
+
+def test_release_sample_frontmatter_is_parseable() -> None:
+    text = read_skill("skills/project-release/SKILL.md")
+    sample = text.split("## Mini Korean Sample", 1)[1]
+    fence = sample.split("````markdown\n", 1)[1]  # anchor on the sample fence, not on prose
+    block = fence.split("---\n", 2)[1]
+
+    try:
+        import yaml
+
+        data = yaml.safe_load(block)
+    except ModuleNotFoundError:
+        data = _parse_flat_frontmatter(block)
+
+    for key in RELEASE_FRONTMATTER_KEYS:
+        assert key in data
+    assert str(data["schema"]) == "1"
+    assert data["risk_level"] in {"high", "medium", "low"}

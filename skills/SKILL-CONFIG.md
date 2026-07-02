@@ -10,7 +10,7 @@
 
 | 키 | 기본값 | 설명 |
 |----|--------|------|
-| `issue_tracker` | `github` | `github` 또는 `jira` |
+| `issue_tracker` | `github` | `github`, `jira`, 또는 `forgejo` |
 | `base_branch` | `main` | **프로젝트 기본** PR/머지 대상 브랜치. 각 프로젝트가 재정의(enseed-trader=`develop`, cosmos-forge=`main`). 작업별 override 는 플랜 frontmatter 가 우선 — 아래 "base branch 우선순위" 참조 |
 | `adr_dir` | `docs/adr` | ADR 문서 저장 경로 |
 | `harness_enabled` | `false` | `true`면 harness_cli.py 사용 |
@@ -18,8 +18,12 @@
 | `project_py` | `.claude/scripts/project.py` | project 스크립트 경로 |
 | `github_repo` | (gh CLI 자동 감지) | `owner/repo` 형식 |
 | `jira_project` | — | Jira 프로젝트 키 (예: `SYN`) |
+| `forgejo_host` | — | Forgejo 인스턴스 호스트 (예: `forge.example.internal`) |
+| `forgejo_remote` | — | Forgejo 를 가리키는 git remote 이름 (선택 — 없으면 `forgejo_host`/`forgejo_repo` 로 조회) |
+| `forgejo_repo` | — | `owner/repo` 형식 |
 | `review_profile` | `auto` | 리뷰 강도 기본값. `auto`, `full`, `docs-light` |
 | `hooks` | (없음) | lifecycle 훅 맵 — 키: `post_start` · `pre_done` · `post_done` |
+| `release` | (없음) | 릴리즈 문서 생성 설정 맵 — 아래 "release 설정" 참조 |
 
 ## 분기 규칙
 
@@ -28,9 +32,16 @@
 ### 이슈 트래커
 
 ```
-issue_tracker = github → gh CLI (또는 harness_cli.py, harness_enabled=true 시)
-issue_tracker = jira   → jira CLI (ankitpokhrel/jira-cli 필요)
+issue_tracker = github  → gh CLI (또는 harness_cli.py, harness_enabled=true 시)
+issue_tracker = jira    → jira CLI (ankitpokhrel/jira-cli 필요)
+issue_tracker = forgejo → fj CLI (forgejo-cli 필요) — 조회: fj -H <forgejo_host> issue view/search
 ```
+
+`forgejo` 는 현재 **조회(read) 경로만** 계약이다. 이슈 제목·상태 조회는
+`fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<N>"` 을 사용하고,
+로컬에 `forgejo_remote` 리모트가 실제로 존재하면 `fj issue view -R <forgejo_remote> <N>` 형태의 remote 기반 조회로 대체할 수 있다.
+조회가 실패하면(네트워크·인증·CLI 부재) 그 항목을 "미확인" 으로 표기한 뒤 절차를 계속한다 — 조회 실패로 스킬을 중단하지 않는다.
+이슈 생성·상태 전환처럼 쓰기가 필요한 단계에서 CLI/API 가 실패하면 웹 UI 수동 처리를 안내하고, 수동 결과(이슈 번호 등)를 받아 이후 단계를 진행한다.
 
 ### harness 사용 여부
 
@@ -104,6 +115,44 @@ PR 리뷰·머지 대상 base 는 **두 출처**가 있고, 좁은 범위가 우
 2. **`skill-config.yaml` `base_branch`** (프로젝트 기본) — 위 frontmatter 가 없을 때 적용. enseed-trader=`develop`, cosmos-forge=`main`.
 
 즉 frontmatter 미선언 = 프로젝트 기본 base(기존 동작, 신규 프롬프트 없음). frontmatter 선언 = 그 통합 브랜치가 base 이며, default 가 아니므로 **서브-PR** 로 취급한다(`project-done` 이 `Closes #<id>` 대신 `Part of #<parent_issue>` 사용).
+
+## release 설정 (project-release)
+
+`project-release` 스킬이 읽는 릴리즈 문서 생성 설정. 모든 키는 선택이며, `release` 블록이 아예 없으면 기본값으로 동작하되 deploy-steps 템플릿 부재를 경고하고 일반 골격을 생성한다.
+
+| 키 | 기본값 | 설명 |
+|----|--------|------|
+| `release.doc_dir` | `docs/release` | 릴리즈 문서 출력 경로. **git 추적 경로**여야 한다 — 문서는 생성 후 커밋된다 |
+| `release.tag_format` | `{package}-v{version}` | 릴리즈 태그 패턴. 단일 패키지 프로젝트는 `v{version}` 으로 지정 |
+| `release.components.<name>.kind` | `backend` | `backend` 또는 `frontend`. `frontend` 는 backend↔frontend 호환성 확인 항목을 강제한다 |
+| `release.components.<name>.paths` | (없음 = 전체) | 컴포넌트 소스 경로 목록. 모노레포에서 `git log <from>..<to> -- <paths>` 커밋 스코핑에 사용 |
+| `release.components.<name>.migrations_globs` | `["**/migrations/**"]` | DB 마이그레이션 탐지 경로 |
+| `release.components.<name>.config_globs` | `["config/**", ".env*", "docker/**", "deploy/**"]` | 설정 변경 탐지 경로. `**/*.toml` 같은 광역 패턴은 버전 범프 커밋 오탐을 만들므로 넣지 않는다 |
+| `release.components.<name>.critical_globs` | (없음) | 고위험 경로 목록. 매칭 변경은 High 리스크로 판정된다 |
+| `release.components.<name>.shared_globs` | (없음) | 컴포넌트 간 공유 코드 경로. 매칭 변경 발견 시 호환성 확인 항목을 강제한다 |
+| `release.components.<name>.deploy_steps_template` | (없음) | 프로젝트 로컬 배포 절차 템플릿 경로. `{version}`, `{from_version}`, `{package}` 플레이스홀더 치환 |
+
+glob 키들을 git pathspec 으로 사용할 때는 `:(glob)` 매직을 붙여 해석한다 — 붙이지 않으면 루트 레벨 `migrations/` 가 매칭되지 않는다 (`project-release` Instruction 2 참조).
+
+예시 (**예시일 뿐 기본값이 아니다** — 프로젝트 상수는 각 프로젝트의 `skill-config.yaml` 에만 둔다):
+
+```yaml
+release:
+  doc_dir: docs/release
+  tag_format: "{package}-v{version}"
+  components:
+    backend:
+      kind: backend
+      paths: [backend/, shared-domain/]
+      migrations_globs: ["backend/migrations/**"]
+      critical_globs: ["backend/src/execution/**", "backend/src/auth/**"]
+      shared_globs: ["shared-domain/**"]
+      deploy_steps_template: .claude/release/backend-deploy-steps.md
+    web:
+      kind: frontend
+      paths: [web/]
+      deploy_steps_template: .claude/release/web-deploy-steps.md
+```
 
 ## 훅 실행
 

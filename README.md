@@ -22,6 +22,7 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 | `project-done` | PR 생성 + 리뷰 상태 전환 |
 | `project-adr` | ADR 문서 작성 |
 | `project-clean` | stale 브랜치/워크트리 정리 |
+| `project-release` | 두 릴리즈 지점(이전 태그 ↔ 새 태그)을 비교해 변경 조사·이슈 추적·리스크 평가·배포 체크리스트를 담은 릴리즈 문서 생성 |
 | `project-iterate` | 리뷰 피드백 반영 반복 |
 | `project-harness-init` | 새 프로젝트에 local harness scaffold 생성 |
 | `project-harness-update` | 기존 프로젝트 local harness를 canonical wrapper로 갱신 |
