@@ -208,8 +208,13 @@ def test_project_release_preparation_contract() -> None:
         "## Read Settings",
         "## External-effect Guard",
         "git status --porcelain",
+        "git fetch --no-tags origin <base_branch>",
+        'git tag --list "<primary-pattern>" --sort=-version:refname',
+        "git ls-remote --tags --refs --sort=-version:refname",
+        "REMOTE_TAG_SHA",
+        "FROM_SHA",
+        "FETCH_HEAD^{}",
         "git merge-base --is-ancestor",
-        "--sort=-v:refname",
         "cargo metadata --format-version 1",
         "major",
         "minor",
@@ -236,6 +241,13 @@ def test_project_release_preparation_contract() -> None:
     assert "No confirmation means no mutation" in text
     assert "Do not delete already-created tags automatically" in text
     assert "instead of silently switching tools" in text
+    assert "Do not use `git fetch --tags`" in text
+    assert "git fetch --tags origin <base_branch>" not in text
+    assert "all `git log` and `git diff` commands use the resolved immutable" in text
+    assert "Local-only ref" in text
+    assert "Remote-only ref" in text
+    assert "same name but peel to different SHAs" in text
+    assert "Older conflicting names" in text
 
 
 def test_project_release_mixed_level_fixture_is_documented() -> None:

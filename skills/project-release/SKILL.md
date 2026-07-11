@@ -57,7 +57,7 @@ Before analysis, require all of the following:
 ```bash
 git branch --show-current
 git status --porcelain
-git fetch --tags origin <base_branch>
+git fetch --no-tags origin <base_branch>
 git merge-base --is-ancestor "origin/<base_branch>" HEAD
 cargo metadata --format-version 1 --no-deps
 cargo release --version
@@ -69,29 +69,44 @@ cargo release --version
 - Resolve every configured `cargo_package` to exactly one `cargo metadata` package and record its `manifest_path` and current version.
 - Run configured `preflight_commands`. Ignored build artifacts are acceptable, but a command that mutates tracked files or any external system is unsafe and must not run. Inspect every `preflight_paths` file needed for compatibility judgment.
 
-Any violation stops before mutation. Fetch failure, detached HEAD, missing cargo-release, missing package, duplicate mapping, or an unsafe preflight command is a blocking error.
+Do not use `git fetch --tags`: historical local tags may intentionally or accidentally differ from the remote, and a broad tag update then blocks an otherwise valid release with `would clobber existing tag`. Base freshness and release-tag discovery are separate checks.
+
+Any violation stops before mutation. Base fetch failure, detached HEAD, missing cargo-release, missing package, duplicate mapping, or an unsafe preflight command is a blocking error.
 
 **2. Resolve the primary range**
 
-Expand `tag_format` for the `primary_component`, list candidates using version sort, and select the newest tag reachable from `HEAD`:
+Expand `tag_format` for the `primary_component`. Build a version-sorted union of matching local and remote tag names without changing local tags, then select the newest unambiguous tag whose peeled target is reachable from `HEAD`:
 
 ```bash
-git tag --list "<primary-pattern>" --sort=-v:refname
-git merge-base --is-ancestor "<candidate-tag>" HEAD
+git tag --list "<primary-pattern>" --sort=-version:refname
+git ls-remote --tags --refs --sort=-version:refname origin "<primary-pattern>"
+# Only when a candidate has no usable local ref:
+git fetch --no-tags origin "refs/tags/<candidate-tag>"
+REMOTE_TAG_SHA=$(git rev-parse 'FETCH_HEAD^{}')
+git merge-base --is-ancestor "<resolved-candidate-sha>" HEAD
 ```
 
-The proposed range is `<latest-reachable-primary-tag>..HEAD`. Resolve `HEAD` to its full SHA for the confirmation screen. Do not choose an unreachable tag even if its version is higher.
+Resolve each candidate as follows:
 
-If no reachable tag exists, mark this as a first release and propose the repository root commit as the lower bound. If tags exist but do not match configured package/version parsing, or the latest version is a prerelease, stop and ask the user to resolve the ambiguity; do not guess stable/prerelease policy.
+- Local and remote refs both exist and peel to the same SHA: use that SHA.
+- Local-only ref: use its peeled SHA and warn that the previous release tag has not been pushed. Local-only tags are valid because this skill intentionally never pushes.
+- Remote-only ref: explicitly fetch that one ref without a destination, peel `FETCH_HEAD`, and use the fetched SHA. The fetch may write `FETCH_HEAD` and downloaded objects but must not create or overwrite `refs/tags/<candidate-tag>`.
+- Local and remote refs have the same name but peel to different SHAs: if it is the newest reachable candidate, stop for explicit resolution. Never guess which history is authoritative and never rewrite or delete either tag. Older conflicting names that fall below an already selected newer unambiguous tag are warnings, not blockers.
+
+Check union candidates in version order and skip unreachable targets. This preserves an unpushed tag created by a prior `$project-release` run while avoiding the broad-fetch `would clobber existing tag` failure.
+
+The proposed human-readable range is `<latest-reachable-primary-tag>..HEAD`, but all `git log` and `git diff` commands use the resolved immutable `<FROM_SHA>..HEAD`. Resolve `HEAD` to its full SHA for the confirmation screen and show the tag name, source (`local`, `remote`, or `both`), and peeled SHA. Do not choose an unreachable tag even if its version is higher.
+
+If the remote lookup or an explicit remote-only candidate fetch fails, stop before mutation. Only when neither namespace has a matching tag may the workflow mark this as a first release and propose the repository root commit as the lower bound. If matching tags exist but none is reachable, stop and report the candidates instead of silently treating the repository as a first release. If tags do not match configured package/version parsing, or the latest version is a prerelease, stop and ask the user to resolve the ambiguity; do not guess stable/prerelease policy.
 
 **3. Investigate changes and propose SemVer levels**
 
 For the full range and for every configured component path, inspect commit subjects, names, stats, and relevant full diffs:
 
 ```bash
-git log --oneline --no-merges <from>..HEAD
-git diff --name-status <from>..HEAD -- <paths...>
-git diff <from>..HEAD -- <paths...>
+git log --oneline --no-merges <from_sha>..HEAD
+git diff --name-status <from_sha>..HEAD -- <paths...>
+git diff <from_sha>..HEAD -- <paths...>
 ```
 
 Classify each component as `major`, `minor`, `patch`, or `skip` with concrete commit/path evidence:
