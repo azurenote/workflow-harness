@@ -13,7 +13,7 @@ harness-init = "harness_core.scaffold:main_init"
 harness-update = "harness_core.scaffold:main_update"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "pyyaml>=6.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/harness_core"]

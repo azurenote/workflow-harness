@@ -22,12 +22,20 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 | `project-done` | PR 생성 + 리뷰 상태 전환 |
 | `project-adr` | ADR 문서 작성 |
 | `project-clean` | stale 브랜치/워크트리 정리 |
+| `project-release` | Cargo 변경을 조사해 패키지별 SemVer를 제안하고, 확인 후 단일 release commit과 로컬 annotated tag 생성(publish/push 금지) |
+| `project-release-doc` | 두 릴리즈 지점을 비교해 변경·리스크·배포 체크리스트를 담은 한국어 릴리즈 문서 생성(배포 실행 금지) |
 | `project-iterate` | 리뷰 피드백 반영 반복 |
 | `project-harness-init` | 새 프로젝트에 local harness scaffold 생성 |
 | `project-harness-update` | 기존 프로젝트 local harness를 canonical wrapper로 갱신 |
 | `SKILL-CONFIG.md` | 스킬 공통 설정/규약 |
 
 > 무관 스킬(`code-efficiency`/`fix-build`/`gemini-export` 등 일반 유틸리티)은 이 repo 범위 밖이며 `~/.claude/skills/` 에 그대로 둔다 — `install-skills.sh` 는 `skills/` 에 있는 항목만 심링크한다.
+
+### 릴리즈 흐름 및 migration notice
+
+`$project-release`는 이제 문서 생성이 아니라 로컬 release mutation을 뜻한다. 패키지별 버전 변경을 확인받아 정확히 하나의 commit과 같은 commit을 가리키는 package tag들을 만들며, publish와 push는 하지 않는다. 기존 문서 전용 호출은 `$project-release-doc <package> [<from>..<to>]`으로 이름이 바뀌었다.
+
+권장 순서는 `$project-release`로 버전·commit·tag를 준비한 다음 `$project-release-doc`으로 릴리즈/배포 문서를 만드는 것이다. 후자는 문서와 그 commit 외에는 저장소나 배포 환경을 변경하지 않는다.
 
 ### 설치 / 재배포
 
