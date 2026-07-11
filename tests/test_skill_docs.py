@@ -96,8 +96,8 @@ RELEASE_FRONTMATTER_KEYS = (
 )
 
 
-def test_project_release_skill_contract() -> None:
-    text = read_skill("skills/project-release/SKILL.md")
+def test_project_release_doc_skill_contract() -> None:
+    text = read_skill("skills/project-release-doc/SKILL.md")
 
     # skill skeleton shared with the other workflow skills
     for token in (
@@ -146,8 +146,13 @@ def test_skill_config_defines_release_block_and_forgejo() -> None:
     for token in (
         "release.doc_dir",
         "release.tag_format",
+        "release.primary_component",
+        "release.preflight_paths",
+        "release.preflight_commands",
         ".kind",
         ".paths",
+        ".cargo_package",
+        ".release_with",
         "migrations_globs",
         "config_globs",
         "critical_globs",
@@ -176,7 +181,7 @@ def _parse_flat_frontmatter(block: str) -> dict[str, str]:
 
 
 def test_release_sample_frontmatter_is_parseable() -> None:
-    text = read_skill("skills/project-release/SKILL.md")
+    text = read_skill("skills/project-release-doc/SKILL.md")
     sample = text.split("## Mini Korean Sample", 1)[1]
     fence = sample.split("````markdown\n", 1)[1]  # anchor on the sample fence, not on prose
     block = fence.split("---\n", 2)[1]
@@ -192,3 +197,80 @@ def test_release_sample_frontmatter_is_parseable() -> None:
         assert key in data
     assert str(data["schema"]) == "1"
     assert data["risk_level"] in {"high", "medium", "low"}
+
+
+def test_project_release_preparation_contract() -> None:
+    text = read_skill("skills/project-release/SKILL.md")
+
+    for token in (
+        "## Trigger Conditions",
+        "## Migration Notice",
+        "## Read Settings",
+        "## External-effect Guard",
+        "git status --porcelain",
+        "git merge-base --is-ancestor",
+        "--sort=-v:refname",
+        "cargo metadata --format-version 1",
+        "major",
+        "minor",
+        "patch",
+        "skip",
+        "미확정",
+        "cargo release version",
+        "--no-publish",
+        "--no-push",
+        "--no-commit",
+        "--no-tag",
+        "git commit",
+        "cargo release tag --help",
+        "git tag -a",
+        "RELEASE_SHA",
+        "git reset --hard",
+        "publish: 수행하지 않음",
+        "push: 수행하지 않음",
+        "$project-release-doc",
+    ):
+        assert token in text
+
+    assert "exactly one release commit" in text
+    assert "No confirmation means no mutation" in text
+    assert "Do not delete already-created tags automatically" in text
+    assert "instead of silently switching tools" in text
+
+
+def test_project_release_mixed_level_fixture_is_documented() -> None:
+    text = read_skill("skills/project-release/SKILL.md")
+
+    for token in (
+        "backend-v1.0.2..864b825",
+        "backend: 1.0.2 -> 1.1.0 (minor)",
+        "domain: 1.0.2 -> 1.1.0 (minor)",
+        "entity: 1.0.2 -> 1.1.0 (minor)",
+        "migration: 1.0.2 -> 1.1.0 (minor)",
+        "auth-lambda: 1.0.1 -> 1.0.2 (patch)",
+        "commit_count: 1",
+        "publish: false",
+        "push: false",
+    ):
+        assert token in text
+
+
+def test_readme_distinguishes_release_workflows() -> None:
+    text = read_skill("README.md")
+
+    assert "| `project-release` |" in text
+    assert "| `project-release-doc` |" in text
+    assert "migration notice" in text
+    assert "`$project-release`로 버전·commit·tag" in text
+    assert "`$project-release-doc`으로 릴리즈/배포 문서" in text
+
+
+def test_release_doc_rename_has_distinct_trigger_and_guard() -> None:
+    preparation = read_skill("skills/project-release/SKILL.md")
+    document = read_skill("skills/project-release-doc/SKILL.md")
+
+    assert "name: project-release\n" in preparation
+    assert "name: project-release-doc\n" in document
+    assert "$project-release-doc <package> [<from>..<to>]" in document
+    assert "$project-release <package> [<from>..<to>]" not in document
+    assert "Do not run `cargo release`, version bumps, or tag creation" in document
