@@ -215,7 +215,7 @@ For a **sub-PR (base != default)**, `Closes` does not fire, so the issue remains
 **10. Clean temporary files**
 
 ```bash
-<project_py> clean-temp <issue-id>
+<harness_cli> clean-temp <issue-id>
 ```
 
 **11. Output**

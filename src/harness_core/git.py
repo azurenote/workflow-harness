@@ -158,6 +158,12 @@ def clean_up_stale_branches(
     Worktrees on stale branches are removed with --force before branch
     deletion. Merged branches use `-d` (safe); gone-only branches use `-D`.
 
+    A stale branch whose worktree holds uncommitted changes (any `git status
+    --porcelain` output — modified or untracked) is left completely alone: the
+    worktree is not removed and the branch is not deleted. `worktree remove
+    --force` would destroy that work silently, so it is reported under
+    ``skipped_dirty`` instead of acted on.
+
     Args:
         bases: Base branches to check merged status against.
                Defaults to ["develop", "main"]. Missing bases are skipped.
@@ -169,7 +175,7 @@ def clean_up_stale_branches(
 
     Returns:
         {"removed_worktrees": [...], "deleted_branches": [...],
-         "protected_branches": [...], "warnings": [...]}
+         "skipped_dirty": [...], "protected_branches": [...], "warnings": [...]}
     """
     if bases is None:
         bases = ["develop", "main"]
@@ -217,6 +223,7 @@ def clean_up_stale_branches(
         return {
             "removed_worktrees": [],
             "deleted_branches": [],
+            "skipped_dirty": [],
             "protected_branches": sorted(protected),
             "warnings": [],
         }
@@ -233,13 +240,32 @@ def clean_up_stale_branches(
         elif line.startswith("branch refs/heads/") and current_path:
             worktree_map[line[len("branch refs/heads/"):]] = current_path
 
-    # Remove worktrees before deleting their branches
+    # Remove worktrees before deleting their branches; a worktree with
+    # uncommitted work is skipped whole (worktree kept, branch kept).
     removed_worktrees: list[str] = []
+    skipped_dirty: list[str] = []
     warnings: list[str] = []
     for branch in stale:
         if branch not in worktree_map:
             continue
         path = worktree_map[branch]
+        status = subprocess.run(
+            ["git", "-C", path, "status", "--porcelain"],
+            capture_output=True, text=True,
+        )
+        if status.returncode != 0 or status.stdout.strip():
+            # Uncommitted changes (modified or untracked) — or an inability to
+            # even determine the state (a stale index.lock, a permission error, a
+            # temporarily unavailable mount) — mean `worktree remove --force` could
+            # destroy work without a trace. Fail closed: leave the whole branch
+            # alone and surface it. A non-empty stdout is dirty; a failed check is
+            # treated as dirty too, never as clean.
+            skipped_dirty.append(branch)
+            if status.returncode != 0:
+                warnings.append(
+                    f"status check failed for {path}; skipped to be safe: {status.stderr.strip()}"
+                )
+            continue
         result = subprocess.run(
             ["git", "worktree", "remove", "--force", path],
             capture_output=True, text=True,
@@ -249,9 +275,11 @@ def clean_up_stale_branches(
         else:
             warnings.append(f"Could not remove worktree {path}: {result.stderr.strip()}")
 
-    # Delete local branches
+    # Delete local branches, except those whose dirty worktree we just skipped.
     deleted_branches: list[str] = []
     for branch in sorted(stale):
+        if branch in skipped_dirty:
+            continue
         flag = "-d" if branch in merged_branches else "-D"
         result = subprocess.run(
             ["git", "branch", flag, branch], capture_output=True, text=True
@@ -264,6 +292,7 @@ def clean_up_stale_branches(
     return {
         "removed_worktrees": removed_worktrees,
         "deleted_branches": deleted_branches,
+        "skipped_dirty": sorted(skipped_dirty),
         "protected_branches": sorted(protected),
         "warnings": warnings,
     }

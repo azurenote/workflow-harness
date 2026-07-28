@@ -105,9 +105,7 @@ COMMENT="ADR recorded: \`${ADR_PATH}\`"
 
 # GitHub (harness_enabled: true)
 <harness_cli> add-comment <issue-id> "$COMMENT"
-# GitHub (project.py fallback)
-<project_py> add-comment <issue-id> "$COMMENT"
-# GitHub (gh fallback)
+# GitHub (gh fallback — no project.py layer in between)
 gh issue comment <issue-id> --body "$COMMENT"
 # Jira
 jira issue comment add <ticket-id> "$COMMENT"

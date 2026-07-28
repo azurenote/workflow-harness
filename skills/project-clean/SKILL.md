@@ -26,9 +26,10 @@ Script behavior:
 1. `git fetch --prune` - prune remote-tracking refs.
 2. Collect gone branches (`git branch -vv`) and branches merged into `<base_branch>` (`git branch --merged <base_branch>`).
 3. **Declared base protection**: any integration branch declared as `base_branch` in `.task/plan/plan-<id>.md` frontmatter is excluded from deletion even if it is stale (gone/merged). This is a local scan with no network access and prevents data loss while sub-PRs are open.
-4. Remove worktrees linked to stale branches first with `git worktree remove --force`.
-5. Delete branches: use `-d` for branches confirmed merged, and `-D` for branches that are gone only.
-6. JSON result: `removed_worktrees`, `deleted_branches`, **`protected_branches`** (declared base branches that were protected), and `warnings`. Report `protected_branches` to the user so they can see which integration branches were preserved.
+4. **Dirty-worktree guard**: before removing a stale branch's worktree, check `git -C <path> status --porcelain`. If it has any uncommitted change (modified or untracked), the branch is left completely alone — worktree kept, branch kept — and recorded under `skipped_dirty`. `git worktree remove --force` would destroy that work silently, so it is never run on a dirty tree.
+5. Remove worktrees linked to *clean* stale branches with `git worktree remove --force`.
+6. Delete branches: use `-d` for branches confirmed merged, and `-D` for branches that are gone only. Branches skipped as dirty are not deleted.
+7. JSON result: `removed_worktrees`, `deleted_branches`, **`skipped_dirty`** (stale branches preserved because their worktree had uncommitted work), **`protected_branches`** (declared base branches that were protected), and `warnings`. Report both `skipped_dirty` and `protected_branches` to the user so they see which branches were preserved and why.
 
 When `harness_enabled: false`:
 > Warning: the fallback path does **not** apply declared base protection. If you run the commands below as-is, you may delete an integration branch that another sub-issue uses as its base. Collect the protected set manually before deletion and exclude it:

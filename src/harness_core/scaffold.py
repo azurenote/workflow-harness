@@ -18,7 +18,7 @@ from .preflight import (
 )
 
 
-TEMPLATE_VERSION = "2"
+TEMPLATE_VERSION = "3"
 
 
 @dataclass(frozen=True)
@@ -103,7 +103,11 @@ class TemplateEntry:
 CANONICAL_ENTRIES = (
     TemplateEntry(".claude/skill-config.yaml", "skill-config.yaml.tmpl", True),
     TemplateEntry(".claude/scripts/project.py", "project.py.tmpl", True),
-    TemplateEntry(".claude/scripts/harness_cli.py", "harness_cli.py.tmpl"),
+    # harness_cli.py is project-owned: it composes the core parser with this
+    # project's own commands, so an update must never overwrite it. preserve_existing
+    # makes the e40d5a1 clobbering (a template rewrite dropping project subcommands)
+    # structurally impossible — the file the accident overwrote is no longer managed.
+    TemplateEntry(".claude/scripts/harness_cli.py", "harness_cli.py.tmpl", True),
     TemplateEntry(".claude/scripts/harness/__init__.py", "harness/__init__.py.tmpl"),
     TemplateEntry(".claude/scripts/harness/config.py", "harness/config.py.tmpl"),
     TemplateEntry(".claude/scripts/harness/.manifest.json", "manifest.json.tmpl"),
@@ -205,6 +209,7 @@ def _plan(
         _file_plan(root, entry, rendered[entry.rel_path], backup_name)
         for entry in CANONICAL_ENTRIES
     )
+    warnings.extend(_staleness_warnings(root))
     if apply:
         _apply(root, files, rendered)
     return ScaffoldResult(
@@ -237,6 +242,25 @@ def _file_plan(
         "content differs from canonical template",
         str(backup.relative_to(root)),
     )
+
+
+def _staleness_warnings(root: Path) -> list[str]:
+    """Warn — never fail, never overwrite — when the preserved entry point is stale.
+
+    harness_cli.py is now project-owned (preserve_existing), so updates leave it
+    untouched. A copy that predates the core-parser inversion does not call
+    build_core_parser(); it keeps working but will not pick up newly added core
+    commands. Surface that so a human can hand-migrate, instead of silently
+    clobbering it the way e40d5a1 did.
+    """
+    cli = root / ".claude/scripts/harness_cli.py"
+    if cli.exists() and "build_core_parser" not in cli.read_text():
+        return [
+            "warning: .claude/scripts/harness_cli.py does not call build_core_parser(); "
+            "it predates the core-parser layout. It is preserved (never overwritten) — "
+            "migrate it by hand to pick up new core commands."
+        ]
+    return []
 
 
 def _apply(root: Path, files: Iterable[FilePlan], rendered: dict[str, str]) -> None:

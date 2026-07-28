@@ -171,7 +171,7 @@ Rules:
   ```bash
   git branch -a --list "*feat/issue-<P>-*" "*feat/<P>-*"   # local/remote integration branch candidates
   ```
-  For an already registered sub-issue, `.claude/scripts/project.py get-parent <sub-issue>` can confirm the parent issue (otherwise returns `{"parent": null}`).
+  For an already registered sub-issue, `.claude/scripts/harness_cli.py get-parent <sub-issue>` can confirm the parent issue (otherwise returns `{"parent": null}`).
 
 **Korean Output Regression Check**
 

@@ -124,10 +124,15 @@ cmux rename-tab "task #<id>" 2>/dev/null || true
 **3. Issue status -> In Progress**
 
 ```bash
-<harness_cli> add-progress "<node-id>" --issue-number <id> --branch-name "<branch-name>"
+<harness_cli> add-progress "<node-id>"
 # fallback (GitHub): gh issue edit <id> --add-label "in-progress" 2>/dev/null || true
 # fallback (Jira):   jira issue move <ticket-id> "In Progress"
 ```
+
+`add-progress` transitions the issue status only; it does not post a comment.
+(The optional `--issue-number`/`--branch-name` flags are still accepted for
+backward compatibility but are no-ops — no branch-notification comment is
+posted.)
 
 **4. ADR (conditional)**
 

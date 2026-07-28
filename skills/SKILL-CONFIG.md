@@ -14,8 +14,8 @@
 | `base_branch` | `main` | **프로젝트 기본** PR/머지 대상 브랜치. 각 프로젝트가 재정의(enseed-trader=`develop`, cosmos-forge=`main`). 작업별 override 는 플랜 frontmatter 가 우선 — 아래 "base branch 우선순위" 참조 |
 | `adr_dir` | `docs/adr` | ADR 문서 저장 경로 |
 | `harness_enabled` | `false` | `true`면 harness_cli.py 사용 |
-| `harness_cli` | `.claude/scripts/harness_cli.py` | harness CLI 경로 |
-| `project_py` | `.claude/scripts/project.py` | project 스크립트 경로 |
+| `harness_cli` | `.claude/scripts/harness_cli.py` | 프로젝트 **단일 진입점**. 코어 커맨드(`harness_core.cli`)와 이 프로젝트의 트래커 커맨드를 한 파서로 합쳐 노출한다. 모든 로컬/트래커 커맨드의 정본 주소 |
+| `project_py` | `.claude/scripts/project.py` | **크로스 레포 호출자를 위한 하위호환 진입점**(예: `cross-plan` 이 다른 레포의 `project.py` 를 리터럴 경로로 호출). 같은 레포 안에서는 항상 `harness_cli` 를 쓴다 — `project.py` 는 in-repo fallback 계층이 아니다 |
 | `github_repo` | (gh CLI 자동 감지) | `owner/repo` 형식 |
 | `jira_project` | — | Jira 프로젝트 키 (예: `SYN`) |
 | `forgejo_host` | — | Forgejo 인스턴스 호스트 (예: `forge.example.internal`) |
@@ -49,6 +49,12 @@ issue_tracker = forgejo → fj CLI (forgejo-cli 필요) — 조회: fj -H <forge
 harness_enabled = true  → harness_cli 경로의 스크립트 우선 사용, 실패 시 gh CLI fallback
 harness_enabled = false → gh CLI / jira CLI 직접 사용
 ```
+
+`harness_cli` 는 코어 커맨드와 프로젝트 트래커 커맨드(`get-issue`·`create-pr`·
+`add-comment`·`clean-temp` 등)를 모두 노출하는 **단일 진입점**이다. 따라서 fallback
+사슬은 `harness_cli → gh` 하나뿐이며 **중간에 `project.py` 계층은 없다**. `project.py`
+는 같은 레포 안에서 harness_cli 를 우회하는 fallback 이 아니라, `cross-plan` 처럼 **다른
+레포의 스크립트를 리터럴 경로로 호출**하는 크로스 레포 진입점으로만 남는다.
 
 ## Review Profile 공통 정책
 

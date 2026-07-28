@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
-"""Project-specific remote tracker operations.
+"""Project-specific tracker operations + backward-compatible entry point.
 
-Generated placeholder. Keep repository-specific Forgejo/Jira/GitHub operations
-here when a project needs a richer wrapper than the global skills provide.
+Cross-repo callers invoke `.claude/scripts/project.py <command>` by literal path
+(the cross-plan skill does this against a sibling repo), so this name is a
+contract. This starter forwards to the project's `harness_cli` so a single
+command tree stays authoritative.
+
+Define this project's tracker commands inside `register(sub)`; `harness_cli`'s
+`register_project()` calls it, so the same definitions serve both entry points.
 """
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+# Make harness_cli / harness importable when invoked directly by path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def register(sub) -> None:
+    """Register this project's tracker commands. Empty until the project adds them."""
 
 
 def main() -> int:
-    print(
-        "project.py is reserved for project-specific tracker operations; "
-        "use .claude/scripts/harness_cli.py for local harness commands.",
-        file=sys.stderr,
-    )
-    return 2
+    import harness_cli
+
+    return harness_cli.main()
 
 
 if __name__ == "__main__":

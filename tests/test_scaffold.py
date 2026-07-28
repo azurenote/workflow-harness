@@ -164,9 +164,11 @@ def test_update_replaces_legacy_wrapper_with_backup(tmp_path):
 
 
 def test_dry_run_and_apply_share_change_plan(tmp_path):
-    harness_cli = tmp_path / ".claude/scripts/harness_cli.py"
-    harness_cli.parent.mkdir(parents=True)
-    harness_cli.write_text("# old\n")
+    # Use config.py (a managed file) to exercise the update path; harness_cli.py
+    # is now preserve_existing, so it would report "skip" rather than "update".
+    legacy = tmp_path / ".claude/scripts/harness/config.py"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("# old\n")
 
     dry = plan_update(
         tmp_path,
@@ -184,7 +186,7 @@ def test_dry_run_and_apply_share_change_plan(tmp_path):
     )
 
     assert _plan_shape(dry) == _plan_shape(applied)
-    assert ".claude/scripts/harness_cli.py" in applied.by_action("update")
+    assert ".claude/scripts/harness/config.py" in applied.by_action("update")
 
 
 def test_templates_are_importlib_resources():
@@ -194,7 +196,83 @@ def test_templates_are_importlib_resources():
         .read_text()
     )
 
-    assert "find-draft-plan" in text
+    # The starter composes the core parser rather than listing commands inline.
+    assert "build_core_parser" in text
+    assert "register_project" in text
+
+
+class TestHarnessCliOwnership:
+    """harness_cli.py is project-owned: update preserves it, e40d5a1 cannot recur."""
+
+    def _install_cli(self, root: Path, body: str) -> Path:
+        cli = root / ".claude/scripts/harness_cli.py"
+        cli.parent.mkdir(parents=True, exist_ok=True)
+        cli.write_text(body)
+        return cli
+
+    def test_update_skips_and_preserves_hand_written_cli(self, tmp_path):
+        # A migrated CLI that already composes the core parser must be left byte-
+        # for-byte intact and raise no staleness warning.
+        body = (
+            "from harness_core.cli import build_core_parser, dispatch\n"
+            "def build():\n"
+            "    return build_core_parser()\n"
+        )
+        cli = self._install_cli(tmp_path, body)
+
+        result = plan_update(tmp_path, context=_context(), apply=True,
+                             preflight=_preflight(), backup_id="fixed")
+
+        assert ".claude/scripts/harness_cli.py" in result.by_action("skip")
+        assert cli.read_text() == body  # untouched
+        assert not any("harness_cli.py" in w for w in result.warnings)
+
+    def test_update_never_clobbers_legacy_cli_with_project_subcommands(self, tmp_path):
+        # THE e40d5a1 REGRESSION TEST. A 351-line-style CLI carrying project
+        # subcommands (get-issue, create-pr, adr-search...) that predates the
+        # inversion must survive an update with ZERO loss — only a warning.
+        legacy = (
+            '#!/usr/bin/env python3\n'
+            '"""Harness CLI — single entry point."""\n'
+            'def build_parser():\n'
+            '    # get-issue, create-pr, add-progress, adr-search, clean-up ...\n'
+            '    ...\n'
+        )
+        cli = self._install_cli(tmp_path, legacy)
+
+        result = plan_update(tmp_path, context=_context(), apply=True,
+                             preflight=_preflight(), backup_id="fixed")
+
+        assert ".claude/scripts/harness_cli.py" in result.by_action("skip")
+        assert cli.read_text() == legacy  # not one byte lost
+        # It lacks build_core_parser(), so surface a migrate-by-hand warning —
+        # a warning, never an overwrite.
+        assert any("build_core_parser" in w and w.startswith("warning:")
+                   for w in result.warnings)
+        assert result.ok  # a staleness warning is not an error
+
+    def test_init_scaffolds_working_starter_cli(self, tmp_path):
+        # New projects still get a functional entry point exposing the core surface.
+        result = plan_init(tmp_path, context=_context(), apply=True,
+                           preflight=_preflight(), backup_id="fixed")
+        cli = tmp_path / ".claude/scripts/harness_cli.py"
+        assert cli.exists()
+        assert "build_core_parser" in cli.read_text()
+
+        env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+        proc = subprocess.run(
+            [sys.executable, str(cli), "--help"],
+            cwd=tmp_path, env=env, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0
+        for command in ("find-draft-plan", "plan-file", "push-branch", "clean-up"):
+            assert command in proc.stdout
+
+
+def test_template_version_bumped_past_two():
+    # The manifest drift (installed "1"/"2" vs current) is only healed if the
+    # canonical version advances; pin the forward move.
+    assert int(scaffold.TEMPLATE_VERSION) >= 3
 
 
 def test_preflight_uses_harness_project_root_not_cwd(tmp_path, monkeypatch):

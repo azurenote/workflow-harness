@@ -318,6 +318,99 @@ class TestCleanUpStaleBranchesGuard:
         assert not branch_exists("feat/integration")
 
 
+class TestCleanUpDirtyWorktreeGuard:
+    """A stale branch whose worktree has uncommitted work must survive intact.
+
+    `worktree remove --force` deletes the working tree unconditionally, so
+    without this guard `/clean` silently destroys in-progress work — the exact
+    hazard a human blocked by hand in a prior session.
+    """
+
+    def test_dirty_worktree_is_skipped_and_preserved(self, tmp_path, chdir):
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/dirty")  # stale (merged into develop)
+        wt = tmp_path / "wt-dirty"
+        _git("worktree", "add", str(wt), "feat/dirty", cwd=repo)
+        precious = wt / "uncommitted.txt"
+        precious.write_text("work in progress")  # untracked -> dirty
+
+        chdir(repo)
+        result = clean_up_stale_branches()
+
+        assert "feat/dirty" in result["skipped_dirty"]
+        assert "feat/dirty" not in result["deleted_branches"]
+        assert str(wt) not in result["removed_worktrees"]
+        # The whole worktree and its uncommitted file survive.
+        assert wt.exists()
+        assert precious.read_text() == "work in progress"
+        assert branch_exists("feat/dirty")
+
+    def test_dirty_from_tracked_modification_is_skipped(self, tmp_path, chdir):
+        # Not only untracked files — a modified tracked file counts as dirty too.
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/dirty")
+        wt = tmp_path / "wt-mod"
+        _git("worktree", "add", str(wt), "feat/dirty", cwd=repo)
+        (wt / "f").write_text("mutated")  # 'f' is the tracked seed file
+
+        chdir(repo)
+        result = clean_up_stale_branches()
+
+        assert "feat/dirty" in result["skipped_dirty"]
+        assert wt.exists()
+        assert branch_exists("feat/dirty")
+
+    def test_clean_worktree_is_still_removed(self, tmp_path, chdir):
+        # The guard must not over-reach: a clean stale worktree is removed as before.
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/clean")
+        wt = tmp_path / "wt-clean"
+        _git("worktree", "add", str(wt), "feat/clean", cwd=repo)
+
+        chdir(repo)
+        result = clean_up_stale_branches()
+
+        assert result["skipped_dirty"] == []
+        assert str(wt) in result["removed_worktrees"]
+        assert not wt.exists()
+        assert "feat/clean" in result["deleted_branches"]
+        assert not branch_exists("feat/clean")
+
+    def test_status_check_failure_fails_closed(self, tmp_path, chdir, monkeypatch):
+        # If `git status` itself errors (a stale index.lock, permission, an
+        # unavailable mount), it exits non-zero with EMPTY stdout. Treating that
+        # as "clean" would force-remove a worktree that still holds work. The
+        # guard must fail closed: unknown state == dirty, never removed.
+        import harness_core.git as hc_git
+
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/locked")
+        wt = tmp_path / "wt-locked"
+        _git("worktree", "add", str(wt), "feat/locked", cwd=repo)
+        precious = wt / "wip.txt"
+        precious.write_text("uncommitted work")
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "-C", str(wt)] and "status" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 128, stdout="", stderr="fatal: index.lock exists"
+                )
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(hc_git.subprocess, "run", fake_run)
+
+        chdir(repo)
+        result = clean_up_stale_branches()
+
+        assert "feat/locked" in result["skipped_dirty"]
+        assert wt.exists()
+        assert precious.read_text() == "uncommitted work"  # NOT force-removed
+        assert branch_exists("feat/locked")
+        assert any("status check failed" in warning for warning in result["warnings"])
+
+
 class TestMainWorktreeRoot:
     def test_main_worktree_root_from_main(self, tmp_path, chdir, _no_cache):
         repo = tmp_path / "repo"

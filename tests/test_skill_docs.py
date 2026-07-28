@@ -74,6 +74,47 @@ def test_project_done_reports_review_profile() -> None:
     assert "Execution:" in text
 
 
+def test_skill_config_defines_single_cli_address() -> None:
+    text = read_skill("skills/SKILL-CONFIG.md")
+
+    # harness_cli is the single entry point; project_py is documented only as the
+    # cross-repo backward-compat entry, never an in-repo fallback layer.
+    assert "단일 진입점" in text
+    assert "크로스 레포" in text
+    # The fallback chain is harness_cli -> gh, with no project.py layer between.
+    assert "project.py` 계층은 없다" in text
+
+
+def test_no_skill_invokes_project_py_as_a_command() -> None:
+    # Every in-repo command converges on <harness_cli>. A `<project_py> <cmd>`
+    # invocation would reintroduce the split addressing this plan removes.
+    offenders: list[str] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            if "<project_py>" in line:
+                offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {line.strip()}")
+    assert not offenders, "in-repo commands must use <harness_cli>:\n" + "\n".join(offenders)
+
+
+def test_project_done_clean_temp_goes_through_harness_cli() -> None:
+    text = read_skill("skills/project-done/SKILL.md")
+    assert "<harness_cli> clean-temp" in text
+    assert "<project_py> clean-temp" not in text
+
+
+def test_project_start_add_progress_is_silent() -> None:
+    text = read_skill("skills/project-start/SKILL.md")
+    # The command line carries no comment flags; the prose documents them as no-ops.
+    assert '<harness_cli> add-progress "<node-id>"\n' in text
+    assert "does not post a comment" in text
+
+
+def test_project_clean_documents_dirty_worktree_guard() -> None:
+    text = read_skill("skills/project-clean/SKILL.md")
+    assert "skipped_dirty" in text
+    assert "Dirty-worktree guard" in text
+
+
 RELEASE_DOC_SECTIONS = (
     "## Release Summary",
     "## Change Inventory",

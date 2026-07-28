@@ -92,7 +92,7 @@ Branch by `issue_tracker` value:
 When `harness_enabled: true`:
 ```bash
 DRAFT_PLAN="<draft-plan-path>"
-<project_py> create-issue \
+<harness_cli> create-issue \
   --title "<plan title>" \
   --body-file "$DRAFT_PLAN" \
   --type "<Bug|Feature|Task>" \
@@ -140,7 +140,7 @@ Read the ticket ID from output, for example `SYN-42`.
 | 8+ | 10+ | XL |
 
 ```bash
-<project_py> add-backlog "<ISSUE_NODE_ID>" --priority <P0|P1|P2> --size <XS|S|M|L|XL>
+<harness_cli> add-backlog "<ISSUE_NODE_ID>" --priority <P0|P1|P2> --size <XS|S|M|L|XL>
 ```
 
 **7. Rename File**
