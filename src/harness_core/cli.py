@@ -138,16 +138,25 @@ def _push_branch(args: argparse.Namespace) -> int:
     return 0
 
 
-def _clean_up(_args: argparse.Namespace) -> int:
-    print_json(clean_up_stale_branches(plan_dir=_plan_dir()))
+def _clean_up(args: argparse.Namespace) -> int:
+    print_json(
+        clean_up_stale_branches(bases=args.clean_up_bases, plan_dir=_plan_dir())
+    )
     return 0
 
 
 # ── Registration ─────────────────────────────────────────────────────────────
 
 
-def register_core(sub: _GuardedSubparsers) -> None:
-    """Register the core subcommands onto a (guarded) subparsers action."""
+def register_core(
+    sub: _GuardedSubparsers, *, clean_up_bases: list[str] | None = None
+) -> None:
+    """Register the core subcommands onto a (guarded) subparsers action.
+
+    ``clean_up_bases`` rides on the subparser via ``set_defaults`` rather than
+    module state, so two parsers built in the same process (tests do this) cannot
+    read each other's value.
+    """
     find = sub.add_parser("find-draft-plan", help="Find the unique draft plan file")
     find.set_defaults(func=_find_draft_plan)
 
@@ -184,19 +193,30 @@ def register_core(sub: _GuardedSubparsers) -> None:
     push.set_defaults(func=_push_branch)
 
     clean = sub.add_parser("clean-up", help="Delete stale local branches and their worktrees")
-    clean.set_defaults(func=_clean_up)
+    clean.set_defaults(func=_clean_up, clean_up_bases=clean_up_bases)
 
 
-def build_core_parser() -> argparse.ArgumentParser:
+def build_core_parser(
+    *, clean_up_bases: list[str] | None = None
+) -> argparse.ArgumentParser:
     """Return an ArgumentParser preloaded with the core subcommands.
 
     The returned parser's subparsers action is guarded against duplicate names.
     Retrieve it with :func:`subparsers` to register additional (project)
     commands onto the same tree.
+
+    Args:
+        clean_up_bases: Base branches ``clean-up`` measures staleness against and
+            refuses to delete. The core is project-agnostic and cannot read a
+            project's ``skill-config.yaml``, so a project whose base branch is
+            neither ``develop`` nor ``main`` must inject it here. Omitting it
+            leaves that branch outside the protected set — and a base branch that
+            is not protected is a branch ``clean-up`` may delete.
+            Defaults to ``["develop", "main"]``.
     """
     parser = argparse.ArgumentParser(prog="harness_cli.py", description="Workflow harness CLI")
     action = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
-    register_core(_GuardedSubparsers(action))
+    register_core(_GuardedSubparsers(action), clean_up_bases=clean_up_bases)
     return parser
 
 

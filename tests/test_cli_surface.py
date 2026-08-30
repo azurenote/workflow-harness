@@ -166,3 +166,58 @@ def test_rename_plan_reroots_relative_path_under_main_worktree(tmp_path, monkeyp
 
     assert (main_root / ".task" / "plan" / "plan-42.md").exists()
     assert not draft.exists()
+
+
+class TestCleanUpBaseInjection:
+    """`clean-up` must measure staleness against the *project's* base branch.
+
+    The core cannot read a project's skill-config.yaml, so the base set is
+    injected at composition time. Losing that injection is silent for a project
+    whose base is already `develop`, and destructive for one whose base is not:
+    an unprotected base branch is a branch clean-up may delete.
+    """
+
+    def test_injected_bases_reach_the_handler(self, monkeypatch, capsys) -> None:
+        from harness_core import cli
+
+        seen: dict = {}
+        monkeypatch.setattr(
+            cli, "clean_up_stale_branches",
+            lambda bases=None, plan_dir=None: seen.setdefault("bases", bases) or {},
+        )
+        parser = build_core_parser(clean_up_bases=["develop", "main", "master"])
+        dispatch(parser, ["clean-up"])
+        capsys.readouterr()
+
+        assert seen["bases"] == ["develop", "main", "master"]
+
+    def test_default_is_none_so_the_core_default_applies(self, monkeypatch, capsys) -> None:
+        from harness_core import cli
+
+        seen: dict = {}
+        monkeypatch.setattr(
+            cli, "clean_up_stale_branches",
+            lambda bases=None, plan_dir=None: seen.setdefault("bases", bases) or {},
+        )
+        dispatch(build_core_parser(), ["clean-up"])
+        capsys.readouterr()
+
+        assert seen["bases"] is None
+
+    def test_two_parsers_do_not_share_injected_bases(self, monkeypatch, capsys) -> None:
+        # Module-level state would let one parser read another's value; the bases
+        # ride on the subparser instead. Tests build several parsers per process.
+        from harness_core import cli
+
+        seen: list = []
+        monkeypatch.setattr(
+            cli, "clean_up_stale_branches",
+            lambda bases=None, plan_dir=None: seen.append(bases) or {},
+        )
+        first = build_core_parser(clean_up_bases=["develop"])
+        second = build_core_parser(clean_up_bases=["master"])
+        dispatch(first, ["clean-up"])
+        dispatch(second, ["clean-up"])
+        capsys.readouterr()
+
+        assert seen == [["develop"], ["master"]]

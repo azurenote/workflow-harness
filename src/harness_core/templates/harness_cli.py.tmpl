@@ -20,6 +20,7 @@ from pathlib import Path
 # script is invoked — direct path, `python -m`, or under pytest.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from harness.config import BASE_BRANCH  # noqa: E402
 from harness_core.cli import build_core_parser, dispatch, subparsers  # noqa: E402
 
 
@@ -39,8 +40,13 @@ def register_project(sub) -> None:
 
 
 def build():
-    """Build the full parser: core commands plus this project's commands."""
-    parser = build_core_parser()
+    """Build the full parser: core commands plus this project's commands.
+
+    `clean_up_bases` carries this project's declared base branch into the core's
+    `clean-up`. The core cannot read skill-config.yaml, and a base branch it does
+    not know about is one it does not protect from deletion.
+    """
+    parser = build_core_parser(clean_up_bases=sorted({BASE_BRANCH, "develop", "main"}))
     register_project(subparsers(parser))
     return parser
 
