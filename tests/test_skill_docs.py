@@ -14,6 +14,20 @@ def read_skill(path: str) -> str:
 
 
 
+# Names, hosts and addresses that belong to the consuming organization rather
+# than to this skillset. They may appear in a project's own skill-config.yaml,
+# never in the shared tree or the README.
+INTERNAL_TOKENS = (
+    "enseed-trader",
+    "enseed-trading-dev",
+    "quantlab-front",
+    "quantlab-site",
+    "cosmos-forge",
+    "forge.lab.internal",
+    "azurenote",
+)
+
+
 # --------------------------------------------------------------------------
 # Anchoring helpers
 #
@@ -918,22 +932,26 @@ def test_hooks_reference_declares_pre_commit_failure_policy() -> None:
     assert "어떤 언어의 포맷 명령도 넣지 않는다" in text
 
 
-def test_frontend_project_coordinates_are_current() -> None:
-    """`cosmos-forge` has had no commit since 2026-06-03; the FE canon is quantlab-front."""
-    stale: list[str] = []
-    for md in sorted((ROOT / "skills").rglob("*.md")):
-        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
-            if "cosmos-forge" in line:
-                stale.append(f"{md.relative_to(ROOT)}:{lineno}")
-    assert not stale, "stale FE coordinates:\n" + "\n".join(stale)
+def test_readme_names_no_consumer_project() -> None:
+    """This skillset is meant to be published; the README is its front door.
 
+    An earlier revision put the FE repo's rename date and a dormant repo's name
+    in the README as a note for teammates. That is internal coordinate data, and
+    a public README is the wrong place for it — the shared layer already refuses
+    to know which projects consume it (see the guard below), so the README must
+    not reintroduce that knowledge in prose.
+    """
     readme = read_skill("README.md")
-    assert "quantlab-front" in readme
-    # README keeps exactly one mention: the dormancy warning, which Task 4's
-    # implementation contract requires so the next reader is not misled.
-    assert readme.count("cosmos-forge") == 1
-    assert "휴면" in readme
-    assert "AGENTS.md` 도 stale" in readme
+
+    leaked: list[str] = []
+    for lineno, line in enumerate(readme.splitlines(), 1):
+        for token in INTERNAL_TOKENS:
+            if token in line:
+                leaked.append(f"README.md:{lineno}: {token}")
+    assert not leaked, "internal project information in a public README:\n" + "\n".join(leaked)
+
+    # The replacement states the principle instead of the instances.
+    assert "소비 프로젝트의 이름·경로·브랜치 같은 상수는 이 저장소에 두지 않는다" in readme
 
 
 def test_config_reading_is_described_as_an_action_not_a_tool() -> None:
@@ -991,11 +1009,10 @@ def test_shared_layer_names_no_consumer_project_constant() -> None:
     both new reference files state — 프로젝트 상수는 skill-config.yaml 에만 —
     has to hold in the tree that states it.
     """
-    consumers = ("enseed-trader", "quantlab-front", "cosmos-forge", "quantlab-site")
     offenders: list[str] = []
     for md in sorted((ROOT / "skills").rglob("*.md")):
         for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
-            for name in consumers:
+            for name in INTERNAL_TOKENS:
                 if name in line:
                     offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {name}")
     assert not offenders, (
@@ -1015,4 +1032,46 @@ def test_shared_layer_hardcodes_no_base_branch_name() -> None:
                     offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {literal}")
     assert not offenders, (
         "a literal base branch name is pinned in the shared layer:\n" + "\n".join(offenders)
+    )
+
+
+def test_published_surface_names_no_consumer_project() -> None:
+    """One guard over everything this repo ships.
+
+    The skillset is meant to be published, so the consuming organization's repo
+    names, hosts and addresses must not travel with it. Two files are excluded
+    on purpose:
+
+    - `.claude/skill-config.yaml` is this repo's *own* project config. Naming its
+      tracker there is the mechanism working as designed — that file is what
+      every consumer replaces with their own.
+    - `docs/handoff/` records work handed between sessions and cites the issues
+      it came from. Whether that history ships is a publishing decision, not a
+      contract this test can make.
+    """
+    excluded = {
+        Path(".claude/skill-config.yaml"),
+        Path("docs/handoff"),
+        Path("tests/test_skill_docs.py"),  # the guard has to name what it blocks
+    }
+
+    def is_excluded(rel: Path) -> bool:
+        return any(rel == e or e in rel.parents for e in excluded)
+
+    leaked: list[str] = []
+    for pattern in ("*.md", "*.py", "*.yaml", "*.yml", "*.sh", "*.toml"):
+        for f in sorted(ROOT.rglob(pattern)):
+            rel = f.relative_to(ROOT)
+            if any(part in {".git", ".task", ".venv", ".claude"} for part in rel.parts):
+                if rel != Path(".claude/skill-config.yaml"):
+                    continue
+            if is_excluded(rel):
+                continue
+            for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                for token in INTERNAL_TOKENS:
+                    if token in line:
+                        leaked.append(f"{rel}:{lineno}: {token}")
+
+    assert not leaked, (
+        "consumer-organization names in the published surface:\n" + "\n".join(leaked)
     )

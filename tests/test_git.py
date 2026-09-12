@@ -27,9 +27,9 @@ class TestDeriveBranchName:
 
     def test_special_characters_stripped(self):
         result = derive_branch_name(
-            153, "Harness Architecture Redesign for enseed-trader Workflow"
+            153, "Harness Architecture Redesign for Downstream Workflows"
         )
-        assert result == "feat/issue-153-harness-architecture-redesign-for-enseed-trader-wo"
+        assert result == "feat/issue-153-harness-architecture-redesign-for-downstream-workf"
 
     def test_fix_title(self):
         result = derive_branch_name(
