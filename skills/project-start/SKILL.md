@@ -180,29 +180,42 @@ When deciding that work is complete, read `## Review Profile` from the plan firs
 
 Profile resolution rules:
 
-- `full`: run adversarial review from architect, implementer, and test engineer viewpoints.
+- `full`: run adversarial review from every role declared in `review_guidelines`, or from the default roles below when the project declares none.
 - `docs-light`: run a documentation-only review pass. However, if changed files include code, tests, build, CI, dependencies, runtime config, or execution artifacts, escalate to `full`.
 - `auto`: resolve to `docs-light` only when changed files and scope are limited to Markdown/MDX, docs/wiki/content paths, or static documentation assets. Resolve to `full` for any code-impacting change or uncertainty.
 
-`full` review viewpoints:
+**8-A. Load review guidelines (`full` only)**
+
+Read `review_guidelines` from `.claude/skill-config.yaml` before dispatching any reviewer. See "리뷰 가이드라인 주입" in `~/.claude/skills/SKILL-CONFIG.md` for the schema.
+
+- Each role reads `common` plus its own `docs` **before** reviewing. Reviewers read the paths; never copy a summary of them into the prompt, the plan, or this skill — a copy diverges from the source.
+- Pass each role's `focus` string through **verbatim**. Do not parse it, split it, or act on what it appears to reference. Those strings are project constants; interpreting them makes this shared skill language-specific.
+- Iterate the roles the project declared. Do not hardcode role names. When `review_guidelines` is absent or declares no roles, degrade to the default roles below.
+- A declared path that does not exist is a **warning, not a stop**: skip it, continue the review, and report the skipped path. A silently dropped guideline turns an ungrounded review into one that reports as grounded.
+
+Default roles, used when the project declares no `focus` for them:
 
 - **Architect**: architecture fit, consistency with existing patterns, scope compliance
 - **Implementer**: logic bugs, security, edge cases
-- **Test engineer**: missing tests, DoD satisfaction
+- **Test engineer**: missing tests, DoD satisfaction, and **whether each guard was verified by mutation**
 
-Codex execution rules:
+The mutation duty is not optional and is not removed by a project override. A passing test is not evidence that a guard works. Break the thing the guard protects and confirm the guard actually goes red; only then is it satisfied. Record the mutation you performed, not the fact that the suite is green.
 
-- If mode is `full` and subagent tools are allowed, delegate review in parallel to three independent subagents.
-- Do not run `codex`, `claude`, or other LLM CLIs through shell commands to create subagents. That path repeatedly fails on sandbox permissions.
-- If no subagent tool is available or policy disallows it, do not stop; the main agent performs the three viewpoints directly and separately.
+**8-B. Choose an execution path (`full` only)**
 
-Claude Code execution rules:
+Review paths, in priority order. Take the first one available, and close the chain — the last entry always applies.
 
-- If mode is `full` and the `Agent` tool is available, delegate review in parallel to three independent subagents.
-- Do not run `codex`, `claude`, or other LLM CLIs through the shell. Same principle as Codex.
-- When proceeding without subagents, the main agent performs the three viewpoints directly and separately.
+1. A first-class review tool provided by the host (see `skills/dependencies.yaml` for what this skillset declares and what each absence costs). Give it the role's guideline paths and `focus`.
+2. Independent subagents, one per role, dispatched in parallel through the host's subagent mechanism.
+3. The main agent performs each role directly, as separate passes, one role at a time.
 
-`docs-light` review checklist:
+Rules that hold on every path:
+
+- Never spawn an LLM CLI (`codex`, `claude`, …) through the shell to create a reviewer. That path fails on sandbox permissions and is not a fallback.
+- Availability is two questions, not one: a tool can be installed and still be unreachable from the host you are running under. If the declared tool does not actually respond, move down the chain and say so — do not report a path you did not use.
+- Roles stay separate on every path. Collapsing three viewpoints into one call is not a cheaper review; it is a different, weaker one.
+
+**8-C. `docs-light` review checklist**
 
 - Can a reader understand the intent and procedure from the document alone?
 - Do links, paths, commands, and file names match the current repo?
@@ -210,4 +223,5 @@ Claude Code execution rules:
 - Does it preserve LLM wiki/docs-as-code structure contracts such as index, frontmatter, tags, and sidebar?
 
 Each review should output findings first, grounded in file/line evidence. Collect feedback, apply fixes immediately, then rerun needed validation.
-The final report must summarize `review profile`, resolved mode, rationale, review execution method (`subagents`, `main-agent fallback`, `docs-light`), and review findings that were addressed.
+
+The final report must state `review profile`, resolved mode, rationale, which execution path from 8-B was used and why, **the guideline paths actually read** (and any skipped as missing), and the findings that were addressed.

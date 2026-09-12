@@ -49,10 +49,59 @@ def test_project_start_uses_adaptive_review() -> None:
 
     assert "**8. Adaptive Review**" in text
     assert "Profile resolution rules" in text
-    assert "`full` review viewpoints" in text
     assert "`docs-light` review checklist" in text
     assert "review profile" in text
     assert "code, tests, build, CI, dependencies, runtime config" in text
+
+
+def test_project_start_review_loads_project_guidelines() -> None:
+    """The layer lost in the move to shared skills: per-role review grounding.
+
+    Before the move, each reviewer was handed specific project guideline
+    documents and specific sections to look at. The shared skill had no way to
+    say that. `review_guidelines` is that way back.
+    """
+    text = read_skill("skills/project-start/SKILL.md")
+
+    assert "review_guidelines" in text
+    assert "`.claude/skill-config.yaml`" in text
+    # Guidelines are read, never summarized into a copy that drifts.
+    assert "never copy a summary" in text
+    # `focus` is passed through, not interpreted — that is what keeps the skill neutral.
+    assert "verbatim" in text
+    assert "Do not parse it" in text
+    # Roles come from the project, not from this file.
+    assert "Do not hardcode role names" in text
+    # A missing path degrades loudly; it never silently drops.
+    assert "warning, not a stop" in text
+    # The report must carry the evidence that the delegation actually closed.
+    assert "guideline paths actually read" in text
+
+
+def test_project_start_review_requires_mutation_evidence() -> None:
+    text = read_skill("skills/project-start/SKILL.md")
+
+    assert "verified by mutation" in text
+    assert "A passing test is not evidence that a guard works" in text
+    # A project override must not be able to drop the duty.
+    assert "not removed by a project override" in text
+
+
+def test_project_start_review_path_chain_is_closed() -> None:
+    """A priority chain whose last entry is conditional is not a fallback."""
+    text = read_skill("skills/project-start/SKILL.md")
+
+    assert "**8-B. Choose an execution path" in text
+    assert "the last entry always applies" in text
+    assert "The main agent performs each role directly" in text
+    # Named tools may come and go; the procedure must not depend on one existing.
+    assert "skills/dependencies.yaml" in text
+    # Installed is not the same as reachable.
+    assert "two questions, not one" in text
+    # Never shell out to another LLM CLI to get a reviewer.
+    assert "Never spawn an LLM CLI" in text
+    # Roles stay separate on every path, including the fallback.
+    assert "Roles stay separate on every path" in text
 
 
 def test_project_iterate_delegates_to_review_profile() -> None:
@@ -72,6 +121,51 @@ def test_project_done_reports_review_profile() -> None:
     assert "Review Profile:" in text
     assert "Resolved Mode:" in text
     assert "Execution:" in text
+
+
+def test_project_done_records_guidelines_actually_read() -> None:
+    """The report must carry proof the review was grounded, not a claim that it was."""
+    text = read_skill("skills/project-done/SKILL.md")
+
+    assert "Guidelines Read:" in text
+    assert "Guidelines Skipped:" in text
+    assert "guideline paths that were actually read" in text
+    # The execution enum has to be able to express the first-class-tool path.
+    assert "`<review-tool | subagents | main-agent fallback | docs-light | not reported>`" in text
+
+
+def test_project_plan_review_loads_project_guidelines() -> None:
+    text = read_skill("skills/project-plan/SKILL.md")
+
+    assert "review_guidelines" in text
+    assert "verbatim and never parsed" in text
+    # A plan review checks executability, not code that does not exist yet.
+    assert "whether each DoD item could actually fail" in text
+    # Same closed chain as project-start; no second, divergent copy of the rules.
+    assert "project-start` §8-B" in text
+
+
+def test_skill_config_defines_review_guidelines_injection() -> None:
+    text = read_skill("skills/SKILL-CONFIG.md")
+
+    assert "## 리뷰 가이드라인 주입 (`review_guidelines`)" in text
+    assert "| `review_guidelines` |" in text
+
+    # The schema the skills read.
+    for token in ("common:", "roles:", "docs:", "focus:"):
+        assert token in text
+
+    # Neutrality: focus is transported, never interpreted; roles are not fixed.
+    assert "`focus` 를 파싱하지 말 것" in text
+    assert "역할 이름을 고정하지 말 것" in text
+    # Degradation is loud and never skips the review.
+    assert "경고 후 건너뛴다" in text
+    assert "리뷰를 건너뛰지 않는다" in text
+    # The mutation duty survives a project override.
+    assert "가드가 변이로 검증됐는지" in text
+    # AGENTS.md holds a pointer, never a copy.
+    assert "AGENTS.md" in text
+    assert "내용을 복제하지 않는다" in text
 
 
 def test_skill_config_defines_single_cli_address() -> None:

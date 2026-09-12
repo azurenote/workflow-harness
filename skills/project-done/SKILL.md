@@ -64,7 +64,8 @@ Here, **"project default base"** means the `base_branch` from `skill-config.yaml
 
 Read the plan's `## Review Profile` section. If absent, use the `review_profile` default from `~/.claude/skills/SKILL-CONFIG.md`.
 
-- `project-done` does not reinterpret review with new meaning. Record the profile/mode/rationale/execution method performed in `project-start` into the impl-report.
+- `project-done` does not reinterpret review with new meaning. Record the profile/mode/rationale/execution path performed in `project-start` into the impl-report.
+- Record the **guideline paths that were actually read** during review, and any declared path that was skipped because it does not exist. This is the only evidence that the delegation closed; without it the report claims a grounded review it cannot support.
 - If there is no execution record, write `not reported`, and separately note whether any extra review was performed during DoD verification.
 - If `docs-light` was recorded for code-impacting changes, report it as a safety-rule violation and confirm whether `full` review supplementation is needed.
 
@@ -112,7 +113,9 @@ Create `.task/plan/impl-report-<issue-id>.md` in Korean:
 - Review Profile: `<auto | full | docs-light | not reported>`
 - Resolved Mode: `<full | docs-light | not reported>`
 - Reason: `<선택 또는 승격 근거를 한국어로 작성>`
-- Execution: `<subagents | main-agent fallback | docs-light | not reported>`
+- Execution: `<review-tool | subagents | main-agent fallback | docs-light | not reported>`
+- Guidelines Read: `<실제로 읽힌 review_guidelines 경로 목록, 없으면 None>`
+- Guidelines Skipped: `<선언됐으나 존재하지 않아 건너뛴 경로, 없으면 None>`
 - Findings / Fixes: `<반영한 리뷰 지적사항을 한국어로 작성, 없으면 None>`
 
 ## 알려진 제한 / 후속 작업

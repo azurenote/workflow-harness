@@ -181,14 +181,21 @@ Before handing the plan to `$project-issue`, verify that title/prose, requiremen
 
 Read `## Review Profile` and finalize the review mode using the shared policy in `~/.claude/skills/SKILL-CONFIG.md`.
 
-- `full`: perform adversarial plan review from architect, implementer, and test engineer viewpoints.
-  - **Architect**: architecture fit, consistency with existing patterns, extensibility
-  - **Implementer**: implementation feasibility, missing edge cases, conflicts with existing code
-  - **Test engineer**: testability, DoD verifiability, missing test scenarios
+- `full`: perform adversarial plan review from every role declared in `review_guidelines`, or from the default roles below when the project declares none.
 - `docs-light`: run a single documentation review pass for reader comprehension, factual fidelity, link/path/command accuracy, and docs-as-code structure contracts.
 - `auto`: resolve to `docs-light` for docs-only work; resolve to `full` when code/tests/build/CI/dependencies/runtime config changes, or when uncertain.
 
-Collect feedback, revise and finalize the plan, and include the selected profile/mode and rationale in the output.
+For `full`, load `review_guidelines` from `.claude/skill-config.yaml` first — schema and rules are in "리뷰 가이드라인 주입" in `~/.claude/skills/SKILL-CONFIG.md`. The same four rules apply here as in `project-start` §8-A: each role reads `common` plus its own `docs` before reviewing, `focus` is passed through verbatim and never parsed, roles come from the project rather than from this file, and a declared path that does not exist is a warning that gets reported, not a stop.
+
+Default roles, used when the project declares no `focus` for them. A plan review asks whether the plan can be *executed and verified*, not whether the code is right — the code does not exist yet:
+
+- **Architect**: architecture fit, consistency with existing patterns, extensibility
+- **Implementer**: implementation feasibility, missing edge cases, conflicts with existing code
+- **Test engineer**: testability, DoD verifiability, missing test scenarios, and **whether each DoD item could actually fail** — a condition no realistic defect could violate is not a Definition of Done
+
+Use the same execution-path chain as `project-start` §8-B: a first-class review tool if one is reachable, else independent subagents one per role, else the main agent performing each role directly as separate passes. The chain always closes on the last entry.
+
+Collect feedback, revise and finalize the plan, and include in the output the selected profile/mode and rationale, the execution path used, and the guideline paths actually read (and any skipped as missing).
 
 **5. Output**
 
