@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -145,11 +146,12 @@ def test_project_plan_review_loads_project_guidelines() -> None:
     assert "project-start` §8-B" in text
 
 
-def test_skill_config_defines_review_guidelines_injection() -> None:
-    text = read_skill("skills/SKILL-CONFIG.md")
+def test_review_guidelines_reference_defines_injection() -> None:
+    text = read_skill("skills/_shared/references/review-guidelines.md")
 
-    assert "## 리뷰 가이드라인 주입 (`review_guidelines`)" in text
-    assert "| `review_guidelines` |" in text
+    assert "# 리뷰 가이드라인 주입 (`review_guidelines`)" in text
+    # The key itself stays in the common key table so it is discoverable.
+    assert "| `review_guidelines` |" in read_skill("skills/SKILL-CONFIG.md")
 
     # The schema the skills read.
     for token in ("common:", "roles:", "docs:", "focus:"):
@@ -275,8 +277,8 @@ def test_project_release_doc_skill_contract() -> None:
     assert r"[A-Z]+-\d+" in text
 
 
-def test_skill_config_defines_release_block_and_forgejo() -> None:
-    text = read_skill("skills/SKILL-CONFIG.md")
+def test_release_reference_defines_release_block() -> None:
+    text = read_skill("skills/_shared/references/release.md")
 
     for token in (
         "release.doc_dir",
@@ -299,7 +301,11 @@ def test_skill_config_defines_release_block_and_forgejo() -> None:
     ):
         assert token in text
 
-    # forgejo is a documented lookup path with an explicit degradation rule
+
+def test_skill_config_keeps_the_tracker_branch_rules() -> None:
+    """Tracker branching is common contract — every skill needs it, so it stays."""
+    text = read_skill("skills/SKILL-CONFIG.md")
+
     assert "issue_tracker = forgejo" in text
     assert "forgejo_host" in text
     assert "미확인" in text
@@ -615,3 +621,76 @@ def test_skill_config_points_at_the_host_reference() -> None:
     assert "## 호스트별 참조" in text
     assert CODEX_REFERENCE.replace("skills/", "") in text
     assert "호스트 중립" in text
+
+
+# --------------------------------------------------------------------------
+# Progressive disclosure of the config document
+#
+# Every skill used to read SKILL-CONFIG.md whole, including the halves that did
+# not apply to it. The split is a *path contract*: a skill names the references
+# it needs, and those files exist. These tests are what keeps the split from
+# decaying into dangling pointers.
+# --------------------------------------------------------------------------
+
+REFERENCE_DIR = "skills/_shared/references"
+
+# What each skill actually consumes, asserted against what it declares.
+SKILL_REFERENCE_NEEDS = {
+    "project-adr": set(),
+    "project-clean": {"base-branch", "worktree"},
+    "project-done": {"review-guidelines", "base-branch", "hooks", "worktree"},
+    "project-harness-init": {"base-branch"},
+    "project-harness-update": set(),
+    "project-issue": {"base-branch"},
+    "project-iterate": set(),
+    "project-plan": {"review-guidelines", "base-branch"},
+    "project-release": {"release", "base-branch"},
+    "project-release-doc": {"release"},
+    "project-start": {"review-guidelines", "base-branch", "hooks", "worktree"},
+}
+
+
+def _declared_references(skill: str) -> set[str]:
+    text = read_skill(f"skills/{skill}/SKILL.md")
+    return set(re.findall(r"_shared/references/([a-z-]+)\.md", text)) - {"codex"}
+
+
+def test_every_declared_reference_exists() -> None:
+    """A pointer to a file that is not there is worse than no pointer."""
+    dangling: list[str] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        for name in re.findall(r"_shared/references/([a-z-]+)\.md", md.read_text(encoding="utf-8")):
+            if not (ROOT / REFERENCE_DIR / f"{name}.md").exists():
+                dangling.append(f"{md.relative_to(ROOT)} -> {name}.md")
+    assert not dangling, "dangling reference pointers:\n" + "\n".join(dangling)
+
+
+def test_skills_declare_exactly_the_references_they_use() -> None:
+    """Declaring too few breaks the skill; declaring too many undoes the split."""
+    for skill, expected in SKILL_REFERENCE_NEEDS.items():
+        assert _declared_references(skill) == expected, (
+            f"{skill} declares {sorted(_declared_references(skill))}, "
+            f"expected {sorted(expected)}"
+        )
+
+
+def test_project_clean_does_not_read_the_release_block() -> None:
+    """The 53-line skill paid the same price as the rest. That was the point."""
+    assert "release" not in _declared_references("project-clean")
+
+
+def test_skill_config_indexes_every_reference() -> None:
+    text = read_skill("skills/SKILL-CONFIG.md")
+    assert "## 참조 파일" in text
+    for ref in sorted((ROOT / REFERENCE_DIR).glob("*.md")):
+        assert f"_shared/references/{ref.name}" in text, f"{ref.name} is not indexed"
+
+
+def test_split_references_are_self_describing() -> None:
+    """Each moved file says where it came from, so it is not read as orphaned."""
+    for ref in sorted((ROOT / REFERENCE_DIR).glob("*.md")):
+        if ref.name == "codex.md":
+            continue
+        text = ref.read_text(encoding="utf-8")
+        assert "Split out of skills/SKILL-CONFIG.md" in text, ref.name
+        assert text.count("\n# ") + text.startswith("# ") >= 1, f"{ref.name} has no title"

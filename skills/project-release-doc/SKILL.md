@@ -16,7 +16,13 @@ Apply this skill in the following situations:
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
-Then read the `release` block (see "release 설정" in `SKILL-CONFIG.md`):
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/release.md` — the `release` config block
+
+Read nothing else from the reference set; the rest does not apply here.
+
+Then read the `release` block:
 - `release.doc_dir` (default `docs/release`), `release.tag_format` (default `{package}-v{version}`)
 - `release.components.<name>.{kind, paths, migrations_globs, config_globs, critical_globs, shared_globs, deploy_steps_template}`
 

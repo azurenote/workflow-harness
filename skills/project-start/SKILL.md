@@ -16,6 +16,15 @@ Apply this skill in the following situations:
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/review-guidelines.md` — `review_guidelines` schema and rules
+- `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
+- `~/.claude/skills/_shared/references/hooks.md` — lifecycle hook points and failure policy
+- `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
+
+Read nothing else from the reference set; the rest does not apply here.
+
 ## Output Language Guard
 
 When loading an existing plan, preserve its Korean prose and do not rewrite it into English.
@@ -149,7 +158,7 @@ If an old plan lacks `Task Cards` but has `Task Breakdown`, use the latter as ex
 **5-H. `post_start` hook (only if present)**
 
 If `.claude/skill-config.yaml` has `hooks.post_start`, run it through Bash.
-If it fails, print only a warning and continue. See "Hook Execution" in `SKILL-CONFIG.md`.
+If it fails, print only a warning and continue. See `~/.claude/skills/_shared/references/hooks.md`.
 
 **6. Start implementation**
 
@@ -176,7 +185,7 @@ Profile resolution rules:
 
 **8-A. Load review guidelines (`full` only)**
 
-Read `review_guidelines` from `.claude/skill-config.yaml` before dispatching any reviewer. See "리뷰 가이드라인 주입" in `~/.claude/skills/SKILL-CONFIG.md` for the schema.
+Read `review_guidelines` from `.claude/skill-config.yaml` before dispatching any reviewer. See `~/.claude/skills/_shared/references/review-guidelines.md` for the schema.
 
 - Each role reads `common` plus its own `docs` **before** reviewing. Reviewers read the paths; never copy a summary of them into the prompt, the plan, or this skill — a copy diverges from the source.
 - Pass each role's `focus` string through **verbatim**. Do not parse it, split it, or act on what it appears to reference. Those strings are project constants; interpreting them makes this shared skill language-specific.

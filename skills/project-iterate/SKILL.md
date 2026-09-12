@@ -16,6 +16,8 @@ Apply this skill in the following situations:
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
+This skill needs no reference beyond the common contract.
+
 ## Output Language Guard
 
 Generated workflow artifacts remain Korean by default even though the workflow `SKILL.md` files are written in English:

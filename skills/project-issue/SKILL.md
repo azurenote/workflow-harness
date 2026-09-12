@@ -16,6 +16,12 @@ Apply this skill in the following situations:
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
+
+Read nothing else from the reference set; the rest does not apply here.
+
 ## Output Language Guard
 
 Issue bodies created by this skill must preserve the plan file exactly as written.

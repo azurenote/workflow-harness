@@ -20,7 +20,16 @@ Recommended order:
 
 ## Read Settings
 
-Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first, then read the `release` block. Release mutation requires:
+Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
+
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/release.md` — the `release` config block
+- `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
+
+Read nothing else from the reference set; the rest does not apply here.
+
+Release mutation requires:
 
 - `release.primary_component`
 - `release.tag_format`, containing `{package}` and `{version}` for multi-package workspaces, or `{version}` for a single package

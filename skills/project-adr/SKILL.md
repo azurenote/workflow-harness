@@ -16,6 +16,8 @@ Apply this skill in the following situations:
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
+This skill needs no reference beyond the common contract.
+
 Use `adr_dir` as the ADR storage path (default: `docs/adr`).
 
 ## Usage

@@ -15,6 +15,8 @@ Apply this skill in the following situations:
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
+This skill needs no reference beyond the common contract.
+
 ## Instructions
 
 **1. Confirm Target**
