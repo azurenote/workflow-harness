@@ -782,3 +782,40 @@ def test_config_reading_is_described_as_an_action_not_a_tool() -> None:
     text = read_skill("skills/SKILL-CONFIG.md")
     assert "Read 도구로" not in text
     assert "`.claude/skill-config.yaml` 을 읽는다." in text
+
+
+# --------------------------------------------------------------------------
+# Feedback that was recorded but never landed in a skill
+# --------------------------------------------------------------------------
+
+
+def test_project_plan_searches_symbols_before_text() -> None:
+    """Structural duplicates have different names; text search will not find them."""
+    text = read_skill("skills/project-plan/SKILL.md")
+
+    assert "**2-A. Search for duplicates, symbols first**" in text
+    assert "LSP" in text
+    assert "definition, references, implementations" in text
+    # Text search is the complement, not the primary.
+    assert "Then text-level" in text
+    # Losing the tool must change the plan's claims, not just the method.
+    assert "structural duplicates may have been missed" in text
+    assert "skills/dependencies.yaml" in text
+    # Extend by default; creating anew is a decision that must be argued.
+    assert "extending it is the default" in text
+
+
+def test_project_done_verifies_ci_before_reporting_complete() -> None:
+    """A PR URL is not an outcome. An unread check is an unknown, not a pass."""
+    text = read_skill("skills/project-done/SKILL.md")
+
+    assert "**11. Check CI on the PR**" in text
+    assert 'Do not report "complete" while CI is unverified' in text
+    # "no errors" is vacuous: a run that skipped the suite is also green.
+    assert "which checks ran" in text
+    assert "vacuous" in text
+    # Unreadable CI is reported as unknown, never assumed green.
+    assert "mark the CI state unknown rather than assuming it passed" in text
+    # The final output carries the CI state, so it cannot be quietly omitted.
+    assert "**12. Output**" in text
+    assert "CI state:" in text

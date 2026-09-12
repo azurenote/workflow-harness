@@ -230,8 +230,19 @@ For a **sub-PR (base != default)**, `Closes` does not fire, so the issue remains
 <harness_cli> clean-temp <issue-id>
 ```
 
-**11. Output**
+**11. Check CI on the PR**
+
+Creating the PR is not the end of the step. Watch the checks the PR triggered and report what they did.
+
+- Prefer the host's PR-watching path if one is available; otherwise poll with the CLI (`gh pr checks <PR_URL> --watch`, or the tracker's equivalent).
+- **Do not report "complete" while CI is unverified.** A PR whose checks have not been read is an unknown, not a pass. Say "CI pending" and what you are waiting on.
+- On failure, report which check failed and its output. Do not summarize a red run as a warning.
+- Report **which checks ran**, by name. "No errors" is not a result — a run that skipped the suite is green and vacuous. If no check ran at all, say that; it is a finding, not a pass.
+- If checks cannot be read (no CI configured, the host cannot reach it), say so explicitly and mark the CI state unknown rather than assuming it passed.
+
+**12. Output**
 
 - commit hash
 - PR URL (GitHub), or merge commit hash (Jira)
+- CI state: which checks ran, and their result (or `pending` / `unknown` with the reason)
 - after merge: run `project-clean` to clean branches/worktrees

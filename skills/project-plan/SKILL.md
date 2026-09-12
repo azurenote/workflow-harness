@@ -46,6 +46,17 @@ Infer scope from the task description and explore the related files/modules.
 - Understand dependencies, interfaces, and data structures.
 - Check existing patterns and coding conventions.
 
+**2-A. Search for duplicates, symbols first**
+
+Before designing anything new, find out whether it already exists. Search structurally before textually — the two find different things, and the structural one finds the duplicate that matters.
+
+1. **Symbol-level first.** Use the host's LSP tools — definition, references, implementations — to find existing types, functions, and implementations that already cover the described behavior. A near-duplicate usually has a different name, so a text search will not surface it.
+2. **Then text-level.** Use Grep/Glob to cover what symbols cannot: path conventions, config keys, string constants, and documentation.
+
+If the LSP tool is unavailable (see `ENABLE_LSP_TOOL` and the language LSP plugins in `skills/dependencies.yaml`), fall back to text search and **record in the plan that structural duplicates may have been missed**. A silent downgrade turns a partial search into a plan that reads as if it searched everything.
+
+On finding a similar implementation, **extending it is the default**. Creating something new next to it is a decision, not a default: state the trade-off in the plan and say why extending was rejected.
+
 **3. Create plan-draft-<slug>.md**
 
 Filename rules:
