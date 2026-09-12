@@ -1,6 +1,6 @@
 ---
 name: project-clean
-description: Clean up gone branches and their linked worktrees after a PR is merged. In Codex, run this for `$project-clean` or requests such as "use the project-clean skill".
+description: Clean up gone branches and their linked worktrees after a PR is merged.
 ---
 
 # project-clean - Branch and Worktree Cleanup
@@ -8,12 +8,19 @@ description: Clean up gone branches and their linked worktrees after a PR is mer
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- `$project-clean`, or keywords such as "branch cleanup", "worktree cleanup", "gone branch", or "clean"
+- `project-clean`, or keywords such as "branch cleanup", "worktree cleanup", "gone branch", or "clean"
 - The user asks for cleanup after a PR has been merged
 
 ## Read Settings
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
+
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
+- `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
+
+Read nothing else from the reference set; the rest does not apply here.
 
 ## Instructions
 

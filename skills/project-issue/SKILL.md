@@ -1,6 +1,6 @@
 ---
 name: project-issue
-description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as a ticket in the issue tracker, then rename it to `plan-<id>.md`. In Codex, run this for `$project-issue` or requests such as "use the project-issue skill".
+description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as a ticket in the issue tracker, then rename it to `plan-<id>.md`.
 ---
 
 # project-issue - Register Issue
@@ -8,7 +8,7 @@ description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` dra
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- Codex receives `$project-issue` or a request such as "use the project-issue skill to register an issue"
+- The user invokes `project-issue`, or asks to use the project-issue skill to register an issue
 - A `plan-draft-*.md` or `plan-<uuid>.md` draft exists and issue-registration intent is detected
 - Keywords such as "register issue", "create ticket", "upload to GitHub", or "upload to Jira"
 
@@ -16,10 +16,16 @@ Apply this skill in the following situations:
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
+
+Read nothing else from the reference set; the rest does not apply here.
+
 ## Output Language Guard
 
 Issue bodies created by this skill must preserve the plan file exactly as written.
-Because `$project-plan` writes plan prose in Korean by default, do not translate or summarize the plan body into English during issue creation. Upload the Korean plan with `--body-file` as-is, including frontmatter.
+Because `project-plan` writes plan prose in Korean by default, do not translate or summarize the plan body into English during issue creation. Upload the Korean plan with `--body-file` as-is, including frontmatter.
 
 ## Instructions
 
@@ -38,7 +44,7 @@ python -c 'from pathlib import Path; from harness_core.config import is_draft_pl
 The fallback also uses `harness_core.config.is_draft_plan` as the single contract. Valid draft file names are only `plan-draft-<lowercase-slug>.md` or lowercase hex UUID `plan-<uuid>.md`.
 
 Handle the result:
-- **No files**: tell the user to run `$project-plan` first. Stop.
+- **No files**: tell the user to run `project-plan` first. Stop.
 - **One file**: use that file.
 - **Two or more files**: show the list and mtimes, then ask the user to choose.
   - If the user says "latest", automatically choose the file with the newest mtime.
@@ -172,4 +178,4 @@ DRAFT_PLAN="<draft-plan-path>"
 - issue title
 - detected Type / Labels / Priority / Size, including rationale
 - file rename result: `<draft-plan-path>` -> `plan-<id>.md`
-- next step: `$project-start <issue-number>`
+- next step: `project-start <issue-number>`

@@ -129,7 +129,7 @@ class TestValidateIssuePlanTitleSync:
         )
         StateValidator.validate_issue_plan_title_sync(
             10,
-            "Harness Architecture Redesign for enseed-trader Workflow",
+            "Harness Architecture Redesign for Downstream Workflows",
             tmp_path,
         )
 

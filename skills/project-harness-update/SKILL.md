@@ -1,6 +1,6 @@
 ---
 name: project-harness-update
-description: Synchronize an existing project's workflow-harness local wrapper to the latest canonical wrapper. Show dry-run/diff and backup paths first, while preserving project-specific settings. In Codex, run this for `$project-harness-update ...` or requests such as "use the project-harness-update skill".
+description: Synchronize an existing project's workflow-harness local wrapper to the latest canonical wrapper. Show dry-run/diff and backup paths first, while preserving project-specific settings.
 ---
 
 # project-harness-update - Local Harness Update
@@ -8,12 +8,14 @@ description: Synchronize an existing project's workflow-harness local wrapper to
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- `$project-harness-update <target-project-root>`, or requests such as "harness update", "sync local harness", or "update wrapper"
+- `project-harness-update <target-project-root>`, or requests such as "harness update", "sync local harness", or "update wrapper"
 - An existing project must be aligned after the `harness_core` public contract or canonical wrapper templates changed
 
 ## Read Settings
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
+
+This skill needs no reference beyond the common contract.
 
 ## Instructions
 

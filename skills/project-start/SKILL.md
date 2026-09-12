@@ -1,6 +1,6 @@
 ---
 name: project-start
-description: Take an issue number, create a branch or worktree, move the issue to In Progress, read the plan Intent Summary, Drift Guards, and Task Cards, then start implementation. In Codex, run this for `$project-start ...` or requests such as "use the project-start skill".
+description: Take an issue number, create a branch or worktree, move the issue to In Progress, read the plan Intent Summary, Drift Guards, and Task Cards, then start implementation.
 ---
 
 # project-start - Start Work
@@ -8,18 +8,27 @@ description: Take an issue number, create a branch or worktree, move the issue t
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- Codex receives `$project-start <issue-id>` or a request such as "use the project-start skill to start <issue-id>"
+- The user invokes `project-start <issue-id>`, or asks to use the project-start skill to start <issue-id>
 - `#<number>` or issue ID plus keywords such as "start", "begin", "implement", or "branch"
-- Immediately after `$project-issue` completes, when the user says to start
+- Immediately after `project-issue` completes, when the user says to start
 
 ## Read Settings
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/review-guidelines.md` — `review_guidelines` schema and rules
+- `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
+- `~/.claude/skills/_shared/references/hooks.md` — lifecycle hook points and failure policy
+- `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
+
+Read nothing else from the reference set; the rest does not apply here.
+
 ## Output Language Guard
 
 When loading an existing plan, preserve its Korean prose and do not rewrite it into English.
-If the `adr` path calls `$project-adr`, the ADR document must follow the `$project-adr` Korean-output guard.
+If the `adr` path calls `project-adr`, the ADR document must follow the `project-adr` Korean-output guard.
 
 ## Execution Safety Rules
 
@@ -29,30 +38,20 @@ If the `adr` path calls `$project-adr`, the ADR document must follow the `$proje
     .claude/scripts/harness_cli.py add-comment 123 'ADR recorded: `docs/adr/example.md`'
     ```
   - Forbidden: passing a body with backticks unquoted, or inside double quotes without escaping.
-- In Codex, if GitHub API commands such as `harness_cli.py`, `project.py`, or `gh` fail because of network/sandbox errors, immediately rerun the same command with `require_escalated`.
-- In Codex, when Review Profile resolves to `full` and team review is performed, do not spawn separate `codex`/`claude` shell processes.
-  - Use subagent tools only when user request or execution-environment policy allows them.
-  - If no subagent tool is available or policy disallows it, the main agent performs three separate adversarial review passes directly.
-  - State the review method and fallback, if any, in the final report.
+- If a tracker or git API command (`harness_cli.py`, `gh`, `fj`, `jira`) fails, retry through the documented fallback path for that step. If it still fails, report it to the user and stop — do not invent a third path.
+- Never run `codex`, `claude`, or any other LLM CLI through the shell to create a subagent. That path fails on sandbox permissions and is not a fallback.
 
-### Claude Code Execution Rules
-
-Apply the following instead of Codex-only mechanisms:
-
-- **No `require_escalated`**: if GitHub API calls (`harness_cli.py`, `gh`) fail, retry via fallback paths; if they still fail, report to the user and stop.
-- **Do not spawn LLM processes through the shell**: do not run `codex`, `claude`, or similar commands through the shell to create subagents. Same principle as Codex.
-- **Subagents**: use the `Agent` tool instead of `multi_agent_v1.spawn_agent`.
-- **When subagents are unnecessary**: the main agent performs the three viewpoints directly in sequence, same as the fallback path.
+Running under Codex: read `~/.claude/skills/_shared/references/codex.md` for the host mechanisms these rules map onto — escalation after a sandbox failure, the subagent API, shell quoting, and invocation syntax.
 
 ## Usage
 
 ```
-$project-start <issue-id> [worktree] [adr]
+project-start <issue-id> [worktree] [adr]
 ```
 
 - `<issue-id>`: GitHub issue number or Jira ticket ID (required)
 - `[worktree]`: git worktree mode
-- `[adr]`: write ADR before implementation (`$project-adr` internal call)
+- `[adr]`: write ADR before implementation (`project-adr` internal call)
 
 ## Instructions
 
@@ -84,7 +83,7 @@ Read the base declared in plan frontmatter. `/start` does **not infer** the base
 <harness_cli> get-base <issue-id>    # {"base_branch": "<branch>" | null, "parent_issue": <num> | null}
 ```
 
-Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, cosmos-forge=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
+Here, **"project default base"** means whatever `base_branch` the project's `skill-config.yaml` declares, read during "Read Settings". Do not compare against any literal branch name — this skill is shared by projects whose defaults differ, and naming one of them here is the bug the comparison is trying to avoid.
 
 - If `base_branch` is **non-null and different from the project default base**, that branch is both the PR review/merge target and the branch base. Pass `--base-ref "<base_branch>"` in 2-A/2-B below.
 - If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use **existing behavior** (branch from current HEAD, assuming the task starts on the default base). Do not add a new prompt.
@@ -101,7 +100,7 @@ Here, **"project default base"** means the `base_branch` from `skill-config.yaml
 # fallback (undeclared): git checkout -b "<branch-name>"
 ```
 
-Branch push happens during `$project-done`. Do not push here.
+Branch push happens during `project-done`. Do not push here.
 
 **2-B. Worktree mode (when `worktree` argument is present)**
 
@@ -114,12 +113,6 @@ Branch push happens during `$project-done`. Do not push here.
 ```
 
 After this, perform all work inside `$WORKTREE_PATH`.
-
-**2-C. Set tab name**
-
-```bash
-cmux rename-tab "task #<id>" 2>/dev/null || true
-```
 
 **3. Issue status -> In Progress**
 
@@ -136,7 +129,7 @@ posted.)
 
 **4. ADR (conditional)**
 
-If the `adr` argument is present, run the `$project-adr <issue-id>` procedure.
+If the `adr` argument is present, run the `project-adr <issue-id>` procedure.
 Keep the "Execution Safety Rules" above. In particular, do not expose Markdown backticks to shell command substitution when posting the ADR path as an issue comment.
 Start implementation only after the ADR commit is complete.
 
@@ -159,7 +152,7 @@ If an old plan lacks `Task Cards` but has `Task Breakdown`, use the latter as ex
 **5-H. `post_start` hook (only if present)**
 
 If `.claude/skill-config.yaml` has `hooks.post_start`, run it through Bash.
-If it fails, print only a warning and continue. See "Hook Execution" in `SKILL-CONFIG.md`.
+If it fails, print only a warning and continue. See `~/.claude/skills/_shared/references/hooks.md`.
 
 **6. Start implementation**
 
@@ -168,11 +161,17 @@ Do not wait for additional instruction.
 
 **7. Formatting before commit**
 
-After implementation is complete, run this before committing:
+After implementation is complete, run the project's formatter before committing.
 
-```bash
-cargo fmt --all
+This skill is shared across projects and languages, so it carries no formatter of its own. The command comes from the project:
+
+```yaml
+# .claude/skill-config.yaml
+hooks:
+  pre_commit: <the project's format command>
 ```
+
+If `hooks.pre_commit` is absent, empty, or null, skip this step silently — a project that does not declare a formatter has none, and inventing one here would run the wrong tool. If it fails, print a warning and continue; formatting is not a correctness gate, and `pre_done` is the blocking gate that already runs before commits. See `~/.claude/skills/_shared/references/hooks.md`.
 
 **8. Adaptive Review**
 
@@ -180,29 +179,40 @@ When deciding that work is complete, read `## Review Profile` from the plan firs
 
 Profile resolution rules:
 
-- `full`: run adversarial review from architect, implementer, and test engineer viewpoints.
+- `full`: run adversarial review from every role declared in `review_guidelines`, or from the default roles below when the project declares none.
 - `docs-light`: run a documentation-only review pass. However, if changed files include code, tests, build, CI, dependencies, runtime config, or execution artifacts, escalate to `full`.
 - `auto`: resolve to `docs-light` only when changed files and scope are limited to Markdown/MDX, docs/wiki/content paths, or static documentation assets. Resolve to `full` for any code-impacting change or uncertainty.
 
-`full` review viewpoints:
+**8-A. Load review guidelines (`full` only)**
 
-- **Architect**: architecture fit, consistency with existing patterns, scope compliance
-- **Implementer**: logic bugs, security, edge cases
-- **Test engineer**: missing tests, DoD satisfaction
+Read `review_guidelines` from `.claude/skill-config.yaml` before dispatching any reviewer. See `~/.claude/skills/_shared/references/review-guidelines.md` for the schema, the interpretation rules, and the **canonical table of default roles** — that table is not reproduced here, because a second copy diverges from it.
 
-Codex execution rules:
+- Each role reads `common` plus its own `docs` **before** reviewing. Reviewers read the paths; never copy a summary of them into the prompt, the plan, or this skill — a copy diverges from the source.
+- Pass each role's `focus` string through **verbatim**. Do not parse it, split it, or act on what it appears to reference. Those strings are project constants; interpreting them makes this shared skill language-specific.
+- Iterate the roles the project declared. Do not hardcode role names.
+- Fall back per role, not all-or-nothing: a role the project declared but gave no `focus` takes its default `focus` from the reference; the default roles as a whole apply only when `review_guidelines` is absent or declares no roles at all.
+- A declared path that does not exist is a **warning, not a stop**: skip it, continue the review, and report the skipped path. A silently dropped guideline turns an ungrounded review into one that reports as grounded.
+- `review_guidelines` missing **entirely** is also a reportable condition, not a normal state. Say the review ran ungrounded; do not let `Guidelines Read: None` pass as routine.
 
-- If mode is `full` and subagent tools are allowed, delegate review in parallel to three independent subagents.
-- Do not run `codex`, `claude`, or other LLM CLIs through shell commands to create subagents. That path repeatedly fails on sandbox permissions.
-- If no subagent tool is available or policy disallows it, do not stop; the main agent performs the three viewpoints directly and separately.
+Use the **구현 리뷰** table in the reference for defaults here.
 
-Claude Code execution rules:
+The mutation duty stands regardless of which roles the project declares: every guard the change adds must be verified by breaking what it protects and confirming it goes red. A passing test is not evidence that a guard works. It is not removed by a project override, and it does not disappear when the project renames or replaces the tester role — assign it to one of the declared roles and say which. Record the mutation you performed, not the fact that the suite is green.
 
-- If mode is `full` and the `Agent` tool is available, delegate review in parallel to three independent subagents.
-- Do not run `codex`, `claude`, or other LLM CLIs through the shell. Same principle as Codex.
-- When proceeding without subagents, the main agent performs the three viewpoints directly and separately.
+**8-B. Choose an execution path (`full` only)**
 
-`docs-light` review checklist:
+Review paths, in priority order. Take the first one available, and close the chain — the last entry always applies.
+
+1. A first-class review tool provided by the host (see `~/.claude/skills/dependencies.yaml` for what this skillset declares and what each absence costs). Give it the role's guideline paths and `focus`.
+2. Independent subagents, one per role, dispatched in parallel through the host's subagent mechanism.
+3. The main agent performs each role directly, as separate passes, one role at a time.
+
+Rules that hold on every path:
+
+- Never spawn an LLM CLI (`codex`, `claude`, …) through the shell to create a reviewer. That path fails on sandbox permissions and is not a fallback.
+- Availability is two questions, not one: a tool can be installed and still be unreachable from the host you are running under. If the declared tool does not actually respond, move down the chain and say so — do not report a path you did not use.
+- Roles stay separate on every path. Collapsing the viewpoints into one call is not a cheaper review; it is a different, weaker one.
+
+**8-C. `docs-light` review checklist**
 
 - Can a reader understand the intent and procedure from the document alone?
 - Do links, paths, commands, and file names match the current repo?
@@ -210,4 +220,5 @@ Claude Code execution rules:
 - Does it preserve LLM wiki/docs-as-code structure contracts such as index, frontmatter, tags, and sidebar?
 
 Each review should output findings first, grounded in file/line evidence. Collect feedback, apply fixes immediately, then rerun needed validation.
-The final report must summarize `review profile`, resolved mode, rationale, review execution method (`subagents`, `main-agent fallback`, `docs-light`), and review findings that were addressed.
+
+The final report must state `review profile`, resolved mode, rationale, which execution path from 8-B was used and why, **the guideline paths actually read** (and any skipped as missing), and the findings that were addressed.

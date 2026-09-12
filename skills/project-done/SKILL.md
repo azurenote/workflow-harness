@@ -1,6 +1,6 @@
 ---
 name: project-done
-description: Run completion in one flow: verify DoD -> write impl-report -> commit -> create PR (GitHub) or merge branch (Jira) -> update issue status. In Codex, run this for `$project-done ...` or requests such as "use the project-done skill".
+description: Run completion in one flow: verify DoD -> write impl-report -> commit -> create PR (GitHub) or merge branch (Jira) -> update issue status.
 ---
 
 # project-done - Complete Work
@@ -8,13 +8,22 @@ description: Run completion in one flow: verify DoD -> write impl-report -> comm
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- Codex receives `$project-done <issue-id>` or a request such as "use the project-done skill to complete <issue-id>"
+- The user invokes `project-done <issue-id>`, or asks to use the project-done skill to complete <issue-id>
 - A combination of keywords such as "done", "commit", "PR", "close", or "merge" plus an issue number
 - Implementation is finished and the user asks to verify the DoD
 
 ## Read Settings
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
+
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/review-guidelines.md` — `review_guidelines` schema and rules
+- `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
+- `~/.claude/skills/_shared/references/hooks.md` — lifecycle hook points and failure policy
+- `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
+
+Read nothing else from the reference set; the rest does not apply here.
 
 ## Output Language Guard
 
@@ -25,18 +34,12 @@ Do not translate the completion report to English unless the user explicitly req
 ## Usage
 
 ```
-$project-done <issue-id> [adr]
+project-done <issue-id> [adr]
 ```
 
 - `<issue-id>`: GitHub issue number or Jira ticket ID
   - If omitted, infer it from conversation context or the current branch name.
 - `[adr]`: write ADR before commit
-
-## Worktree Notes
-
-`harness_cli.py` / `project.py` automatically resolve `.task/plan/` and `.claude/state.json` relative to the main worktree even when called from a worktree CWD.
-
-`git add` / `git commit` / `git push` must run from the **worktree CWD** so they attach to the current branch.
 
 ## Instructions
 
@@ -54,7 +57,7 @@ If the file does not exist, stop and tell the user.
 <harness_cli> get-base <issue-id>   # {"base_branch": <branch|null>, "parent_issue": <num|null>}
 ```
 
-Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, cosmos-forge=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
+Here, **"project default base"** means whatever `base_branch` the project's `skill-config.yaml` declares, read during "Read Settings". Do not compare against any literal branch name — this skill is shared by projects whose defaults differ, and naming one of them here is the bug the comparison is trying to avoid.
 
 - If `base_branch` is non-null and **different from the project default base**, this is a **sub-PR** targeting an integration branch. Use `<base_branch>` and `<parent_issue>` in later steps: impl-report diff, PR base, and closing trailer.
 - If `base_branch` is `null` or equals the project default base, set `<base_branch>` to the project default base; this is not a sub-PR. Use existing behavior.
@@ -64,7 +67,8 @@ Here, **"project default base"** means the `base_branch` from `skill-config.yaml
 
 Read the plan's `## Review Profile` section. If absent, use the `review_profile` default from `~/.claude/skills/SKILL-CONFIG.md`.
 
-- `project-done` does not reinterpret review with new meaning. Record the profile/mode/rationale/execution method performed in `project-start` into the impl-report.
+- `project-done` does not reinterpret review with new meaning. Record the profile/mode/rationale/execution path performed in `project-start` into the impl-report.
+- Record the **guideline paths that were actually read** during review, and any declared path that was skipped because it does not exist. This is the only evidence that the delegation closed; without it the report claims a grounded review it cannot support.
 - If there is no execution record, write `not reported`, and separately note whether any extra review was performed during DoD verification.
 - If `docs-light` was recorded for code-impacting changes, report it as a safety-rule violation and confirm whether `full` review supplementation is needed.
 
@@ -78,11 +82,11 @@ Check each DoD item in `.task/plan/plan-<issue-id>.md`.
 
 If `.claude/skill-config.yaml` has `hooks.pre_done`, run it through Bash.
 **If it fails, report the hook failure output to the user and stop the procedure. Do not run later steps.**
-See "Hook Execution" in `SKILL-CONFIG.md`.
+See `~/.claude/skills/_shared/references/hooks.md`.
 
 **3. ADR (conditional)**
 
-If the `adr` argument is present, run `$project-adr <issue-id>` first.
+If the `adr` argument is present, run `project-adr <issue-id>` first.
 Continue to Step 4 only after the ADR commit is complete.
 
 **4. Write impl-report**
@@ -112,7 +116,9 @@ Create `.task/plan/impl-report-<issue-id>.md` in Korean:
 - Review Profile: `<auto | full | docs-light | not reported>`
 - Resolved Mode: `<full | docs-light | not reported>`
 - Reason: `<선택 또는 승격 근거를 한국어로 작성>`
-- Execution: `<subagents | main-agent fallback | docs-light | not reported>`
+- Execution: `<review-tool | subagents | main-agent fallback | docs-light | not reported>`
+- Guidelines Read: `<실제로 읽힌 review_guidelines 경로 목록, 없으면 None>`
+- Guidelines Skipped: `<선언됐으나 존재하지 않아 건너뛴 경로, 없으면 None>`
 - Findings / Fixes: `<반영한 리뷰 지적사항을 한국어로 작성, 없으면 None>`
 
 ## 알려진 제한 / 후속 작업
@@ -122,9 +128,11 @@ Create `.task/plan/impl-report-<issue-id>.md` in Korean:
 <실행한 테스트와 결과를 한국어로 작성>
 ```
 
-> `<diff_base>` decision: if local `<base_branch>` ref exists, use it; otherwise use `origin/<base_branch>` after `git fetch origin <base_branch>` if needed. **Do not run `git diff` against a missing ref**, because it exits 128. Always use an existing ref. When the base is the project default base, `origin/<default base>` (for example `origin/develop` for enseed) is safe.
+> `<diff_base>` decision: if local `<base_branch>` ref exists, use it; otherwise use `origin/<base_branch>` after `git fetch origin <base_branch>` if needed. **Do not run `git diff` against a missing ref**, because it exits 128. Always use an existing ref. When the base is the project default base, `origin/<default base>` is safe.
 
 **5. Commit source changes**
+
+If `.claude/skill-config.yaml` has `hooks.pre_commit`, run it through Bash first. Absent, empty, or null -> skip silently. On failure, print a warning and continue. See `~/.claude/skills/_shared/references/hooks.md`.
 
 `.task/plan/` is ignored by `.gitignore`; never stage it.
 
@@ -155,7 +163,7 @@ Determine `<trailer>` from the sub-PR decision in 1-B:
 
 ### GitHub (`issue_tracker: github`)
 
-Always pass `--base` explicitly with `<base_branch>` from 1-B. This removes hardcoded `develop`; all three layers agree on one source.
+Always pass `--base` explicitly with `<base_branch>` from 1-B. Never let the PR default decide the target; all three layers must agree on one source.
 
 ```bash
 # default-base PR: --closes lets the issue close automatically on merge
@@ -207,7 +215,7 @@ git checkout <base_branch> && git merge --no-ff "<branch-name>" && git push orig
 **9-H. `post_done` hook (only if present)**
 
 If `.claude/skill-config.yaml` has `hooks.post_done`, run it through Bash.
-If it fails, print only a warning and continue. See "Hook Execution" in `SKILL-CONFIG.md`.
+If it fails, print only a warning and continue. See `~/.claude/skills/_shared/references/hooks.md`.
 
 For a **default-base PR**, the `Closes #<id>` keyword automatically closes the issue on merge, so do not call `gh issue close`.
 For a **sub-PR (base != default)**, `Closes` does not fire, so the issue remains In Review and is closed when the integration branch is merged into develop. Do not assume automatic closure.
@@ -218,8 +226,21 @@ For a **sub-PR (base != default)**, `Closes` does not fire, so the issue remains
 <harness_cli> clean-temp <issue-id>
 ```
 
-**11. Output**
+**11. Check CI**
+
+Creating the PR, or merging the branch, is not the end of the step. Watch the checks that change triggered and report what they did.
+
+- **PR path (GitHub)**: prefer the host's PR-watching path if one is available; otherwise poll with the CLI (`gh pr checks <PR_URL>`). Do not use a blocking `--watch` without a bound — it can outlive the command timeout and come back as an interrupted tool call rather than a result. Poll, report the state, and poll again.
+- **Branch-merge path (Jira, or any tracker without PRs)**: there is no PR to check. Read the CI run for the merge commit through whatever the project uses; if the project has no CI on that branch, say exactly that.
+- `gh pr checks` exits non-zero when a PR has no checks at all. That is a **finding**, not a tool error — report it as "no checks ran".
+- **Do not report "complete" while CI is unverified.** A PR whose checks have not been read is an unknown, not a pass. Say "CI pending" and what you are waiting on.
+- On failure, report which check failed and its output. Do not summarize a red run as a warning.
+- Report **which checks ran**, by name. "No errors" is not a result — a run that skipped the suite is green and vacuous. If no check ran at all, say that; it is a finding, not a pass.
+- If checks cannot be read (no CI configured, the host cannot reach it), say so explicitly and mark the CI state unknown rather than assuming it passed.
+
+**12. Output**
 
 - commit hash
 - PR URL (GitHub), or merge commit hash (Jira)
-- after merge: run `$project-clean` to clean branches/worktrees
+- CI state: which checks ran, and their result (or `pending` / `unknown` with the reason)
+- after merge: run `project-clean` to clean branches/worktrees

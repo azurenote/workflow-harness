@@ -1,6 +1,6 @@
 ---
 name: project-plan
-description: Take a task description, analyze the codebase, create `.task/plan/plan-draft-<slug>.md`, and review the plan according to Review Profile policy. In Codex, run this for `$project-plan ...` or requests such as "use the project-plan skill".
+description: Take a task description, analyze the codebase, create `.task/plan/plan-draft-<slug>.md`, and review the plan according to Review Profile policy.
 ---
 
 # project-plan - Write Plan
@@ -8,7 +8,7 @@ description: Take a task description, analyze the codebase, create `.task/plan/p
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- Codex receives `$project-plan <task description>` or a request such as "use the project-plan skill for <task description>"
+- The user invokes `project-plan <task description>`, or asks to use the project-plan skill for <task description>
 - The user describes a new feature, bug fix, or task
 - Keywords such as "plan", "planning", "design", "implement this", or "add this"
 - At the start of any task that needs codebase analysis plus documentation
@@ -16,6 +16,13 @@ Apply this skill in the following situations:
 ## Read Settings
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
+
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/review-guidelines.md` — `review_guidelines` schema and rules
+- `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
+
+Read nothing else from the reference set; the rest does not apply here.
 
 ## Output Language Guard
 
@@ -38,6 +45,17 @@ Infer scope from the task description and explore the related files/modules.
 - Use an Explore agent to analyze related source files.
 - Understand dependencies, interfaces, and data structures.
 - Check existing patterns and coding conventions.
+
+**2-A. Search for duplicates, symbols first**
+
+Before designing anything new, find out whether it already exists. Search structurally before textually — the two find different things, and the structural one finds the duplicate that matters.
+
+1. **Symbol-level first.** Use the host's LSP tools — definition, references, implementations — to find existing types, functions, and implementations that already cover the described behavior. A near-duplicate usually has a different name, so a text search will not surface it.
+2. **Then text-level.** Use Grep/Glob to cover what symbols cannot: path conventions, config keys, string constants, and documentation.
+
+If the LSP tool is unavailable (see `ENABLE_LSP_TOOL` and the language LSP plugins in `~/.claude/skills/dependencies.yaml`), fall back to text search and **record in the plan that structural duplicates may have been missed**. A silent downgrade turns a partial search into a plan that reads as if it searched everything.
+
+On finding a similar implementation, **extending it is the default**. Creating something new next to it is a decision, not a default: state the trade-off in the plan and say why extending was rejected.
 
 **3. Create plan-draft-<slug>.md**
 
@@ -155,7 +173,7 @@ Rules:
 - A plan is not an ADR. Long-term architecture decisions belong in ADRs; the plan shares work intent and execution contracts.
 - Do not put code-level algorithms in the plan. Do specify file/module boundaries, interfaces, compatibility, and validation contracts so the agent does not drift.
 - `Task Cards` are not compressed checklists; they are execution contracts per task. Fill every field for large tasks. For small tasks, `Intent`, `Files / Modules`, and `Validation` are enough.
-- Make the Definition of Done detailed because `$project-done` later uses it as the verification standard.
+- Make the Definition of Done detailed because `project-done` later uses it as the verification standard.
 - `Review Profile` follows the shared policy in `~/.claude/skills/SKILL-CONFIG.md`. The default is `auto`; record the expected mode and reason at planning time.
 - Docs-only examples: use `docs-light` when only `docs/**/*.md`, `content/**/*.mdx`, or static documentation assets are touched.
 - Code-impact examples: use `full` when `src/**`, `tests/**`, build/CI/dependency/runtime config is included.
@@ -175,23 +193,26 @@ Rules:
 
 **Korean Output Regression Check**
 
-Before handing the plan to `$project-issue`, verify that title/prose, requirements, DoD items, task intents, validation notes, and drift guards are Korean. If these sections are English, rewrite them in Korean first.
+Before handing the plan to `project-issue`, verify that title/prose, requirements, DoD items, task intents, validation notes, and drift guards are Korean. If these sections are English, rewrite them in Korean first.
 
 **4. Review the plan according to Review Profile**
 
 Read `## Review Profile` and finalize the review mode using the shared policy in `~/.claude/skills/SKILL-CONFIG.md`.
 
-- `full`: perform adversarial plan review from architect, implementer, and test engineer viewpoints.
-  - **Architect**: architecture fit, consistency with existing patterns, extensibility
-  - **Implementer**: implementation feasibility, missing edge cases, conflicts with existing code
-  - **Test engineer**: testability, DoD verifiability, missing test scenarios
+- `full`: perform adversarial plan review from every role declared in `review_guidelines`, or from the default roles below when the project declares none.
 - `docs-light`: run a single documentation review pass for reader comprehension, factual fidelity, link/path/command accuracy, and docs-as-code structure contracts.
 - `auto`: resolve to `docs-light` for docs-only work; resolve to `full` when code/tests/build/CI/dependencies/runtime config changes, or when uncertain.
 
-Collect feedback, revise and finalize the plan, and include the selected profile/mode and rationale in the output.
+For `full`, load `review_guidelines` from `.claude/skill-config.yaml` first — schema and rules are in `~/.claude/skills/_shared/references/review-guidelines.md`. The same rules apply here as in `project-start` §8-A: each role reads `common` plus its own `docs` before reviewing, `focus` is passed through verbatim and never parsed, roles come from the project rather than from this file, and a declared path that does not exist is a warning that gets reported, not a stop.
+
+Use the **플랜 리뷰** table in that reference for role defaults — a plan review asks whether the plan can be *executed and verified*, not whether the code is right, because the code does not exist yet. The table is not reproduced here; a second copy diverges from it.
+
+Use the same execution-path chain as `project-start` §8-B: a first-class review tool if one is reachable, else independent subagents one per role, else the main agent performing each role directly as separate passes. The chain always closes on the last entry.
+
+Collect feedback, revise and finalize the plan, and include in the output the selected profile/mode and rationale, the execution path used, and the guideline paths actually read (and any skipped as missing).
 
 **5. Output**
 
 - full path of the created file, for example `.task/plan/plan-draft-jwt-auth-lambda.md`
 - flagged uncertainties
-- next step: `$project-issue`
+- next step: `project-issue`
