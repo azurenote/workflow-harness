@@ -63,7 +63,7 @@ If the file does not exist, stop and tell the user.
 <harness_cli> get-base <issue-id>   # {"base_branch": <branch|null>, "parent_issue": <num|null>}
 ```
 
-Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, cosmos-forge=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
+Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, quantlab-front=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
 
 - If `base_branch` is non-null and **different from the project default base**, this is a **sub-PR** targeting an integration branch. Use `<base_branch>` and `<parent_issue>` in later steps: impl-report diff, PR base, and closing trailer.
 - If `base_branch` is `null` or equals the project default base, set `<base_branch>` to the project default base; this is not a sub-PR. Use existing behavior.

@@ -694,3 +694,91 @@ def test_split_references_are_self_describing() -> None:
         text = ref.read_text(encoding="utf-8")
         assert "Split out of skills/SKILL-CONFIG.md" in text, ref.name
         assert text.count("\n# ") + text.startswith("# ") >= 1, f"{ref.name} has no title"
+
+
+# --------------------------------------------------------------------------
+# Host- and language-dependent assumptions
+#
+# These are contracts, not cleanups. `cmux rename-tab` was not dead code — it
+# worked from a terminal-launched session and silently no-opped from a
+# Desktop-launched one. A step whose result depends on the host, without
+# surfacing that it did nothing, does not belong in a shared skill.
+# --------------------------------------------------------------------------
+
+
+def test_shared_skills_carry_no_host_or_language_command() -> None:
+    offenders: list[str] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            for token in ("cmux", "cargo fmt"):
+                if token in line:
+                    offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {token}")
+    assert not offenders, (
+        "shared skills must not carry a host- or language-specific command "
+        "(installed or not — this is the contract):\n" + "\n".join(offenders)
+    )
+
+
+def test_tab_naming_step_is_gone_not_replaced() -> None:
+    """Deleted, not swapped for another host's session-naming API.
+
+    A tab name is a terminal multiplexer's convenience, not an output of the
+    workflow. Re-adding it through a different host API recreates the same
+    silent no-op under Codex, CI, and headless runs.
+    """
+    text = read_skill("skills/project-start/SKILL.md")
+
+    assert "**2-C." not in text
+    for token in ("rename-tab", "set-tab", "tab name", "tab title"):
+        assert token not in text.lower(), f"tab naming came back as {token!r}"
+    # Later step numbers must not shift — other skills reference them by number.
+    assert "**3. Issue status -> In Progress**" in text
+    assert "**7. Formatting before commit**" in text
+    assert "**8. Adaptive Review**" in text
+
+
+def test_formatting_step_survives_with_the_command_injected() -> None:
+    """The opposite treatment from cmux: the step stays, the command leaves."""
+    text = read_skill("skills/project-start/SKILL.md")
+
+    assert "**7. Formatting before commit**" in text
+    assert "hooks:\n  pre_commit:" in text
+    assert "carries no formatter of its own" in text
+    # Absent hook is a silent skip, not a guessed default.
+    assert "skip this step silently" in text
+
+
+def test_hooks_reference_declares_pre_commit_failure_policy() -> None:
+    text = read_skill("skills/_shared/references/hooks.md")
+
+    assert "| `pre_commit` |" in text
+    assert "`post_start` / `pre_commit` / `post_done` 실패 시: 경고 출력 후 계속" in text
+    # The reason the policy is "warn", not "stop", is recorded — not just the policy.
+    assert "포맷은 정확성 게이트가 아니고" in text
+    # And the rule that stops the next person from re-adding a language constant.
+    assert "어떤 언어의 포맷 명령도 넣지 않는다" in text
+
+
+def test_frontend_project_coordinates_are_current() -> None:
+    """`cosmos-forge` has had no commit since 2026-06-03; the FE canon is quantlab-front."""
+    stale: list[str] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            if "cosmos-forge" in line:
+                stale.append(f"{md.relative_to(ROOT)}:{lineno}")
+    assert not stale, "stale FE coordinates:\n" + "\n".join(stale)
+
+    readme = read_skill("README.md")
+    assert "quantlab-front" in readme
+    # README keeps exactly one mention: the dormancy warning, which Task 4's
+    # implementation contract requires so the next reader is not misled.
+    assert readme.count("cosmos-forge") == 1
+    assert "휴면" in readme
+    assert "AGENTS.md` 도 stale" in readme
+
+
+def test_config_reading_is_described_as_an_action_not_a_tool() -> None:
+    """Naming one host's tool pins a shared skill to that host."""
+    text = read_skill("skills/SKILL-CONFIG.md")
+    assert "Read 도구로" not in text
+    assert "`.claude/skill-config.yaml` 을 읽는다." in text

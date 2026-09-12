@@ -83,7 +83,7 @@ Read the base declared in plan frontmatter. `/start` does **not infer** the base
 <harness_cli> get-base <issue-id>    # {"base_branch": "<branch>" | null, "parent_issue": <num> | null}
 ```
 
-Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, cosmos-forge=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
+Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, quantlab-front=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
 
 - If `base_branch` is **non-null and different from the project default base**, that branch is both the PR review/merge target and the branch base. Pass `--base-ref "<base_branch>"` in 2-A/2-B below.
 - If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use **existing behavior** (branch from current HEAD, assuming the task starts on the default base). Do not add a new prompt.
@@ -113,12 +113,6 @@ Branch push happens during `project-done`. Do not push here.
 ```
 
 After this, perform all work inside `$WORKTREE_PATH`.
-
-**2-C. Set tab name**
-
-```bash
-cmux rename-tab "task #<id>" 2>/dev/null || true
-```
 
 **3. Issue status -> In Progress**
 
@@ -167,11 +161,17 @@ Do not wait for additional instruction.
 
 **7. Formatting before commit**
 
-After implementation is complete, run this before committing:
+After implementation is complete, run the project's formatter before committing.
 
-```bash
-cargo fmt --all
+This skill is shared across projects and languages, so it carries no formatter of its own. The command comes from the project:
+
+```yaml
+# .claude/skill-config.yaml
+hooks:
+  pre_commit: <the project's format command>
 ```
+
+If `hooks.pre_commit` is absent, empty, or null, skip this step silently — a project that does not declare a formatter has none, and inventing one here would run the wrong tool. If it fails, print a warning and continue; formatting is not a correctness gate, and `pre_done` is the blocking gate that already runs before commits. See `~/.claude/skills/_shared/references/hooks.md`.
 
 **8. Adaptive Review**
 

@@ -2,7 +2,9 @@
 
 Claude Code 워크플로우 자동화(plan → issue → start → done → clean)의 **공유 코어와 글로벌 스킬**을 버전 관리하는 저장소.
 
-여러 프로젝트(enseed-trader, cosmos-forge 등)가 동일한 워크플로우 패턴을 쓰되 프로젝트별 상수만 다르다. 그 공통분모를 여기에 모아 한 곳에서 추적·리뷰·롤백한다.
+여러 프로젝트(enseed-trader, quantlab-front 등)가 동일한 워크플로우 패턴을 쓰되 프로젝트별 상수만 다르다. 그 공통분모를 여기에 모아 한 곳에서 추적·리뷰·롤백한다.
+
+> FE 정본은 2026-07-31 리네임된 `quantlab-front` 다. `cosmos-forge` 는 2026-06-03 이후 커밋이 없는 휴면 저장소이고 그 안의 `AGENTS.md` 도 stale 하니, 거기서 워크플로우 계약을 읽지 말 것.
 
 ## 2-layer 아키텍처
 

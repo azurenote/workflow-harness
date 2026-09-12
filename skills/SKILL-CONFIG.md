@@ -4,14 +4,14 @@
 
 ## 설정 읽기
 
-`.claude/skill-config.yaml` 을 Read 도구로 읽는다.
+`.claude/skill-config.yaml` 을 읽는다.
 
 파일이 없거나 키가 누락된 경우 아래 기본값을 사용한다:
 
 | 키 | 기본값 | 설명 |
 |----|--------|------|
 | `issue_tracker` | `github` | `github`, `jira`, 또는 `forgejo` |
-| `base_branch` | `main` | **프로젝트 기본** PR/머지 대상 브랜치. 각 프로젝트가 재정의(enseed-trader=`develop`, cosmos-forge=`main`). 작업별 override 는 플랜 frontmatter 가 우선 — 아래 "base branch 우선순위" 참조 |
+| `base_branch` | `main` | **프로젝트 기본** PR/머지 대상 브랜치. 각 프로젝트가 재정의(enseed-trader=`develop`, quantlab-front=`main`). 작업별 override 는 플랜 frontmatter 가 우선 — 아래 "base branch 우선순위" 참조 |
 | `adr_dir` | `docs/adr` | ADR 문서 저장 경로 |
 | `harness_enabled` | `false` | `true`면 harness_cli.py 사용 |
 | `harness_cli` | `.claude/scripts/harness_cli.py` | 프로젝트 **단일 진입점**. 코어 커맨드(`harness_core.cli`)와 이 프로젝트의 트래커 커맨드를 한 파서로 합쳐 노출한다. 모든 로컬/트래커 커맨드의 정본 주소 |
