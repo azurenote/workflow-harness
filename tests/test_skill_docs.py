@@ -327,3 +327,140 @@ def test_release_doc_rename_has_distinct_trigger_and_guard() -> None:
     assert "$project-release-doc <package> [<from>..<to>]" in document
     assert "$project-release <package> [<from>..<to>]" not in document
     assert "Do not run `cargo release`, version bumps, or tag creation" in document
+
+
+# --------------------------------------------------------------------------
+# Prerequisite tool manifest (skills/dependencies.yaml)
+#
+# The manifest is the single machine-readable declaration; README's table is
+# derived from it. These tests are what makes "derived" true instead of
+# aspirational — delete an entry from the manifest and the parity test fails.
+# --------------------------------------------------------------------------
+
+MANIFEST_PATH = "skills/dependencies.yaml"
+
+MANIFEST_REQUIRED_FIELDS = (
+    "id",
+    "kind",
+    "requirement",
+    "presence",
+    "install",
+    "probe",
+    "degrades",
+    "used_by",
+)
+
+
+def _parse_manifest() -> list[dict[str, str]]:
+    """Parse the flat scalar-only manifest.
+
+    Mirrors what install-skills.sh does with awk. The manifest must stay
+    parseable both ways: a nested structure would break the shell reader.
+    """
+    text = read_skill(MANIFEST_PATH)
+    try:
+        import yaml
+
+        return yaml.safe_load(text)["tools"]
+    except ModuleNotFoundError:
+        tools: list[dict[str, str]] = []
+        for raw in text.splitlines():
+            if raw.startswith("  - "):
+                tools.append({})
+                raw = "    " + raw[4:]
+            if not raw.startswith("    ") or raw.strip().startswith("#"):
+                continue
+            key, sep, value = raw.strip().partition(":")
+            if not sep or not tools:
+                continue
+            tools[-1][key.strip()] = value.strip().strip('"')
+        return tools
+
+
+def _parse_readme_prereq_table() -> list[dict[str, str]]:
+    text = read_skill("README.md")
+    section = text.split("### 전제 도구", 1)[1].split("### ", 1)[0]
+    rows = []
+    for line in section.splitlines():
+        line = line.strip()
+        if not line.startswith("|") or line.startswith("| 도구") or set(line) <= set("|- "):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        rows.append(
+            {
+                "id": cells[0].strip("`"),
+                "requirement": cells[1],
+                "install": cells[2].strip("`"),
+                "degrades": cells[3],
+            }
+        )
+    return rows
+
+
+def test_dependency_manifest_declares_both_presence_and_probe() -> None:
+    """Two axes, not one.
+
+    "installed on this machine" and "reachable by the agent running right now"
+    are different questions — the same CLI is reachable from a terminal-launched
+    session and silently absent from a Desktop-launched one. A manifest that
+    only carried presence would re-encode that bug as a contract.
+    """
+    tools = _parse_manifest()
+    assert tools, "manifest declares no tools"
+
+    for tool in tools:
+        for field in MANIFEST_REQUIRED_FIELDS:
+            assert field in tool, f"{tool.get('id')} is missing `{field}`"
+            assert str(tool[field]).strip(), f"{tool.get('id')} has an empty `{field}`"
+        assert tool["requirement"] in {"required", "optional"}
+
+    # A group entry needs its members, or the "any one satisfies it" check is empty.
+    for tool in tools:
+        if tool["presence"] == "installed_plugins_any":
+            assert tool.get("members"), f"{tool['id']} declares a group with no members"
+
+
+def test_readme_prerequisite_table_matches_manifest() -> None:
+    """README's table is derived. Divergence is a failure, not a style nit."""
+    manifest = {t["id"]: t for t in _parse_manifest()}
+    readme = {r["id"]: r for r in _parse_readme_prereq_table()}
+
+    assert set(manifest) == set(readme), (
+        "README prerequisite table and skills/dependencies.yaml disagree.\n"
+        f"  manifest only: {sorted(set(manifest) - set(readme))}\n"
+        f"  README only:   {sorted(set(readme) - set(manifest))}"
+    )
+
+    for tool_id, row in readme.items():
+        for field in ("requirement", "install", "degrades"):
+            assert row[field] == manifest[tool_id][field], (
+                f"README row `{tool_id}` field `{field}` diverged from the manifest"
+            )
+
+
+def test_readme_separates_presence_from_probe() -> None:
+    text = read_skill("README.md")
+    section = text.split("### 전제 도구", 1)[1].split("### ", 1)[0]
+
+    assert "**presence**" in section
+    assert "**probe**" in section
+    # The report is not a gate — Codex and CI run with none of these installed.
+    assert "exit 0" in section
+    assert "게이트가 아니다" in section
+
+
+def test_install_script_reports_prerequisites_without_gating() -> None:
+    text = read_skill("install-skills.sh")
+
+    assert "skills/dependencies.yaml" in text
+    assert "installed_plugins.json" in text
+    # Report only: no install command is ever executed by the script.
+    assert "claude plugin install" not in text.replace(
+        "run the install commands above", ""
+    ), "the script must print install commands from the manifest, never run them"
+    # Missing plugin database (Codex, CI) is a skip, not a finding.
+    assert "prerequisites: skipped" in text
+    # Field separator must not be IFS whitespace, or an empty optional field
+    # collapses and shifts every field after it.
+    assert "\\037" in text
+    assert "IFS=$'\\t'" not in text

@@ -288,8 +288,12 @@ def test_preflight_uses_harness_project_root_not_cwd(tmp_path, monkeypatch):
     result = scaffold.plan_update(tmp_path)
 
     assert result.ok
+    # The claim is "preflight ran against the harness repo root, not the cwd".
+    # Assert that by structure, not by directory name — a git worktree checkout
+    # lives under a differently named directory and the name check broke there.
+    assert seen["project_root"] != tmp_path
     assert (seen["project_root"] / "pyproject.toml").exists()
-    assert seen["project_root"].name == "workflow-harness"
+    assert (seen["project_root"] / "src" / "harness_core").is_dir()
 
 
 def test_cli_update_preserves_existing_config_context(tmp_path, monkeypatch):

@@ -31,6 +31,27 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 
 > 무관 스킬(`code-efficiency`/`fix-build`/`gemini-export` 등 일반 유틸리티)은 이 repo 범위 밖이며 `~/.claude/skills/` 에 그대로 둔다 — `install-skills.sh` 는 `skills/` 에 있는 항목만 심링크한다.
 
+### 전제 도구
+
+이 스킬셋은 아래 도구를 전제한다. 정본은 `skills/dependencies.yaml` 이고 **이 표는 거기서 파생된다** — 표만 고치면 `tests/test_skill_docs.py` 의 일치 단언이 깨진다.
+
+| 도구 | 필수 | 설치 | 없으면 |
+|------|------|------|--------|
+| `code-review@claude-plugins-official` | required | `claude plugin install code-review@claude-plugins-official` | 리뷰가 1급 도구 경로를 잃는다. 메인 에이전트가 역할별 적대적 리뷰를 직접 수행하는 폴백으로 내려가며 리뷰 자체는 중단되지 않는다. |
+| `pr-review-toolkit@claude-plugins-official` | optional | `claude plugin install pr-review-toolkit@claude-plugins-official` | 역할별 전문 리뷰어(침묵 실패·타입 설계·테스트 커버리지)를 못 쓴다. 기본 3역할 리뷰로 수행한다. |
+| `security-guidance@claude-plugins-official` | optional | `claude plugin install security-guidance@claude-plugins-official` | 보안 관점이 구현자 역할 리뷰에 흡수된다. 별도 보안 패스가 없다. |
+| `ENABLE_LSP_TOOL` | optional | `export ENABLE_LSP_TOOL=1` | 중복 탐색이 구조 기반에서 텍스트 기반으로 내려간다. Grep/Glob 만으로 수행하고, 구조적 중복을 놓쳤을 수 있음을 플랜에 남긴다. |
+| `language-lsp@claude-plugins-official` | optional | `claude plugin install rust-analyzer-lsp@claude-plugins-official` | `ENABLE_LSP_TOOL` 이 켜져 있어도 해당 언어의 심볼 질의가 되지 않는다. 텍스트 기반 탐색으로 내려간다. |
+
+`required` 는 **문서화된 기본 경로가 그 도구를 쓴다**는 뜻이지 워크플로우 게이트가 아니다. 이 스킬셋은 이 플러그인이 하나도 없는 호스트(Codex, CI)에서도 돌아야 하고, 거기서 폴백은 부수적 경로가 아니라 1급 경로다.
+
+전제의 축은 둘이고 섞으면 안 된다.
+
+- **presence** — 이 머신에 설치되어 있는가. `./install-skills.sh` 가 링크 후 보고하는 유일한 축이다. 설치하지 않고, 누락이 있어도 **exit 0** 이다.
+- **probe** — 지금 실행 중인 주체가 실제로 쓸 수 있는가. 같은 머신이라도 호스트(터미널 Claude Code / Desktop / Codex / CI)에 따라 갈리며 설치 스크립트는 이걸 답할 수 없다. 도구별 관찰 방법은 매니페스트의 `probe` 에 있다.
+
+presence 가 초록이어도 probe 가 통과한다는 뜻이 아니다. 스킬은 도구가 **없을 때**뿐 아니라 **쓸 수 없을 때**도 degrade 경로로 내려간다.
+
 ### 릴리즈 흐름 및 migration notice
 
 `$project-release`는 이제 문서 생성이 아니라 로컬 release mutation을 뜻한다. 패키지별 버전 변경을 확인받아 정확히 하나의 commit과 같은 commit을 가리키는 package tag들을 만들며, publish와 push는 하지 않는다. 기존 문서 전용 호출은 `$project-release-doc <package> [<from>..<to>]`으로 이름이 바뀌었다.
