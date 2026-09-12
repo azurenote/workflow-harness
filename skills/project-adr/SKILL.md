@@ -1,6 +1,6 @@
 ---
 name: project-adr
-description: Write architecture decisions as ADR documents and post the path as an issue comment. This may be invoked internally by the adr flag on project-start or project-done, or run directly. In Codex, run this for `$project-adr ...` or requests such as "use the project-adr skill".
+description: Write architecture decisions as ADR documents and post the path as an issue comment. This may be invoked internally by the adr flag on project-start or project-done, or run directly.
 ---
 
 # project-adr - Write an Architecture Decision Record
@@ -9,7 +9,7 @@ description: Write architecture decisions as ADR documents and post the path as 
 
 Apply this skill in the following situations:
 - Keywords such as "ADR", "architecture decision", or "design document"
-- Internal call from `$project-start <id> adr` or `$project-done <id> adr`
+- Internal call from `project-start <id> adr` or `project-done <id> adr`
 - A significant design choice needs to be recorded
 
 ## Read Settings
@@ -21,10 +21,10 @@ Use `adr_dir` as the ADR storage path (default: `docs/adr`).
 ## Usage
 
 ```
-$project-adr <issue-id>
+project-adr <issue-id>
 ```
 
-Run independently, or as an internal call from `$project-start` / `$project-done`.
+Run independently, or as an internal call from `project-start` / `project-done`.
 
 ## Output Language Guard
 
@@ -97,7 +97,7 @@ Finally, reread the document from the perspective of a reader who has never seen
 **4. Post an Issue Comment**
 
 Markdown backticks can be interpreted by the shell as command substitution. After the ADR path is finalized, pass the entire comment body as one quoted argument.
-In Codex, if a GitHub API call fails because of network or sandbox errors, immediately rerun the same command with `require_escalated`.
+If the API call fails, retry through the documented fallback path below; if it still fails, report it to the user and stop.
 
 ```bash
 ADR_PATH="<adr_dir>/YYYY-MM-DD-<slug>.md"
@@ -111,11 +111,13 @@ gh issue comment <issue-id> --body "$COMMENT"
 jira issue comment add <ticket-id> "$COMMENT"
 ```
 
-When running `exec_command` in Codex with the final path directly embedded, use single quotes like this:
+When embedding the finished path directly in the command, use single quotes so the backticks stay literal:
 
 ```bash
 .claude/scripts/harness_cli.py add-comment 326 'ADR recorded: `docs/arch-decision-record/2026-06-07-blue-green-swap-orchestration.md`'
 ```
+
+Running under Codex: see `~/.claude/skills/_shared/references/codex.md` for escalation after a sandbox failure and for shell quoting.
 
 **5. Commit the ADR File**
 
@@ -132,4 +134,4 @@ Related to #<issue-id>"
 
 - ADR file path
 - issue comment URL
-- if run independently, next step: continue with `$project-start` or `$project-done`
+- if run independently, next step: continue with `project-start` or `project-done`

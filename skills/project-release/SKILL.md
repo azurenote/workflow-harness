@@ -1,22 +1,22 @@
 ---
 name: project-release
-description: Prepare a Cargo release by analyzing changes from the latest primary-component tag, proposing per-package SemVer bumps, then creating one release commit and annotated package tags after explicit confirmation. Never publishes or pushes. In Codex, run this for `$project-release` or requests such as "use the project-release skill".
+description: Prepare a Cargo release by analyzing changes from the latest primary-component tag, proposing per-package SemVer bumps, then creating one release commit and annotated package tags after explicit confirmation. Never publishes or pushes.
 ---
 
 # project-release - Prepare a Cargo Release
 
 ## Trigger Conditions
 
-Apply this skill when Codex receives `$project-release`, or when the user asks to prepare versions, a release commit, and tags for a Cargo workspace. Requests for release notes, deployment plans, or release documents belong to `$project-release-doc`.
+Apply this skill when the user invokes `project-release`, or asks to prepare versions, a release commit, and tags for a Cargo workspace. Requests for release notes, deployment plans, or release documents belong to `project-release-doc`.
 
 ## Migration Notice
 
-`$project-release` now mutates local manifests and creates a local release commit and tags. The former document-only workflow moved to `$project-release-doc`. Never silently interpret an old `$project-release` invocation as document generation. If intent is ambiguous, explain the rename and confirm which workflow the user wants.
+`project-release` now mutates local manifests and creates a local release commit and tags. The former document-only workflow moved to `project-release-doc`. Never silently interpret an old `project-release` invocation as document generation. If intent is ambiguous, explain the rename and confirm which workflow the user wants.
 
 Recommended order:
 
-1. Run `$project-release` to prepare versions, one commit, and package tags.
-2. Run `$project-release-doc` to generate the Korean release/deployment document from those release points.
+1. Run `project-release` to prepare versions, one commit, and package tags.
+2. Run `project-release-doc` to generate the Korean release/deployment document from those release points.
 
 ## Read Settings
 
@@ -32,7 +32,7 @@ Also apply optional `release.components.<name>.release_with`, `release.preflight
 ## Usage
 
 ```text
-$project-release
+project-release
 ```
 
 The skill proposes a range and package plan from configuration. It does not accept an unchecked bump level as authority; every package target is shown for explicit confirmation.
@@ -93,7 +93,7 @@ Resolve each candidate as follows:
 - Remote-only ref: explicitly fetch that one ref without a destination, peel `FETCH_HEAD`, and use the fetched SHA. The fetch may write `FETCH_HEAD` and downloaded objects but must not create or overwrite `refs/tags/<candidate-tag>`.
 - Local and remote refs have the same name but peel to different SHAs: if it is the newest reachable candidate, stop for explicit resolution. Never guess which history is authoritative and never rewrite or delete either tag. Older conflicting names that fall below an already selected newer unambiguous tag are warnings, not blockers.
 
-Check union candidates in version order and skip unreachable targets. This preserves an unpushed tag created by a prior `$project-release` run while avoiding the broad-fetch `would clobber existing tag` failure.
+Check union candidates in version order and skip unreachable targets. This preserves an unpushed tag created by a prior `project-release` run while avoiding the broad-fetch `would clobber existing tag` failure.
 
 The proposed human-readable range is `<latest-reachable-primary-tag>..HEAD`, but all `git log` and `git diff` commands use the resolved immutable `<FROM_SHA>..HEAD`. Resolve `HEAD` to its full SHA for the confirmation screen and show the tag name, source (`local`, `remote`, or `both`), and peeled SHA. Do not choose an unreachable tag even if its version is higher.
 
@@ -192,7 +192,7 @@ Report in Korean:
 - every annotated tag and verified target SHA
 - explicit `publish: 수행하지 않음`, `push: 수행하지 않음`
 - dirty files, created commit/tags, and manual recovery choices when partially failed
-- next step: run `$project-release-doc` to create the release/deployment document
+- next step: run `project-release-doc` to create the release/deployment document
 
 ## Mixed-level Example
 

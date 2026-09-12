@@ -1,6 +1,6 @@
 ---
 name: project-start
-description: Take an issue number, create a branch or worktree, move the issue to In Progress, read the plan Intent Summary, Drift Guards, and Task Cards, then start implementation. In Codex, run this for `$project-start ...` or requests such as "use the project-start skill".
+description: Take an issue number, create a branch or worktree, move the issue to In Progress, read the plan Intent Summary, Drift Guards, and Task Cards, then start implementation.
 ---
 
 # project-start - Start Work
@@ -8,9 +8,9 @@ description: Take an issue number, create a branch or worktree, move the issue t
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- Codex receives `$project-start <issue-id>` or a request such as "use the project-start skill to start <issue-id>"
+- The user invokes `project-start <issue-id>`, or asks to use the project-start skill to start <issue-id>
 - `#<number>` or issue ID plus keywords such as "start", "begin", "implement", or "branch"
-- Immediately after `$project-issue` completes, when the user says to start
+- Immediately after `project-issue` completes, when the user says to start
 
 ## Read Settings
 
@@ -19,7 +19,7 @@ Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 ## Output Language Guard
 
 When loading an existing plan, preserve its Korean prose and do not rewrite it into English.
-If the `adr` path calls `$project-adr`, the ADR document must follow the `$project-adr` Korean-output guard.
+If the `adr` path calls `project-adr`, the ADR document must follow the `project-adr` Korean-output guard.
 
 ## Execution Safety Rules
 
@@ -29,30 +29,20 @@ If the `adr` path calls `$project-adr`, the ADR document must follow the `$proje
     .claude/scripts/harness_cli.py add-comment 123 'ADR recorded: `docs/adr/example.md`'
     ```
   - Forbidden: passing a body with backticks unquoted, or inside double quotes without escaping.
-- In Codex, if GitHub API commands such as `harness_cli.py`, `project.py`, or `gh` fail because of network/sandbox errors, immediately rerun the same command with `require_escalated`.
-- In Codex, when Review Profile resolves to `full` and team review is performed, do not spawn separate `codex`/`claude` shell processes.
-  - Use subagent tools only when user request or execution-environment policy allows them.
-  - If no subagent tool is available or policy disallows it, the main agent performs three separate adversarial review passes directly.
-  - State the review method and fallback, if any, in the final report.
+- If a tracker or git API command (`harness_cli.py`, `gh`, `fj`, `jira`) fails, retry through the documented fallback path for that step. If it still fails, report it to the user and stop — do not invent a third path.
+- Never run `codex`, `claude`, or any other LLM CLI through the shell to create a subagent. That path fails on sandbox permissions and is not a fallback.
 
-### Claude Code Execution Rules
-
-Apply the following instead of Codex-only mechanisms:
-
-- **No `require_escalated`**: if GitHub API calls (`harness_cli.py`, `gh`) fail, retry via fallback paths; if they still fail, report to the user and stop.
-- **Do not spawn LLM processes through the shell**: do not run `codex`, `claude`, or similar commands through the shell to create subagents. Same principle as Codex.
-- **Subagents**: use the `Agent` tool instead of `multi_agent_v1.spawn_agent`.
-- **When subagents are unnecessary**: the main agent performs the three viewpoints directly in sequence, same as the fallback path.
+Running under Codex: read `~/.claude/skills/_shared/references/codex.md` for the host mechanisms these rules map onto — escalation after a sandbox failure, the subagent API, shell quoting, and invocation syntax.
 
 ## Usage
 
 ```
-$project-start <issue-id> [worktree] [adr]
+project-start <issue-id> [worktree] [adr]
 ```
 
 - `<issue-id>`: GitHub issue number or Jira ticket ID (required)
 - `[worktree]`: git worktree mode
-- `[adr]`: write ADR before implementation (`$project-adr` internal call)
+- `[adr]`: write ADR before implementation (`project-adr` internal call)
 
 ## Instructions
 
@@ -101,7 +91,7 @@ Here, **"project default base"** means the `base_branch` from `skill-config.yaml
 # fallback (undeclared): git checkout -b "<branch-name>"
 ```
 
-Branch push happens during `$project-done`. Do not push here.
+Branch push happens during `project-done`. Do not push here.
 
 **2-B. Worktree mode (when `worktree` argument is present)**
 
@@ -136,7 +126,7 @@ posted.)
 
 **4. ADR (conditional)**
 
-If the `adr` argument is present, run the `$project-adr <issue-id>` procedure.
+If the `adr` argument is present, run the `project-adr <issue-id>` procedure.
 Keep the "Execution Safety Rules" above. In particular, do not expose Markdown backticks to shell command substitution when posting the ADR path as an issue comment.
 Start implementation only after the ADR commit is complete.
 

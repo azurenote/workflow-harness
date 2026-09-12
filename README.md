@@ -54,9 +54,9 @@ presence 가 초록이어도 probe 가 통과한다는 뜻이 아니다. 스킬�
 
 ### 릴리즈 흐름 및 migration notice
 
-`$project-release`는 이제 문서 생성이 아니라 로컬 release mutation을 뜻한다. 패키지별 버전 변경을 확인받아 정확히 하나의 commit과 같은 commit을 가리키는 package tag들을 만들며, publish와 push는 하지 않는다. 기존 문서 전용 호출은 `$project-release-doc <package> [<from>..<to>]`으로 이름이 바뀌었다.
+`project-release`는 이제 문서 생성이 아니라 로컬 release mutation을 뜻한다. 패키지별 버전 변경을 확인받아 정확히 하나의 commit과 같은 commit을 가리키는 package tag들을 만들며, publish와 push는 하지 않는다. 기존 문서 전용 호출은 `project-release-doc <package> [<from>..<to>]`으로 이름이 바뀌었다.
 
-권장 순서는 `$project-release`로 버전·commit·tag를 준비한 다음 `$project-release-doc`으로 릴리즈/배포 문서를 만드는 것이다. 후자는 문서와 그 commit 외에는 저장소나 배포 환경을 변경하지 않는다.
+권장 순서는 `project-release`로 버전·commit·tag를 준비한 다음 `project-release-doc`으로 릴리즈/배포 문서를 만드는 것이다. 후자는 문서와 그 commit 외에는 저장소나 배포 환경을 변경하지 않는다.
 
 ### 설치 / 재배포
 

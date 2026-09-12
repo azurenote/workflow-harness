@@ -1,6 +1,6 @@
 ---
 name: project-done
-description: Run completion in one flow: verify DoD -> write impl-report -> commit -> create PR (GitHub) or merge branch (Jira) -> update issue status. In Codex, run this for `$project-done ...` or requests such as "use the project-done skill".
+description: Run completion in one flow: verify DoD -> write impl-report -> commit -> create PR (GitHub) or merge branch (Jira) -> update issue status.
 ---
 
 # project-done - Complete Work
@@ -8,7 +8,7 @@ description: Run completion in one flow: verify DoD -> write impl-report -> comm
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- Codex receives `$project-done <issue-id>` or a request such as "use the project-done skill to complete <issue-id>"
+- The user invokes `project-done <issue-id>`, or asks to use the project-done skill to complete <issue-id>
 - A combination of keywords such as "done", "commit", "PR", "close", or "merge" plus an issue number
 - Implementation is finished and the user asks to verify the DoD
 
@@ -25,7 +25,7 @@ Do not translate the completion report to English unless the user explicitly req
 ## Usage
 
 ```
-$project-done <issue-id> [adr]
+project-done <issue-id> [adr]
 ```
 
 - `<issue-id>`: GitHub issue number or Jira ticket ID
@@ -83,7 +83,7 @@ See "Hook Execution" in `SKILL-CONFIG.md`.
 
 **3. ADR (conditional)**
 
-If the `adr` argument is present, run `$project-adr <issue-id>` first.
+If the `adr` argument is present, run `project-adr <issue-id>` first.
 Continue to Step 4 only after the ADR commit is complete.
 
 **4. Write impl-report**
@@ -225,4 +225,4 @@ For a **sub-PR (base != default)**, `Closes` does not fire, so the issue remains
 
 - commit hash
 - PR URL (GitHub), or merge commit hash (Jira)
-- after merge: run `$project-clean` to clean branches/worktrees
+- after merge: run `project-clean` to clean branches/worktrees

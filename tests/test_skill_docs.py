@@ -368,7 +368,7 @@ def test_project_release_preparation_contract() -> None:
         "git reset --hard",
         "publish: 수행하지 않음",
         "push: 수행하지 않음",
-        "$project-release-doc",
+        "project-release-doc",
     ):
         assert token in text
 
@@ -408,8 +408,8 @@ def test_readme_distinguishes_release_workflows() -> None:
     assert "| `project-release` |" in text
     assert "| `project-release-doc` |" in text
     assert "migration notice" in text
-    assert "`$project-release`로 버전·commit·tag" in text
-    assert "`$project-release-doc`으로 릴리즈/배포 문서" in text
+    assert "`project-release`로 버전·commit·tag" in text
+    assert "`project-release-doc`으로 릴리즈/배포 문서" in text
 
 
 def test_release_doc_rename_has_distinct_trigger_and_guard() -> None:
@@ -418,8 +418,8 @@ def test_release_doc_rename_has_distinct_trigger_and_guard() -> None:
 
     assert "name: project-release\n" in preparation
     assert "name: project-release-doc\n" in document
-    assert "$project-release-doc <package> [<from>..<to>]" in document
-    assert "$project-release <package> [<from>..<to>]" not in document
+    assert "project-release-doc <package> [<from>..<to>]" in document
+    assert "project-release <package> [<from>..<to>]" not in document
     assert "Do not run `cargo release`, version bumps, or tag creation" in document
 
 
@@ -558,3 +558,60 @@ def test_install_script_reports_prerequisites_without_gating() -> None:
     # collapses and shifts every field after it.
     assert "\\037" in text
     assert "IFS=$'\\t'" not in text
+
+
+# --------------------------------------------------------------------------
+# Host neutrality (skills/_shared/references/codex.md)
+#
+# Codex is still a consumer. Its instructions were moved out of the skill
+# bodies, not deleted — a grep proving the bodies are clean means nothing
+# unless the same tokens are provably still readable somewhere.
+# --------------------------------------------------------------------------
+
+CODEX_REFERENCE = "skills/_shared/references/codex.md"
+
+
+def test_skill_bodies_carry_no_host_specific_mechanism() -> None:
+    offenders: list[str] = []
+    for md in sorted((ROOT / "skills").glob("*/SKILL.md")):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            for token in ("In Codex", "Codex receives", "require_escalated",
+                          "multi_agent_v1", "$project-"):
+                if token in line:
+                    offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {token}")
+    assert not offenders, (
+        "host-specific mechanisms belong in " + CODEX_REFERENCE + ":\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_codex_reference_still_carries_what_was_moved() -> None:
+    """Moved, not deleted. Every mechanism removed above is readable here."""
+    text = read_skill(CODEX_REFERENCE)
+
+    for token in (
+        "require_escalated",
+        "multi_agent_v1.spawn_agent",
+        "exec_command",
+        "$project-start <issue-id> [worktree] [adr]",
+        "$project-release-doc <package> [<from>..<to>]",
+    ):
+        assert token in text, f"{token} was deleted rather than moved"
+
+    # Every skill's invocation must be listed, or a Codex user loses a skill.
+    for skill_dir in sorted((ROOT / "skills").glob("project-*")):
+        assert f"${skill_dir.name}" in text, f"{skill_dir.name} missing from the reference"
+
+    # The rules that hold on every host are repeated here, not replaced by
+    # Codex-only ones — that inversion is what made the old structure unreadable.
+    assert "Never run `codex`, `claude`, or any other LLM CLI" in text
+    assert "moved here" in text and "not deleted" in text
+
+
+def test_skill_config_points_at_the_host_reference() -> None:
+    """One pointer every skill reaches — all of them read SKILL-CONFIG first."""
+    text = read_skill("skills/SKILL-CONFIG.md")
+
+    assert "## 호스트별 참조" in text
+    assert CODEX_REFERENCE.replace("skills/", "") in text
+    assert "호스트 중립" in text

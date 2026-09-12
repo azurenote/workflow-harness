@@ -1,6 +1,6 @@
 ---
 name: project-release-doc
-description: Generate a release document by comparing two release points (previous tag vs new tag or HEAD) - change inventory, linked issues, DB migration and config summaries, risk assessment, and a step-by-step deployment checklist. In Codex, run this for `$project-release-doc ...` or requests such as "use the project-release-doc skill".
+description: Generate a release document by comparing two release points (previous tag vs new tag or HEAD) - change inventory, linked issues, DB migration and config summaries, risk assessment, and a step-by-step deployment checklist.
 ---
 
 # project-release-doc - Generate a Release Document
@@ -8,7 +8,7 @@ description: Generate a release document by comparing two release points (previo
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- Codex receives `$project-release-doc <package> [<from>..<to>]` or a request such as "use the project-release-doc skill"
+- The user invokes `project-release-doc <package> [<from>..<to>]`, or asks to use the project-release-doc skill
 - A new version has just been prepared (for example by `cargo release` or an npm version bump) and the user wants a release or deployment document
 - Keywords such as "release document", "release notes", "deployment plan", "릴리즈 문서", "배포 문서", "배포 계획"
 
@@ -25,7 +25,7 @@ If the `release` block is missing entirely, continue with the defaults, warn tha
 ## Usage
 
 ```
-$project-release-doc <package> [<from>..<to>]
+project-release-doc <package> [<from>..<to>]
 ```
 
 - `<package>`: a key under `release.components`. Omit it in a single-component repository; the output file is then named `release-v<version>.md` and the `{package}` placeholder resolves to an empty string.

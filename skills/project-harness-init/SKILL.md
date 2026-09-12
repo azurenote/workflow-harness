@@ -1,6 +1,6 @@
 ---
 name: project-harness-init
-description: Install the workflow-harness local wrapper into a new project. After Python/uv/git preflight and dry-run confirmation, create the project-local `.claude/scripts/` harness. In Codex, run this for `$project-harness-init ...` or requests such as "use the project-harness-init skill".
+description: Install the workflow-harness local wrapper into a new project. After Python/uv/git preflight and dry-run confirmation, create the project-local `.claude/scripts/` harness.
 ---
 
 # project-harness-init - Initial Local Harness Install
@@ -8,7 +8,7 @@ description: Install the workflow-harness local wrapper into a new project. Afte
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- `$project-harness-init <target-project-root>`, or requests such as "harness init", "install local harness", or "attach workflow-harness to a new project"
+- `project-harness-init <target-project-root>`, or requests such as "harness init", "install local harness", or "attach workflow-harness to a new project"
 - A new repo needs `.claude/scripts/harness_cli.py`, `.claude/scripts/harness/`, and `.claude/skill-config.yaml` scaffolding
 
 ## Read Settings
@@ -27,7 +27,7 @@ Values to confirm:
 - `issue_tracker` and repo/remote values
 - whether `.claude/scripts/harness_cli.py` or `.claude/scripts/harness/` already exists
 
-If a local harness already exists, do not overwrite it with init. Point the user to `$project-harness-update`, or handle overwrite only as a separate task when the user explicitly requests it.
+If a local harness already exists, do not overwrite it with init. Point the user to `project-harness-update`, or handle overwrite only as a separate task when the user explicitly requests it.
 
 **2. Preflight**
 
@@ -97,7 +97,7 @@ If needed, run `uv sync` in the target repo and repeat the same smoke check.
 - created file list
 - preserved/skipped file list
 - smoke result
-- next step: run `$project-plan` in the target repo, or start the existing workflow
+- next step: run `project-plan` in the target repo, or start the existing workflow
 
 ## Drift Guards
 

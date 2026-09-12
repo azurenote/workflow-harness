@@ -1,6 +1,6 @@
 ---
 name: project-plan
-description: Take a task description, analyze the codebase, create `.task/plan/plan-draft-<slug>.md`, and review the plan according to Review Profile policy. In Codex, run this for `$project-plan ...` or requests such as "use the project-plan skill".
+description: Take a task description, analyze the codebase, create `.task/plan/plan-draft-<slug>.md`, and review the plan according to Review Profile policy.
 ---
 
 # project-plan - Write Plan
@@ -8,7 +8,7 @@ description: Take a task description, analyze the codebase, create `.task/plan/p
 ## Trigger Conditions
 
 Apply this skill in the following situations:
-- Codex receives `$project-plan <task description>` or a request such as "use the project-plan skill for <task description>"
+- The user invokes `project-plan <task description>`, or asks to use the project-plan skill for <task description>
 - The user describes a new feature, bug fix, or task
 - Keywords such as "plan", "planning", "design", "implement this", or "add this"
 - At the start of any task that needs codebase analysis plus documentation
@@ -155,7 +155,7 @@ Rules:
 - A plan is not an ADR. Long-term architecture decisions belong in ADRs; the plan shares work intent and execution contracts.
 - Do not put code-level algorithms in the plan. Do specify file/module boundaries, interfaces, compatibility, and validation contracts so the agent does not drift.
 - `Task Cards` are not compressed checklists; they are execution contracts per task. Fill every field for large tasks. For small tasks, `Intent`, `Files / Modules`, and `Validation` are enough.
-- Make the Definition of Done detailed because `$project-done` later uses it as the verification standard.
+- Make the Definition of Done detailed because `project-done` later uses it as the verification standard.
 - `Review Profile` follows the shared policy in `~/.claude/skills/SKILL-CONFIG.md`. The default is `auto`; record the expected mode and reason at planning time.
 - Docs-only examples: use `docs-light` when only `docs/**/*.md`, `content/**/*.mdx`, or static documentation assets are touched.
 - Code-impact examples: use `full` when `src/**`, `tests/**`, build/CI/dependency/runtime config is included.
@@ -175,7 +175,7 @@ Rules:
 
 **Korean Output Regression Check**
 
-Before handing the plan to `$project-issue`, verify that title/prose, requirements, DoD items, task intents, validation notes, and drift guards are Korean. If these sections are English, rewrite them in Korean first.
+Before handing the plan to `project-issue`, verify that title/prose, requirements, DoD items, task intents, validation notes, and drift guards are Korean. If these sections are English, rewrite them in Korean first.
 
 **4. Review the plan according to Review Profile**
 
@@ -201,4 +201,4 @@ Collect feedback, revise and finalize the plan, and include in the output the se
 
 - full path of the created file, for example `.task/plan/plan-draft-jwt-auth-lambda.md`
 - flagged uncertainties
-- next step: `$project-issue`
+- next step: `project-issue`
