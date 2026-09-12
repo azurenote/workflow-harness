@@ -2,5 +2,10 @@ issue_tracker: forgejo
 base_branch: main
 harness_enabled: false
 forgejo_host: forge.lab.internal
-forgejo_remote: lab
-forgejo_repo: my/workflow-harness
+# 정본 경로. 저장소가 `my` 사용자에서 조직으로 이관됐고 Forgejo 가 구 경로를
+# 리다이렉트한다 — git origin 의 URL 은 아직 `my/workflow-harness.git` 이지만
+# 웹/API 정본은 이쪽이다 (2026-09-12 실측: /my/... → /enseed-trading-dev/... 리다이렉트).
+forgejo_repo: enseed-trading-dev/workflow-harness
+# forgejo_remote 는 의도적으로 비워 둔다. 이 저장소의 remote 는 `github` 와 `origin`
+# 뿐이고 `lab` 은 존재하지 않는다 — 없는 remote 를 적어두면 remote 기반 조회가
+# 조용히 실패한다. 미지정 시 forgejo_host + forgejo_repo 로 조회한다.
