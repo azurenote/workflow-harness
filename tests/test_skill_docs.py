@@ -13,6 +13,50 @@ def read_skill(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+
+# --------------------------------------------------------------------------
+# Anchoring helpers
+#
+# A substring assertion proves a sentence exists somewhere, not that it is
+# still the rule. A review demonstrated the gap: every prose guard below
+# survived having its rule inverted, because the asserted phrase was kept as a
+# historical aside ("an earlier draft said ... no longer applies"). These
+# helpers pin the *shape* of the rule line instead.
+# --------------------------------------------------------------------------
+
+# Words that turn a rule into a note about a rule that used to exist.
+RETRACTION_MARKERS = (
+    "earlier draft", "no longer applies", "previously", "old rule", "구 규칙",
+    "이전 규칙", "was a warning", "used to be", "former rule", "deprecated",
+)
+
+
+def rule_line(text: str, anchor: str) -> str:
+    """The one line stating a rule. Two lines means a copy crept in."""
+    lines = [l.strip() for l in text.splitlines() if anchor in l]
+    assert len(lines) == 1, (
+        f"expected exactly one line containing {anchor!r}, found {len(lines)}:\n"
+        + "\n".join(lines)
+    )
+    return lines[0]
+
+
+def assert_rule(text: str, anchor: str, *, starts_with: str) -> str:
+    """Pin a rule by the shape of its line, not by a word appearing anywhere.
+
+    `starts_with` makes the line an instruction rather than a remark about one,
+    and the retraction scan rejects keeping the phrase as history.
+    """
+    line = rule_line(text, anchor)
+    assert line.startswith(starts_with), (
+        f"rule line no longer states the rule.\n  expected start: {starts_with!r}\n  actual: {line!r}"
+    )
+    lowered = line.lower()
+    for marker in RETRACTION_MARKERS:
+        assert marker not in lowered, f"rule line reads as retracted ({marker!r}): {line!r}"
+    return line
+
+
 def test_common_review_profile_policy_is_defined() -> None:
     text = read_skill("skills/SKILL-CONFIG.md")
 
@@ -66,43 +110,91 @@ def test_project_start_review_loads_project_guidelines() -> None:
 
     assert "review_guidelines" in text
     assert "`.claude/skill-config.yaml`" in text
+
     # Guidelines are read, never summarized into a copy that drifts.
-    assert "never copy a summary" in text
-    # `focus` is passed through, not interpreted — that is what keeps the skill neutral.
-    assert "verbatim" in text
-    assert "Do not parse it" in text
+    assert_rule(
+        text, "never copy a summary",
+        starts_with="- Each role reads `common` plus its own `docs`",
+    )
+    # `focus` is transported, not interpreted — that is what keeps the skill neutral.
+    assert_rule(
+        text, "Do not parse it",
+        starts_with="- Pass each role's `focus` string through **verbatim**.",
+    )
     # Roles come from the project, not from this file.
-    assert "Do not hardcode role names" in text
+    assert_rule(
+        text, "Do not hardcode role names",
+        starts_with="- Iterate the roles the project declared.",
+    )
     # A missing path degrades loudly; it never silently drops.
-    assert "warning, not a stop" in text
+    assert_rule(
+        text, "warning, not a stop",
+        starts_with="- A declared path that does not exist is a **warning, not a stop**",
+    )
+    # Per-role fallback, not all-or-nothing — these were two contradictory rules.
+    assert_rule(
+        text, "Fall back per role",
+        starts_with="- Fall back per role, not all-or-nothing",
+    )
     # The report must carry the evidence that the delegation actually closed.
     assert "guideline paths actually read" in text
+    # The default role table lives in the reference; a copy here would diverge.
+    assert "canonical table of default roles" in text
+    assert "| architect |" not in text, "the default-role table was copied back in"
 
 
 def test_project_start_review_requires_mutation_evidence() -> None:
+    """The duty this repo keeps failing to hold itself to.
+
+    A review turned this rule optional — "The mutation duty **is** optional and
+    a project override **may** drop it" — and the old guard stayed green,
+    because it only looked for the words, which the inverted text still had.
+    """
     text = read_skill("skills/project-start/SKILL.md")
 
-    assert "verified by mutation" in text
-    assert "A passing test is not evidence that a guard works" in text
-    # A project override must not be able to drop the duty.
-    assert "not removed by a project override" in text
+    line = assert_rule(
+        text, "mutation duty",
+        starts_with="The mutation duty stands regardless of which roles the project declares",
+    )
+    # The inverted forms, explicitly.
+    for negation in ("is optional", "may drop", "may be skipped", "is not required", "optional and"):
+        assert negation not in line.lower(), f"the duty was made optional: {line!r}"
+
+    assert "A passing test is not evidence that a guard works." in text
+    assert "not removed by a project override" in line
+    # Renaming the tester role must not shed the duty.
+    assert "does not disappear when the project renames or replaces the tester role" in text
+
+
+
 
 
 def test_project_start_review_path_chain_is_closed() -> None:
-    """A priority chain whose last entry is conditional is not a fallback."""
+    """A priority chain whose last entry is conditional is not a fallback.
+
+    A review made the last rung conditional ("If subagents are unavailable and
+    the user consents, ...") and the old guard passed, because the asserted
+    sentence was still a substring.
+    """
     text = read_skill("skills/project-start/SKILL.md")
 
     assert "**8-B. Choose an execution path" in text
     assert "the last entry always applies" in text
-    assert "The main agent performs each role directly" in text
+
+    line = rule_line(text, "The main agent performs each role directly")
+    assert line.startswith("3. The main agent performs each role directly"), (
+        f"the terminal rung is no longer the numbered last entry: {line!r}"
+    )
+    # Nothing may gate it — a conditional last rung leaves the chain open.
+    for gate in ("if ", "when ", "unless ", "consent", "permitt", "allowed"):
+        assert gate not in line.lower(), f"the terminal rung is conditional: {line!r}"
+
     # Named tools may come and go; the procedure must not depend on one existing.
-    assert "skills/dependencies.yaml" in text
+    assert "dependencies.yaml" in text
     # Installed is not the same as reachable.
     assert "two questions, not one" in text
-    # Never shell out to another LLM CLI to get a reviewer.
-    assert "Never spawn an LLM CLI" in text
-    # Roles stay separate on every path, including the fallback.
-    assert "Roles stay separate on every path" in text
+    assert_rule(text, "Never spawn an LLM CLI", starts_with="- Never spawn an LLM CLI")
+    assert_rule(text, "Roles stay separate on every path", starts_with="- Roles stay separate on every path")
 
 
 def test_project_iterate_delegates_to_review_profile() -> None:
@@ -140,10 +232,52 @@ def test_project_plan_review_loads_project_guidelines() -> None:
 
     assert "review_guidelines" in text
     assert "verbatim and never parsed" in text
-    # A plan review checks executability, not code that does not exist yet.
-    assert "whether each DoD item could actually fail" in text
+    # Plan review asks a different question from code review, and the reference
+    # carries a separate default table for it.
+    assert "**플랜 리뷰** table" in text
+    assert "the code does not exist yet" in text
+    # No second copy of the table here.
+    assert "| architect |" not in text, "the default-role table was copied back in"
+    assert "not reproduced here" in text
     # Same closed chain as project-start; no second, divergent copy of the rules.
     assert "project-start` §8-B" in text
+
+
+def test_default_review_roles_are_declared_once() -> None:
+    """One canonical table. The first attempt had three copies, already divergent
+    at birth — the reference said the architect looks at 범위 준수 while
+    project-plan said extensibility, in the same commit that wrote the rule
+    forbidding copies."""
+    reference = read_skill("skills/_shared/references/review-guidelines.md")
+
+    assert "여기가 정본이다" in reference
+    # Both review kinds are covered, and they differ on purpose.
+    assert "**구현 리뷰**" in reference and "**플랜 리뷰**" in reference
+    assert reference.count("| architect |") == 2
+    assert reference.count("| implementer |") == 2
+    assert reference.count("| tester |") == 2
+
+    # Each role's default focus is pinned. Dropping the architect or the
+    # implementer row used to leave the whole suite green.
+    impl_review = reference.split("**구현 리뷰**", 1)[1].split("**플랜 리뷰**", 1)[0]
+    assert "아키텍처 적합성, 기존 패턴과의 일관성, 범위 준수" in impl_review
+    assert "로직 결함, 보안, 엣지 케이스" in impl_review
+    assert "가드가 변이로 검증됐는지" in impl_review
+
+    plan_review = reference.split("**플랜 리뷰**", 1)[1]
+    assert "확장성" in plan_review
+    assert "구현 실현 가능성" in plan_review
+    assert "각 DoD 항목이 실제로 실패할 수 있는지" in plan_review
+
+    # The mutation duty is stated as a step-level obligation, not as one cell of
+    # the tester row — a project that renames the role must not shed it.
+    assert "변이 검증 의무는 역할 선언과 무관하게 남는다" in reference
+    assert "아무도 안 지는 상태는 허용되지 않는다" in reference
+
+    # And nowhere else holds a copy of the table.
+    for skill in ("project-start", "project-plan", "project-done"):
+        body = read_skill(f"skills/{skill}/SKILL.md")
+        assert "| architect |" not in body, f"{skill} copied the role table"
 
 
 def test_review_guidelines_reference_defines_injection() -> None:
@@ -158,8 +292,8 @@ def test_review_guidelines_reference_defines_injection() -> None:
         assert token in text
 
     # Neutrality: focus is transported, never interpreted; roles are not fixed.
-    assert "`focus` 를 파싱하지 말 것" in text
-    assert "역할 이름을 고정하지 말 것" in text
+    assert_rule(text, "파싱하지 말 것", starts_with="- **`focus` 를 파싱하지 말 것.**")
+    assert_rule(text, "역할 이름을 고정하지 말 것", starts_with="- **역할 이름을 고정하지 말 것.**")
     # Degradation is loud and never skips the review.
     assert "경고 후 건너뛴다" in text
     assert "리뷰를 건너뛰지 않는다" in text
@@ -452,29 +586,20 @@ MANIFEST_REQUIRED_FIELDS = (
 
 
 def _parse_manifest() -> list[dict[str, str]]:
-    """Parse the flat scalar-only manifest.
+    """Parse the manifest with a real YAML parser.
 
-    Mirrors what install-skills.sh does with awk. The manifest must stay
-    parseable both ways: a nested structure would break the shell reader.
+    An earlier version carried a hand-rolled fallback for hosts without pyyaml.
+    It diverged from yaml.safe_load on six realistic edits — including a nested
+    `members:` list, which flipped a test's verdict depending on whether pyyaml
+    happened to be installed. pyyaml is a declared dev dependency; a second
+    parser that disagrees with the first is worse than no fallback.
+
+    The *shell* reader is a separate contract and is tested by running it, in
+    tests/test_install_skills.py — not imitated here.
     """
-    text = read_skill(MANIFEST_PATH)
-    try:
-        import yaml
+    import yaml
 
-        return yaml.safe_load(text)["tools"]
-    except ModuleNotFoundError:
-        tools: list[dict[str, str]] = []
-        for raw in text.splitlines():
-            if raw.startswith("  - "):
-                tools.append({})
-                raw = "    " + raw[4:]
-            if not raw.startswith("    ") or raw.strip().startswith("#"):
-                continue
-            key, sep, value = raw.strip().partition(":")
-            if not sep or not tools:
-                continue
-            tools[-1][key.strip()] = value.strip().strip('"')
-        return tools
+    return yaml.safe_load(read_skill(MANIFEST_PATH))["tools"]
 
 
 def _parse_readme_prereq_table() -> list[dict[str, str]]:
@@ -522,8 +647,17 @@ def test_dependency_manifest_declares_both_presence_and_probe() -> None:
 
 def test_readme_prerequisite_table_matches_manifest() -> None:
     """README's table is derived. Divergence is a failure, not a style nit."""
-    manifest = {t["id"]: t for t in _parse_manifest()}
-    readme = {r["id"]: r for r in _parse_readme_prereq_table()}
+    manifest_rows = _parse_manifest()
+    readme_rows = _parse_readme_prereq_table()
+
+    # Build the dicts only after checking for duplicates — `{r["id"]: r}` would
+    # silently keep the last of two rows claiming the same tool.
+    for label, rows in (("manifest", manifest_rows), ("README", readme_rows)):
+        ids = [r["id"] for r in rows]
+        assert len(ids) == len(set(ids)), f"duplicate ids in {label}: {ids}"
+
+    manifest = {t["id"]: t for t in manifest_rows}
+    readme = {r["id"]: r for r in readme_rows}
 
     assert set(manifest) == set(readme), (
         "README prerequisite table and skills/dependencies.yaml disagree.\n"
@@ -549,21 +683,28 @@ def test_readme_separates_presence_from_probe() -> None:
     assert "게이트가 아니다" in section
 
 
-def test_install_script_reports_prerequisites_without_gating() -> None:
-    text = read_skill("install-skills.sh")
+def test_install_script_is_guarded_behaviourally_not_by_grep() -> None:
+    """This file greps documents; the script is guarded by running it.
 
-    assert "skills/dependencies.yaml" in text
-    assert "installed_plugins.json" in text
-    # Report only: no install command is ever executed by the script.
-    assert "claude plugin install" not in text.replace(
-        "run the install commands above", ""
-    ), "the script must print install commands from the manifest, never run them"
-    # Missing plugin database (Codex, CI) is a skip, not a finding.
-    assert "prerequisites: skipped" in text
-    # Field separator must not be IFS whitespace, or an empty optional field
-    # collapses and shifts every field after it.
-    assert "\\037" in text
-    assert "IFS=$'\\t'" not in text
+    An earlier version of this test grepped install-skills.sh for vocabulary.
+    A review proved it vacuous: deleting the whole feature, or adding
+    `eval "$inst"` so the script ran installs, both left it green. The real
+    guards live in tests/test_install_skills.py, which executes the script.
+    Pin that file's existence so the coverage cannot quietly go away.
+    """
+    behavioural = ROOT / "tests" / "test_install_skills.py"
+    assert behavioural.exists(), "install-skills.sh lost its behavioural tests"
+
+    text = behavioural.read_text(encoding="utf-8")
+    assert "subprocess.run" in text, "the tests must run the script, not read it"
+    for claim in (
+        "def test_the_script_never_executes_an_install_command",
+        "def test_a_manifest_id_cannot_execute_code",
+        "def test_missing_tools_are_reported_and_exit_is_still_zero",
+        "def test_no_plugin_database_is_a_skip_not_a_finding",
+        "def test_a_partially_read_manifest_is_reported_loudly",
+    ):
+        assert claim in text, f"{claim} is missing"
 
 
 # --------------------------------------------------------------------------
@@ -579,7 +720,9 @@ CODEX_REFERENCE = "skills/_shared/references/codex.md"
 
 def test_skill_bodies_carry_no_host_specific_mechanism() -> None:
     offenders: list[str] = []
-    for md in sorted((ROOT / "skills").glob("*/SKILL.md")):
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        if md == ROOT / CODEX_REFERENCE:
+            continue
         for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
             for token in ("In Codex", "Codex receives", "require_escalated",
                           "multi_agent_v1", "$project-"):
@@ -636,7 +779,7 @@ REFERENCE_DIR = "skills/_shared/references"
 
 # What each skill actually consumes, asserted against what it declares.
 SKILL_REFERENCE_NEEDS = {
-    "project-adr": set(),
+    "project-adr": {"worktree"},
     "project-clean": {"base-branch", "worktree"},
     "project-done": {"review-guidelines", "base-branch", "hooks", "worktree"},
     "project-harness-init": {"base-branch"},
@@ -652,16 +795,22 @@ SKILL_REFERENCE_NEEDS = {
 
 def _declared_references(skill: str) -> set[str]:
     text = read_skill(f"skills/{skill}/SKILL.md")
-    return set(re.findall(r"_shared/references/([a-z-]+)\.md", text)) - {"codex"}
+    return set(re.findall(r"_shared/references/([a-z-]+)\.md(?![a-z])", text)) - {"codex"}
 
 
 def test_every_declared_reference_exists() -> None:
-    """A pointer to a file that is not there is worse than no pointer."""
+    """A pointer to a file that is not there is worse than no pointer.
+
+    Match the whole filename, extension included. An earlier version matched
+    `\.md` without a boundary, so a pointer renamed to `hooks.markdown` was read
+    as `hooks` and reported as valid.
+    """
     dangling: list[str] = []
     for md in sorted((ROOT / "skills").rglob("*.md")):
-        for name in re.findall(r"_shared/references/([a-z-]+)\.md", md.read_text(encoding="utf-8")):
-            if not (ROOT / REFERENCE_DIR / f"{name}.md").exists():
-                dangling.append(f"{md.relative_to(ROOT)} -> {name}.md")
+        for fname in re.findall(r"_shared/references/([A-Za-z0-9_.-]+)", md.read_text(encoding="utf-8")):
+            fname = fname.rstrip(".,:;`)")
+            if not (ROOT / REFERENCE_DIR / fname).exists():
+                dangling.append(f"{md.relative_to(ROOT)} -> {fname}")
     assert not dangling, "dangling reference pointers:\n" + "\n".join(dangling)
 
 
@@ -729,7 +878,17 @@ def test_tab_naming_step_is_gone_not_replaced() -> None:
     text = read_skill("skills/project-start/SKILL.md")
 
     assert "**2-C." not in text
-    for token in ("rename-tab", "set-tab", "tab name", "tab title"):
+
+    # Structural, not a blocklist: the step numbering between worktree creation
+    # and the issue transition must have no step in it at all. A renamed
+    # reintroduction ("**2-D. Name the session**") walks past a word blocklist.
+    between = text[text.index("**2-B."):text.index("**3. Issue status")]
+    extra = re.findall(r"^\*\*(2-[A-Z])\.", between, re.MULTILINE)
+    assert extra == ["2-B"], f"a step reappeared between worktree setup and step 3: {extra}"
+
+    # And the concept itself, however spelled.
+    for token in ("rename-tab", "set-tab", "set-title", "tab name", "tab title",
+                  "session name", "name the session", "pane title"):
         assert token not in text.lower(), f"tab naming came back as {token!r}"
     # Later step numbers must not shift — other skills reference them by number.
     assert "**3. Issue status -> In Progress**" in text
@@ -809,8 +968,11 @@ def test_project_done_verifies_ci_before_reporting_complete() -> None:
     """A PR URL is not an outcome. An unread check is an unknown, not a pass."""
     text = read_skill("skills/project-done/SKILL.md")
 
-    assert "**11. Check CI on the PR**" in text
-    assert 'Do not report "complete" while CI is unverified' in text
+    assert "**11. Check CI**" in text
+    assert_rule(
+        text, "while CI is unverified",
+        starts_with='- **Do not report "complete" while CI is unverified.**',
+    )
     # "no errors" is vacuous: a run that skipped the suite is also green.
     assert "which checks ran" in text
     assert "vacuous" in text
@@ -819,3 +981,38 @@ def test_project_done_verifies_ci_before_reporting_complete() -> None:
     # The final output carries the CI state, so it cannot be quietly omitted.
     assert "**12. Output**" in text
     assert "CI state:" in text
+
+
+def test_shared_layer_names_no_consumer_project_constant() -> None:
+    """The shared skills must not know any project's values.
+
+    Task 4 corrected `cosmos-forge` -> `quantlab-front` in four places rather
+    than removing the duplication, so the next rename diverges again. The rule
+    both new reference files state — 프로젝트 상수는 skill-config.yaml 에만 —
+    has to hold in the tree that states it.
+    """
+    consumers = ("enseed-trader", "quantlab-front", "cosmos-forge", "quantlab-site")
+    offenders: list[str] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            for name in consumers:
+                if name in line:
+                    offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {name}")
+    assert not offenders, (
+        "a consumer project's constants leaked into the shared layer:\n" + "\n".join(offenders)
+    )
+
+
+def test_shared_layer_hardcodes_no_base_branch_name() -> None:
+    """`develop` / `main` as a literal default is the same leak by another name."""
+    offenders: list[str] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            if "base" not in line.lower():
+                continue
+            for literal in ("`develop`", "origin/develop"):
+                if literal in line:
+                    offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {literal}")
+    assert not offenders, (
+        "a literal base branch name is pinned in the shared layer:\n" + "\n".join(offenders)
+    )

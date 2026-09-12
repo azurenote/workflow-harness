@@ -26,7 +26,7 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 | `project-clean` | stale 브랜치/워크트리 정리 |
 | `project-release` | Cargo 변경을 조사해 패키지별 SemVer를 제안하고, 확인 후 단일 release commit과 로컬 annotated tag 생성(publish/push 금지) |
 | `project-release-doc` | 두 릴리즈 지점을 비교해 변경·리스크·배포 체크리스트를 담은 한국어 릴리즈 문서 생성(배포 실행 금지) |
-| `project-iterate` | 리뷰 피드백 반영 반복 |
+| `project-iterate` | plan → issue → start → done 을 한 번에 실행(단계 사이 사용자 확인) |
 | `project-harness-init` | 새 프로젝트에 local harness scaffold 생성 |
 | `project-harness-update` | 기존 프로젝트 local harness를 canonical wrapper로 갱신 |
 | `SKILL-CONFIG.md` | 스킬 공통 설정/규약 |
@@ -39,9 +39,9 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 
 | 도구 | 필수 | 설치 | 없으면 |
 |------|------|------|--------|
-| `code-review@claude-plugins-official` | required | `claude plugin install code-review@claude-plugins-official` | 리뷰가 1급 도구 경로를 잃는다. 메인 에이전트가 역할별 적대적 리뷰를 직접 수행하는 폴백으로 내려가며 리뷰 자체는 중단되지 않는다. |
-| `pr-review-toolkit@claude-plugins-official` | optional | `claude plugin install pr-review-toolkit@claude-plugins-official` | 역할별 전문 리뷰어(침묵 실패·타입 설계·테스트 커버리지)를 못 쓴다. 기본 3역할 리뷰로 수행한다. |
-| `security-guidance@claude-plugins-official` | optional | `claude plugin install security-guidance@claude-plugins-official` | 보안 관점이 구현자 역할 리뷰에 흡수된다. 별도 보안 패스가 없다. |
+| `code-review@claude-plugins-official` | required | `claude plugin install code-review@claude-plugins-official` | 리뷰가 사슬 첫 칸을 잃는다. 역할별 독립 서브에이전트로, 그마저 없으면 메인 에이전트가 역할별로 직접 수행하는 데까지 내려가며 리뷰 자체는 중단되지 않는다. |
+| `pr-review-toolkit@claude-plugins-official` | optional | `claude plugin install pr-review-toolkit@claude-plugins-official` | 역할별 전문 리뷰어(침묵 실패·타입 설계·테스트 커버리지)를 못 쓴다. 선언된 역할 또는 기본 3역할 리뷰로 수행한다. |
+| `security-guidance@claude-plugins-official` | optional | `claude plugin install security-guidance@claude-plugins-official` | 보안은 implementer 역할의 기본 focus 안에서만 다뤄진다. 이 스킬셋은 별도 보안 패스를 지휘하지 않으므로, 있으면 사용자가 직접 돌릴 수 있다는 뜻이다. |
 | `ENABLE_LSP_TOOL` | optional | `export ENABLE_LSP_TOOL=1` | 중복 탐색이 구조 기반에서 텍스트 기반으로 내려간다. Grep/Glob 만으로 수행하고, 구조적 중복을 놓쳤을 수 있음을 플랜에 남긴다. |
 | `language-lsp@claude-plugins-official` | optional | `claude plugin install rust-analyzer-lsp@claude-plugins-official` | `ENABLE_LSP_TOOL` 이 켜져 있어도 해당 언어의 심볼 질의가 되지 않는다. 텍스트 기반 탐색으로 내려간다. |
 

@@ -83,7 +83,7 @@ Read the base declared in plan frontmatter. `/start` does **not infer** the base
 <harness_cli> get-base <issue-id>    # {"base_branch": "<branch>" | null, "parent_issue": <num> | null}
 ```
 
-Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, quantlab-front=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
+Here, **"project default base"** means whatever `base_branch` the project's `skill-config.yaml` declares, read during "Read Settings". Do not compare against any literal branch name — this skill is shared by projects whose defaults differ, and naming one of them here is the bug the comparison is trying to avoid.
 
 - If `base_branch` is **non-null and different from the project default base**, that branch is both the PR review/merge target and the branch base. Pass `--base-ref "<base_branch>"` in 2-A/2-B below.
 - If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use **existing behavior** (branch from current HEAD, assuming the task starts on the default base). Do not add a new prompt.
@@ -185,26 +185,24 @@ Profile resolution rules:
 
 **8-A. Load review guidelines (`full` only)**
 
-Read `review_guidelines` from `.claude/skill-config.yaml` before dispatching any reviewer. See `~/.claude/skills/_shared/references/review-guidelines.md` for the schema.
+Read `review_guidelines` from `.claude/skill-config.yaml` before dispatching any reviewer. See `~/.claude/skills/_shared/references/review-guidelines.md` for the schema, the interpretation rules, and the **canonical table of default roles** — that table is not reproduced here, because a second copy diverges from it.
 
 - Each role reads `common` plus its own `docs` **before** reviewing. Reviewers read the paths; never copy a summary of them into the prompt, the plan, or this skill — a copy diverges from the source.
 - Pass each role's `focus` string through **verbatim**. Do not parse it, split it, or act on what it appears to reference. Those strings are project constants; interpreting them makes this shared skill language-specific.
-- Iterate the roles the project declared. Do not hardcode role names. When `review_guidelines` is absent or declares no roles, degrade to the default roles below.
+- Iterate the roles the project declared. Do not hardcode role names.
+- Fall back per role, not all-or-nothing: a role the project declared but gave no `focus` takes its default `focus` from the reference; the default roles as a whole apply only when `review_guidelines` is absent or declares no roles at all.
 - A declared path that does not exist is a **warning, not a stop**: skip it, continue the review, and report the skipped path. A silently dropped guideline turns an ungrounded review into one that reports as grounded.
+- `review_guidelines` missing **entirely** is also a reportable condition, not a normal state. Say the review ran ungrounded; do not let `Guidelines Read: None` pass as routine.
 
-Default roles, used when the project declares no `focus` for them:
+Use the **구현 리뷰** table in the reference for defaults here.
 
-- **Architect**: architecture fit, consistency with existing patterns, scope compliance
-- **Implementer**: logic bugs, security, edge cases
-- **Test engineer**: missing tests, DoD satisfaction, and **whether each guard was verified by mutation**
-
-The mutation duty is not optional and is not removed by a project override. A passing test is not evidence that a guard works. Break the thing the guard protects and confirm the guard actually goes red; only then is it satisfied. Record the mutation you performed, not the fact that the suite is green.
+The mutation duty stands regardless of which roles the project declares: every guard the change adds must be verified by breaking what it protects and confirming it goes red. A passing test is not evidence that a guard works. It is not removed by a project override, and it does not disappear when the project renames or replaces the tester role — assign it to one of the declared roles and say which. Record the mutation you performed, not the fact that the suite is green.
 
 **8-B. Choose an execution path (`full` only)**
 
 Review paths, in priority order. Take the first one available, and close the chain — the last entry always applies.
 
-1. A first-class review tool provided by the host (see `skills/dependencies.yaml` for what this skillset declares and what each absence costs). Give it the role's guideline paths and `focus`.
+1. A first-class review tool provided by the host (see `~/.claude/skills/dependencies.yaml` for what this skillset declares and what each absence costs). Give it the role's guideline paths and `focus`.
 2. Independent subagents, one per role, dispatched in parallel through the host's subagent mechanism.
 3. The main agent performs each role directly, as separate passes, one role at a time.
 
@@ -212,7 +210,7 @@ Rules that hold on every path:
 
 - Never spawn an LLM CLI (`codex`, `claude`, …) through the shell to create a reviewer. That path fails on sandbox permissions and is not a fallback.
 - Availability is two questions, not one: a tool can be installed and still be unreachable from the host you are running under. If the declared tool does not actually respond, move down the chain and say so — do not report a path you did not use.
-- Roles stay separate on every path. Collapsing three viewpoints into one call is not a cheaper review; it is a different, weaker one.
+- Roles stay separate on every path. Collapsing the viewpoints into one call is not a cheaper review; it is a different, weaker one.
 
 **8-C. `docs-light` review checklist**
 

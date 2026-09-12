@@ -41,12 +41,6 @@ project-done <issue-id> [adr]
   - If omitted, infer it from conversation context or the current branch name.
 - `[adr]`: write ADR before commit
 
-## Worktree Notes
-
-`harness_cli.py` / `project.py` automatically resolve `.task/plan/` and `.claude/state.json` relative to the main worktree even when called from a worktree CWD.
-
-`git add` / `git commit` / `git push` must run from the **worktree CWD** so they attach to the current branch.
-
 ## Instructions
 
 **1. Confirm plan file**
@@ -63,7 +57,7 @@ If the file does not exist, stop and tell the user.
 <harness_cli> get-base <issue-id>   # {"base_branch": <branch|null>, "parent_issue": <num|null>}
 ```
 
-Here, **"project default base"** means the `base_branch` from `skill-config.yaml` read by "Read Settings" (enseed-trader=`develop`, quantlab-front=`main`). Do not compare against the literal string `develop`; this skill is shared by multiple projects.
+Here, **"project default base"** means whatever `base_branch` the project's `skill-config.yaml` declares, read during "Read Settings". Do not compare against any literal branch name — this skill is shared by projects whose defaults differ, and naming one of them here is the bug the comparison is trying to avoid.
 
 - If `base_branch` is non-null and **different from the project default base**, this is a **sub-PR** targeting an integration branch. Use `<base_branch>` and `<parent_issue>` in later steps: impl-report diff, PR base, and closing trailer.
 - If `base_branch` is `null` or equals the project default base, set `<base_branch>` to the project default base; this is not a sub-PR. Use existing behavior.
@@ -134,9 +128,11 @@ Create `.task/plan/impl-report-<issue-id>.md` in Korean:
 <실행한 테스트와 결과를 한국어로 작성>
 ```
 
-> `<diff_base>` decision: if local `<base_branch>` ref exists, use it; otherwise use `origin/<base_branch>` after `git fetch origin <base_branch>` if needed. **Do not run `git diff` against a missing ref**, because it exits 128. Always use an existing ref. When the base is the project default base, `origin/<default base>` (for example `origin/develop` for enseed) is safe.
+> `<diff_base>` decision: if local `<base_branch>` ref exists, use it; otherwise use `origin/<base_branch>` after `git fetch origin <base_branch>` if needed. **Do not run `git diff` against a missing ref**, because it exits 128. Always use an existing ref. When the base is the project default base, `origin/<default base>` is safe.
 
 **5. Commit source changes**
+
+If `.claude/skill-config.yaml` has `hooks.pre_commit`, run it through Bash first. Absent, empty, or null -> skip silently. On failure, print a warning and continue. See `~/.claude/skills/_shared/references/hooks.md`.
 
 `.task/plan/` is ignored by `.gitignore`; never stage it.
 
@@ -167,7 +163,7 @@ Determine `<trailer>` from the sub-PR decision in 1-B:
 
 ### GitHub (`issue_tracker: github`)
 
-Always pass `--base` explicitly with `<base_branch>` from 1-B. This removes hardcoded `develop`; all three layers agree on one source.
+Always pass `--base` explicitly with `<base_branch>` from 1-B. Never let the PR default decide the target; all three layers must agree on one source.
 
 ```bash
 # default-base PR: --closes lets the issue close automatically on merge
@@ -230,11 +226,13 @@ For a **sub-PR (base != default)**, `Closes` does not fire, so the issue remains
 <harness_cli> clean-temp <issue-id>
 ```
 
-**11. Check CI on the PR**
+**11. Check CI**
 
-Creating the PR is not the end of the step. Watch the checks the PR triggered and report what they did.
+Creating the PR, or merging the branch, is not the end of the step. Watch the checks that change triggered and report what they did.
 
-- Prefer the host's PR-watching path if one is available; otherwise poll with the CLI (`gh pr checks <PR_URL> --watch`, or the tracker's equivalent).
+- **PR path (GitHub)**: prefer the host's PR-watching path if one is available; otherwise poll with the CLI (`gh pr checks <PR_URL>`). Do not use a blocking `--watch` without a bound — it can outlive the command timeout and come back as an interrupted tool call rather than a result. Poll, report the state, and poll again.
+- **Branch-merge path (Jira, or any tracker without PRs)**: there is no PR to check. Read the CI run for the merge commit through whatever the project uses; if the project has no CI on that branch, say exactly that.
+- `gh pr checks` exits non-zero when a PR has no checks at all. That is a **finding**, not a tool error — report it as "no checks ran".
 - **Do not report "complete" while CI is unverified.** A PR whose checks have not been read is an unknown, not a pass. Say "CI pending" and what you are waiting on.
 - On failure, report which check failed and its output. Do not summarize a red run as a warning.
 - Report **which checks ran**, by name. "No errors" is not a result — a run that skipped the suite is green and vacuous. If no check ran at all, say that; it is a finding, not a pass.

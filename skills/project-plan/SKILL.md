@@ -53,7 +53,7 @@ Before designing anything new, find out whether it already exists. Search struct
 1. **Symbol-level first.** Use the host's LSP tools — definition, references, implementations — to find existing types, functions, and implementations that already cover the described behavior. A near-duplicate usually has a different name, so a text search will not surface it.
 2. **Then text-level.** Use Grep/Glob to cover what symbols cannot: path conventions, config keys, string constants, and documentation.
 
-If the LSP tool is unavailable (see `ENABLE_LSP_TOOL` and the language LSP plugins in `skills/dependencies.yaml`), fall back to text search and **record in the plan that structural duplicates may have been missed**. A silent downgrade turns a partial search into a plan that reads as if it searched everything.
+If the LSP tool is unavailable (see `ENABLE_LSP_TOOL` and the language LSP plugins in `~/.claude/skills/dependencies.yaml`), fall back to text search and **record in the plan that structural duplicates may have been missed**. A silent downgrade turns a partial search into a plan that reads as if it searched everything.
 
 On finding a similar implementation, **extending it is the default**. Creating something new next to it is a decision, not a default: state the trade-off in the plan and say why extending was rejected.
 
@@ -203,13 +203,9 @@ Read `## Review Profile` and finalize the review mode using the shared policy in
 - `docs-light`: run a single documentation review pass for reader comprehension, factual fidelity, link/path/command accuracy, and docs-as-code structure contracts.
 - `auto`: resolve to `docs-light` for docs-only work; resolve to `full` when code/tests/build/CI/dependencies/runtime config changes, or when uncertain.
 
-For `full`, load `review_guidelines` from `.claude/skill-config.yaml` first — schema and rules are in `~/.claude/skills/_shared/references/review-guidelines.md`. The same four rules apply here as in `project-start` §8-A: each role reads `common` plus its own `docs` before reviewing, `focus` is passed through verbatim and never parsed, roles come from the project rather than from this file, and a declared path that does not exist is a warning that gets reported, not a stop.
+For `full`, load `review_guidelines` from `.claude/skill-config.yaml` first — schema and rules are in `~/.claude/skills/_shared/references/review-guidelines.md`. The same rules apply here as in `project-start` §8-A: each role reads `common` plus its own `docs` before reviewing, `focus` is passed through verbatim and never parsed, roles come from the project rather than from this file, and a declared path that does not exist is a warning that gets reported, not a stop.
 
-Default roles, used when the project declares no `focus` for them. A plan review asks whether the plan can be *executed and verified*, not whether the code is right — the code does not exist yet:
-
-- **Architect**: architecture fit, consistency with existing patterns, extensibility
-- **Implementer**: implementation feasibility, missing edge cases, conflicts with existing code
-- **Test engineer**: testability, DoD verifiability, missing test scenarios, and **whether each DoD item could actually fail** — a condition no realistic defect could violate is not a Definition of Done
+Use the **플랜 리뷰** table in that reference for role defaults — a plan review asks whether the plan can be *executed and verified*, not whether the code is right, because the code does not exist yet. The table is not reproduced here; a second copy diverges from it.
 
 Use the same execution-path chain as `project-start` §8-B: a first-class review tool if one is reachable, else independent subagents one per role, else the main agent performing each role directly as separate passes. The chain always closes on the last entry.
 

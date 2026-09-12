@@ -16,7 +16,11 @@ Apply this skill in the following situations:
 
 Run the "Read Settings" procedure in `~/.claude/skills/SKILL-CONFIG.md` first.
 
-This skill needs no reference beyond the common contract.
+That document holds the common contract only. This skill additionally reads:
+
+- `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
+
+Read nothing else from the reference set; the rest does not apply here.
 
 Use `adr_dir` as the ADR storage path (default: `docs/adr`).
 
