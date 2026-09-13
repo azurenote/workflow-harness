@@ -1,7 +1,10 @@
 """Tests for harness_core.local module."""
 
+from pathlib import Path
+
 import pytest
 from harness_core.local import (
+    abs_under_main,
     find_draft_plan_file,
     rename_plan_to_issue,
     extract_plan_title,
@@ -320,3 +323,37 @@ class TestReadPlanPreview:
         assert "## Target State" in preview
         assert "## Non-Goals" in preview
         assert "## Drift Guards" in preview
+
+
+class TestAbsUnderMain:
+    """The re-rooting `cli._abs_under_main` used to own privately.
+
+    It moved here because a second caller appeared — the GitHub adapter reads
+    `--body-file` the same way — and two copies of a path rule diverge.
+    """
+
+    def test_relative_path_reroots_at_the_main_worktree(self, tmp_path):
+        # The file named lives only in the main checkout's gitignored .task/plan/.
+        assert abs_under_main(Path("a/b.md"), root=tmp_path) == (tmp_path / "a" / "b.md")
+
+    def test_absolute_path_passes_through(self, tmp_path):
+        absolute = tmp_path / "elsewhere" / "b.md"
+        assert abs_under_main(absolute, root=tmp_path / "main") == absolute
+
+    def test_user_path_expands_and_is_treated_as_absolute(self, tmp_path, monkeypatch):
+        # Without expansion `~/notes.md` is "relative" and would be re-rooted into
+        # the worktree, producing a path that cannot exist.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = abs_under_main(Path("~/notes.md"), root=tmp_path / "main")
+        assert result == tmp_path / "notes.md"
+
+    def test_expansion_can_be_turned_off(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = abs_under_main(Path("~/notes.md"), root=tmp_path / "main", expand_user=False)
+        assert result == (tmp_path / "main" / "~" / "notes.md")
+
+    def test_root_defaults_to_the_main_worktree_lookup(self, tmp_path, monkeypatch):
+        from harness_core import local
+
+        monkeypatch.setattr(local, "main_worktree_root", lambda: tmp_path)
+        assert abs_under_main(Path("a.md")) == tmp_path / "a.md"

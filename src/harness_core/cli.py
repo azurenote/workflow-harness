@@ -26,6 +26,7 @@ from .git import (
 )
 from .io import print_json
 from .local import (
+    abs_under_main,
     find_draft_plan_file,
     parse_frontmatter,
     plan_file_for_issue,
@@ -43,17 +44,6 @@ def _plan_dir() -> Path:
     stays side-effect free and tests can monkeypatch it without a real repo.
     """
     return main_worktree_root() / ".task" / "plan"
-
-
-def _abs_under_main(path: Path) -> Path:
-    """Re-root a relative path at the main worktree; absolute paths pass through.
-
-    A positional path argument (rename-plan's ``plan_path``) is typed from a
-    linked-worktree CWD, but the plan file it names lives only in the main
-    worktree's gitignored ``.task/plan/``. A relative path must resolve there,
-    not against CWD (plan-234).
-    """
-    return path if path.is_absolute() else (main_worktree_root() / path).resolve()
 
 
 class DuplicateCommandError(Exception):
@@ -96,7 +86,8 @@ def _find_draft_plan(_args: argparse.Namespace) -> int:
 
 
 def _rename_plan(args: argparse.Namespace) -> int:
-    print(rename_plan_to_issue(_abs_under_main(args.plan_path), args.issue_number))
+    plan_path = abs_under_main(args.plan_path, root=main_worktree_root())
+    print(rename_plan_to_issue(plan_path, args.issue_number))
     return 0
 
 

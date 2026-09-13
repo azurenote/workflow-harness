@@ -80,3 +80,67 @@ def test_unknown_attribute_still_raises(tmp_path):
     module = _load_rendered(tmp_path)
     with pytest.raises(AttributeError):
         _ = module.NOPE
+
+
+class TestGithubProjectBlock:
+    """The GitHub metadata contract's coordinates, read lazily from the config.
+
+    Owner, project number, status option names and field names are this
+    project's constants. The library takes them as arguments, so they have to
+    reach it from somewhere — this is that somewhere, and it must not turn
+    `import harness.config` into a subprocess or a hard PyYAML dependency.
+    """
+
+    def _write_config(self, tmp_path, body: str) -> None:
+        (tmp_path / ".claude").mkdir(exist_ok=True)
+        (tmp_path / ".claude" / "skill-config.yaml").write_text(body)
+
+    def _module(self, tmp_path, monkeypatch, name="cfg_gh"):
+        module = _load_rendered(tmp_path, name)
+        monkeypatch.setattr(module, "main_worktree_root", lambda: tmp_path)
+        module.github_project.cache_clear()
+        return module
+
+    def test_block_is_read_from_skill_config(self, tmp_path, monkeypatch):
+        self._write_config(
+            tmp_path,
+            "issue_tracker: github\n"
+            "github_project:\n"
+            "  owner: <login>\n"
+            "  number: 4\n"
+            "  status_names: {backlog: Queued}\n",
+        )
+        module = self._module(tmp_path, monkeypatch)
+
+        assert module.GITHUB_PROJECT == {
+            "owner": "<login>",
+            "number": 4,
+            "status_names": {"backlog": "Queued"},
+        }
+
+    def test_absent_block_is_none_not_an_error(self, tmp_path, monkeypatch):
+        # A project on another tracker has no such block; every command then
+        # reports the project fields as not applied rather than failing.
+        self._write_config(tmp_path, "issue_tracker: forgejo\n")
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_absent")
+
+        assert module.GITHUB_PROJECT is None
+
+    def test_missing_config_file_is_none(self, tmp_path, monkeypatch):
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_missing")
+        assert module.GITHUB_PROJECT is None
+
+    def test_malformed_yaml_degrades_instead_of_raising(self, tmp_path, monkeypatch):
+        self._write_config(tmp_path, "github_project: [unclosed\n")
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_bad")
+        assert module.GITHUB_PROJECT is None
+
+    def test_reading_the_block_runs_no_subprocess_at_import(self, tmp_path, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise AssertionError(f"subprocess invoked during config import: {args!r}")
+
+        monkeypatch.setattr(subprocess, "run", _boom)
+        monkeypatch.setattr(subprocess, "check_output", _boom)
+        module = _load_rendered(tmp_path, "cfg_gh_lazy")  # must not raise
+
+        assert callable(module.github_project)

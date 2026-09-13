@@ -22,6 +22,7 @@ That document holds the common contract only. This skill additionally reads:
 - `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
 - `~/.claude/skills/_shared/references/hooks.md` — lifecycle hook points and failure policy
 - `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
+- `~/.claude/skills/_shared/references/github-issue-fields.md` — GitHub issue metadata contract (`issue_tracker: github` only)
 
 Read nothing else from the reference set; the rest does not apply here.
 
@@ -200,9 +201,11 @@ git checkout <base_branch> && git merge --no-ff "<branch-name>" && git push orig
 
 ```bash
 <harness_cli> set-review <issue-id>
-# fallback (GitHub): gh issue edit <issue-id> --add-label "in-review"
+# fallback (GitHub): gh project item-edit <github_project.number> --owner <github_project.owner> --url <issue-url> --field Status --value "<status_names.in_review>" || echo "status not applied"
 # fallback (Jira):   jira issue move <ticket-id> "In Review"
 ```
+
+Same contract as `project-start` Step 3: the status is a project field. A failure here is reported as **not applied** and does not stop the flow, and it is never worked around with a label. See `~/.claude/skills/_shared/references/github-issue-fields.md`.
 
 **9. Post issue comment**
 

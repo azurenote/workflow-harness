@@ -109,6 +109,62 @@ def test_core_cli_module_has_no_tracker_strings() -> None:
     assert not hits, f"tracker tokens leaked into core cli.py: {hits}"
 
 
+def test_core_cli_does_not_import_trackers() -> None:
+    """The core parser stays tracker-agnostic even as adapters land beside it.
+
+    `harness_core.trackers.github` is opt-in: a project registers it from its own
+    `project.py`. The moment cli.py reaches for it, every project on every other
+    tracker pays for this one, and CORE_COMMANDS above stops describing what
+    build_core_parser() exposes.
+    """
+    source = (CORE / "cli.py").read_text(encoding="utf-8")
+    assert "trackers" not in source, "cli.py reached into the tracker adapters"
+
+
+def test_no_core_module_imports_the_tracker_adapters() -> None:
+    """The plan names three modules, not one.
+
+    Only cli.py was asserted, so `git.py` or `local.py` could grow an import of
+    `trackers` and the stated dependency direction would fail silently. The
+    adapters sit downstream of these three; nothing upstream may reach down.
+    """
+    for module in ("cli.py", "git.py", "local.py", "config.py", "io.py", "state.py"):
+        source = (CORE / module).read_text(encoding="utf-8")
+        assert "trackers" not in source, f"core module {module} imports the tracker adapters"
+
+
+def test_the_adapter_does_not_import_the_core_parser() -> None:
+    """The reverse edge. An adapter that imports cli.py closes the loop.
+
+    Registration takes a subparsers action as an argument precisely so the
+    adapter never needs to know how the parser was built.
+    """
+    source = (CORE / "trackers" / "github.py").read_text(encoding="utf-8")
+    for forbidden in ("from ..cli", "from .cli", "import cli"):
+        assert forbidden not in source, f"the adapter reached back into the core parser: {forbidden}"
+
+
+def test_importing_an_adapter_does_not_register_its_commands() -> None:
+    """Opt-in has to mean opt-in *at registration*, not merely at import.
+
+    Comparing two literals declared in this file would prove nothing, and
+    re-asserting the core set duplicates the test above. What is worth pinning
+    is the thing that could actually regress: importing the adapter must not
+    register anything, and registering it must add exactly its four commands to
+    a parser that did not have them.
+    """
+    from harness_core.trackers import github  # noqa: F401 — the import is the test
+
+    parser = build_core_parser()
+    assert set(_choices(parser)) == CORE_COMMANDS
+
+    github.register_github_commands(
+        subparsers(parser), owner="<owner>", repo="<repo>", field_names={}
+    )
+    added = set(_choices(parser)) - CORE_COMMANDS
+    assert added == {"create-issue", "get-issue", "set-fields", "audit-fields"}
+
+
 def test_core_cli_module_imports_no_project_package() -> None:
     # Dependency direction is project -> core, never the reverse. cli.py may
     # import stdlib and sibling harness_core modules (relative imports) only.
