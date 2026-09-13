@@ -1205,14 +1205,26 @@ def test_every_gh_doc_path_actually_documents_gh() -> None:
 def test_gh_flags_fixture_matches_installed_gh() -> None:
     """Local-only staleness check: does the fixture still match this machine's gh?
 
-    Deliberately not a CI gate — CI has no `gh`, and pinning the fixture to
-    whatever version a runner happens to install would make an unrelated gh
-    release fail this repo's builds. It runs where someone can act on it.
+    Deliberately not a CI gate. Pinning the fixture to whatever version a runner
+    happens to install makes an unrelated gh release fail this repo's builds —
+    which is exactly what happened: this test was written skipping only on a
+    missing `gh`, on the assumption that CI has none. GitHub-hosted runners ship
+    `gh` preinstalled, so the check ran there and failed on a newer build that
+    had merely *added* a flag. The `CI` skip is the actual guard; the
+    `which` skip only covers a developer machine without gh.
+
+    The companion test that *is* a gate is `test_documented_gh_flags_exist`: it
+    resolves the documented flags against the committed fixture and needs no gh
+    at all. A newer gh adding flags cannot break it, which is the property that
+    keeps the fixture useful offline.
     """
+    import os
     import shutil
 
     import pytest
 
+    if os.environ.get("CI"):
+        pytest.skip("staleness is a local signal; a runner's gh version is not this repo's")
     if shutil.which("gh") is None:
         pytest.skip("gh is not installed on this host")
 
