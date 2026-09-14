@@ -22,6 +22,7 @@ That document holds the common contract only. This skill additionally reads:
 - `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
 - `~/.claude/skills/_shared/references/hooks.md` — lifecycle hook points and failure policy
 - `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
+- `~/.claude/skills/_shared/references/github-issue-fields.md` — GitHub issue metadata contract (`issue_tracker: github` only)
 
 Read nothing else from the reference set; the rest does not apply here.
 
@@ -118,9 +119,11 @@ After this, perform all work inside `$WORKTREE_PATH`.
 
 ```bash
 <harness_cli> add-progress "<node-id>"
-# fallback (GitHub): gh issue edit <id> --add-label "in-progress" 2>/dev/null || true
+# fallback (GitHub): gh project item-edit <github_project.number> --owner <github_project.owner> --url <issue-url> --field Status --value "<status_names.in_progress>" || echo "status not applied"
 # fallback (Jira):   jira issue move <ticket-id> "In Progress"
 ```
+
+Status is a project field, not a label. The fallback above writes that field; if it fails — no `github_project` block, a token without the `project` scope, a gh older than 2.97.0 — report the status as **not applied** and continue. Do not add a workflow-state label instead; see `~/.claude/skills/_shared/references/github-issue-fields.md`.
 
 `add-progress` transitions the issue status only; it does not post a comment.
 (The optional `--issue-number`/`--branch-name` flags are still accepted for

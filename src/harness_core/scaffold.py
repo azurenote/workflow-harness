@@ -18,7 +18,7 @@ from .preflight import (
 )
 
 
-TEMPLATE_VERSION = "3"
+TEMPLATE_VERSION = "4"
 
 
 @dataclass(frozen=True)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import is_draft_plan
+from .git import main_worktree_root
 
 
 class NoPlanFileError(Exception):
@@ -29,6 +30,32 @@ class MultiplePlanFilesError(Exception):
 
 class InvalidPlanFileError(Exception):
     """File does not follow naming convention."""
+
+
+def abs_under_main(
+    path: Path, *, root: Path | None = None, expand_user: bool = True
+) -> Path:
+    """Re-root a relative path at the main worktree; absolute paths pass through.
+
+    A positional path argument is typed from whatever CWD the session happens to
+    be in — often a linked worktree — while the file it names may live only in
+    the main worktree's gitignored ``.task/plan/``. A relative path must resolve
+    there, not against CWD (plan-234).
+
+    Args:
+        path: The path as the caller typed it.
+        root: Main worktree root. Defaults to :func:`main_worktree_root`. Passing
+            it explicitly lets a caller that already resolved the root (and the
+            tests that stub it) keep one seam instead of two.
+        expand_user: Expand a leading ``~`` before deciding. Without this a path
+            like ``~/notes.md`` is "relative" and would be re-rooted into the
+            worktree, producing a path that does not exist.
+    """
+    if expand_user:
+        path = Path(path).expanduser()
+    if path.is_absolute():
+        return path
+    return ((root if root is not None else main_worktree_root()) / path).resolve()
 
 
 def find_draft_plan_file(plan_dir: Path) -> Path:

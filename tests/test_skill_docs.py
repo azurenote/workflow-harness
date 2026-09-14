@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 
@@ -795,15 +796,15 @@ REFERENCE_DIR = "skills/_shared/references"
 SKILL_REFERENCE_NEEDS = {
     "project-adr": {"worktree"},
     "project-clean": {"base-branch", "worktree"},
-    "project-done": {"review-guidelines", "base-branch", "hooks", "worktree"},
+    "project-done": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields"},
     "project-harness-init": {"base-branch"},
     "project-harness-update": set(),
-    "project-issue": {"base-branch"},
+    "project-issue": {"base-branch", "github-issue-fields"},
     "project-iterate": set(),
     "project-plan": {"review-guidelines", "base-branch"},
     "project-release": {"release", "base-branch"},
     "project-release-doc": {"release"},
-    "project-start": {"review-guidelines", "base-branch", "hooks", "worktree"},
+    "project-start": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields"},
 }
 
 
@@ -849,13 +850,21 @@ def test_skill_config_indexes_every_reference() -> None:
         assert f"_shared/references/{ref.name}" in text, f"{ref.name} is not indexed"
 
 
-def test_split_references_are_self_describing() -> None:
-    """Each moved file says where it came from, so it is not read as orphaned."""
+def test_references_are_self_describing() -> None:
+    """Every reference states its provenance, so none is read as an orphan.
+
+    Two provenances exist and both count: a file *split out of* SKILL-CONFIG.md,
+    and a file written directly as a reference. Asserting only the split wording
+    would push a newly written reference to claim a history it does not have.
+    """
+    origins = ("Split out of skills/SKILL-CONFIG.md", "Referenced from skills/SKILL-CONFIG.md")
     for ref in sorted((ROOT / REFERENCE_DIR).glob("*.md")):
         if ref.name == "codex.md":
             continue
         text = ref.read_text(encoding="utf-8")
-        assert "Split out of skills/SKILL-CONFIG.md" in text, ref.name
+        assert any(origin in text for origin in origins), (
+            f"{ref.name} states no provenance; expected one of {origins}"
+        )
         assert text.count("\n# ") + text.startswith("# ") >= 1, f"{ref.name} has no title"
 
 
@@ -1074,4 +1083,262 @@ def test_published_surface_names_no_consumer_project() -> None:
 
     assert not leaked, (
         "consumer-organization names in the published surface:\n" + "\n".join(leaked)
+    )
+
+
+# --------------------------------------------------------------------------
+# Documented `gh` invocations
+#
+# A fallback command is only a fallback if it runs. The skills document `gh`
+# lines that no test ever executed, so a flag that does not exist (or that was
+# renamed by a gh release) read as a working procedure right up until a session
+# tried it. These tests resolve every documented flag against a committed
+# snapshot of the real `gh --help` surface.
+#
+# The snapshot is a fixture, not a live probe: CI has no `gh`, and a test that
+# skips on the host that runs it is not a gate. `gen_gh_flags.py` regenerates it
+# from a real `gh`; the stale check below is what surfaces the drift, locally.
+# --------------------------------------------------------------------------
+
+GH_FLAGS_FIXTURE = ROOT / "tests" / "fixtures" / "gh_flags.yaml"
+
+# Where documented `gh` commands are checked. Bounded on purpose: these are the
+# files that carry the GitHub tracker procedure.
+GH_DOC_PATHS = (
+    "skills/project-issue/SKILL.md",
+    "skills/project-start/SKILL.md",
+    "skills/project-done/SKILL.md",
+    "skills/_shared/references/github-issue-fields.md",
+)
+
+# A command line, optionally introduced by a `# fallback (GitHub): ` style
+# comment. Anchored at line start so prose that merely mentions `gh` — "run it
+# with gh this time" — is not parsed as an invocation.
+_GH_LINE_RE = re.compile(r"^(?:#[^:]*:\s*)?(gh\s.*)$")
+
+
+def _load_gh_flags() -> dict:
+    import yaml
+
+    return yaml.safe_load(GH_FLAGS_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _logical_lines(text: str) -> list[str]:
+    """Join shell continuation lines (`\\` at end) into one logical line each."""
+    joined: list[str] = []
+    buffer = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if buffer:
+            line = buffer + " " + line
+            buffer = ""
+        if line.endswith("\\"):
+            buffer = line[:-1].strip()
+            continue
+        joined.append(line)
+    if buffer:
+        joined.append(buffer)
+    return joined
+
+
+def _gh_invocations(text: str) -> list[str]:
+    """Every `gh ...` command line in a document, continuations already joined."""
+    found = []
+    for line in _logical_lines(text):
+        match = _GH_LINE_RE.match(line)
+        if match:
+            found.append(match.group(1))
+    return found
+
+
+def _split_command(invocation: str, known: dict) -> tuple[str | None, list[str]]:
+    """Resolve an invocation to a fixture key plus the flags it passes.
+
+    The fixture is the authority on how deep a command nests: `gh api` takes an
+    argument where `gh issue create` takes a subcommand, and guessing from token
+    shape gets that wrong. Try the two-token key, then the one-token key.
+    """
+    tokens = invocation.split()
+    key = None
+    for depth in (3, 2):
+        candidate = " ".join(tokens[:depth])
+        if candidate in known:
+            key = candidate
+            break
+    flags = [t.split("=", 1)[0] for t in tokens if t.startswith("-") and t != "-"]
+    return key, flags
+
+
+def test_documented_gh_flags_exist() -> None:
+    """Every flag written in a documented `gh` command exists on that command."""
+    fixture = _load_gh_flags()
+    known = fixture["commands"]
+
+    problems: list[str] = []
+    for path in GH_DOC_PATHS:
+        for invocation in _gh_invocations(read_skill(path)):
+            key, flags = _split_command(invocation, known)
+            if key is None:
+                problems.append(f"{path}: no fixture entry for {invocation!r}")
+                continue
+            accepted = set(known[key]["long"]) | set(known[key]["short"])
+            for flag in flags:
+                if flag not in accepted:
+                    problems.append(f"{path}: {key} does not accept {flag}")
+    assert not problems, (
+        "documented gh flags that gh does not accept "
+        f"(fixture from {fixture['_gh_version']}):\n" + "\n".join(problems)
+    )
+
+
+def test_every_gh_doc_path_actually_documents_gh() -> None:
+    """Guards the scanner itself.
+
+    A regex that silently matches nothing turns this whole section green. If a
+    documented procedure stops invoking `gh`, that is a real change to assert
+    deliberately — not something to discover by the tests going quiet.
+    """
+    empty = [path for path in GH_DOC_PATHS if not _gh_invocations(read_skill(path))]
+    assert not empty, f"no gh invocation parsed from: {empty}"
+
+
+def test_gh_flags_fixture_matches_installed_gh() -> None:
+    """Local-only staleness check: does the fixture still match this machine's gh?
+
+    Deliberately not a CI gate. Pinning the fixture to whatever version a runner
+    happens to install makes an unrelated gh release fail this repo's builds —
+    which is exactly what happened: this test was written skipping only on a
+    missing `gh`, on the assumption that CI has none. GitHub-hosted runners ship
+    `gh` preinstalled, so the check ran there and failed on a newer build that
+    had merely *added* a flag. The `CI` skip is the actual guard; the
+    `which` skip only covers a developer machine without gh.
+
+    The companion test that *is* a gate is `test_documented_gh_flags_exist`: it
+    resolves the documented flags against the committed fixture and needs no gh
+    at all. A newer gh adding flags cannot break it, which is the property that
+    keeps the fixture useful offline.
+    """
+    import os
+    import shutil
+
+    import pytest
+
+    if os.environ.get("CI"):
+        pytest.skip("staleness is a local signal; a runner's gh version is not this repo's")
+    if shutil.which("gh") is None:
+        pytest.skip("gh is not installed on this host")
+
+    sys.path.insert(0, str(ROOT / "tests" / "fixtures"))
+    try:
+        import gen_gh_flags
+    finally:
+        sys.path.pop(0)
+
+    fixture = _load_gh_flags()
+    stale: list[str] = []
+    for command, expected in fixture["commands"].items():
+        longs, shorts = gen_gh_flags.flags_for(command)
+        if longs != expected["long"] or shorts != expected["short"]:
+            stale.append(
+                f"{command}: fixture {expected['long']}/{expected['short']} "
+                f"vs installed {longs}/{shorts}"
+            )
+    assert not stale, (
+        f"tests/fixtures/gh_flags.yaml was generated from {fixture['_gh_version']} "
+        "and no longer matches the gh on this machine. Regenerate it:\n"
+        "  .venv/bin/python tests/fixtures/gen_gh_flags.py\n" + "\n".join(stale)
+    )
+
+
+# --------------------------------------------------------------------------
+# The GitHub issue metadata contract
+#
+# The drift these guard against was not a session's mistake — the skills
+# *instructed* it. `gh issue edit --add-label "in-progress"` put a workflow
+# state in a label, and the issue-creation step inferred priority and size into
+# a second call that nothing forced anyone to make.
+# --------------------------------------------------------------------------
+
+
+def test_project_issue_forbids_metadata_in_labels() -> None:
+    text = read_skill("skills/project-issue/SKILL.md")
+
+    assert_rule(
+        text, "Never encode type, priority, or size as a label",
+        starts_with="- Never encode",
+    )
+    # The reserved names are derived, so the skill must not carry a list of them.
+    assert "derived at runtime" in text
+
+
+def test_project_issue_creates_in_one_call() -> None:
+    """`add-backlog` as a required second call is the failure mode itself.
+
+    A step that can be skipped without anything noticing will be skipped; the
+    observed drift came from exactly that. Type, labels, priority, size and the
+    initial status go in the one call that also creates the issue.
+    """
+    text = read_skill("skills/project-issue/SKILL.md")
+
+    create = text.split("**6. Create Issue**", 1)[1].split("### Jira", 1)[0]
+    assert "<harness_cli> create-issue" in create
+    for flag in ("--type", "--label", "--priority", "--size"):
+        assert flag in create, f"the single create call does not pass {flag}"
+
+    # add-backlog survives only as the deliberate --no-project follow-up.
+    backlog = rule_line(text, "add-backlog")
+    assert "--no-project" in backlog, (
+        f"add-backlog is still documented as a routine second call: {backlog!r}"
+    )
+
+
+def test_project_issue_handles_partial_failure_without_recreating() -> None:
+    assert_rule(
+        read_skill("skills/project-issue/SKILL.md"),
+        "On exit 3 the issue already exists",
+        starts_with="- On exit 3",
+    )
+
+
+def test_project_issue_reports_observed_metadata() -> None:
+    text = read_skill("skills/project-issue/SKILL.md")
+    assert "**7. Read Back**" in text
+    assert "not the values inferred" in text
+
+
+def test_status_transitions_write_a_project_field_not_a_label() -> None:
+    """The two skills that were instructing the drift directly."""
+    start = read_skill("skills/project-start/SKILL.md")
+    done = read_skill("skills/project-done/SKILL.md")
+
+    assert_rule(
+        start, '--field Status --value "<status_names.in_progress>"',
+        starts_with="# fallback (GitHub): gh project item-edit",
+    )
+    assert_rule(
+        done, '--field Status --value "<status_names.in_review>"',
+        starts_with="# fallback (GitHub): gh project item-edit",
+    )
+
+    for name, text in (("project-start", start), ("project-done", done)):
+        for label in ('--add-label "in-progress"', '--add-label "in-review"'):
+            assert label not in text, f"{name} still writes a workflow state as a label: {label}"
+        assert "not applied" in text, f"{name} does not say what happens when the write fails"
+
+
+def test_readme_lists_trackers_module() -> None:
+    """The adapter is opt-in, and a reader has to be able to learn that here.
+
+    "It is in harness_core" reads as "it is already registered" — which is the
+    one thing that must not be true of a tracker-specific command set.
+    """
+    text = read_skill("README.md")
+
+    assert "trackers/github" in text
+    assert "opt-in 어댑터" in text
+    assert "register_github_commands" in text
+
+    row = rule_line(text, "| `project-issue` |")
+    assert "create-issue" in row, (
+        f"the README still describes issue registration as tracker-shaped only: {row!r}"
     )

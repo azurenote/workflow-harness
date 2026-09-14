@@ -18,6 +18,11 @@ for backward compatibility with older ``harness_cli.py`` copies in sibling repos
 that do ``from harness.config import PLAN_DIR``. They are served lazily through
 module ``__getattr__`` (PEP 562), so importing this module still triggers no
 subprocess — the value is computed only on first access.
+
+``GITHUB_PROJECT`` rides the same ``__getattr__`` but is **not** a legacy alias:
+it is new, and ``github_project()`` is the form to call. Prefer the function.
+Reaching for the alias with ``from harness.config import GITHUB_PROJECT`` resolves
+it at import time, which is exactly the work this module is built not to do.
 """
 
 from __future__ import annotations
@@ -64,6 +69,35 @@ def state_file() -> Path:
     return main_worktree_root() / ".claude" / "state.json"
 
 
+@lru_cache(maxsize=1)
+def github_project() -> dict | None:
+    """The ``github_project`` block from ``.claude/skill-config.yaml``, or None.
+
+    The GitHub issue metadata contract needs the project's coordinates — owner,
+    project number, status option names, field names — and they are this
+    project's constants, so they live in the config file rather than in code.
+    See ``skills/_shared/references/github-issue-fields.md``.
+
+    Lazy for the same reason as ``plan_dir()``: resolving the config path runs
+    ``git``, and importing this module must stay side-effect free. Returns None
+    when the block is absent or PyYAML is not installed — every command then
+    reports the project fields as not applied instead of failing.
+    """
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        return None
+    path = main_worktree_root() / ".claude" / "skill-config.yaml"
+    if not path.exists():
+        return None
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return None
+    block = loaded.get("github_project")
+    return block if isinstance(block, dict) else None
+
+
 # Intentionally CWD-relative: ADRs are tracked content, and a feature branch may
 # carry in-progress ADR files the main worktree has not yet merged. ``adr-search``
 # should reflect the current branch's contents, not the main worktree's.
@@ -83,4 +117,6 @@ def __getattr__(name: str):
         return state_file()
     if name == "SKILL_CONFIG":
         return main_worktree_root() / ".claude" / "skill-config.yaml"
+    if name == "GITHUB_PROJECT":
+        return github_project()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

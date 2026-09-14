@@ -269,10 +269,29 @@ class TestHarnessCliOwnership:
             assert command in proc.stdout
 
 
-def test_template_version_bumped_past_two():
+def test_template_version_bumped_past_three():
     # The manifest drift (installed "1"/"2" vs current) is only healed if the
-    # canonical version advances; pin the forward move.
-    assert int(scaffold.TEMPLATE_VERSION) >= 3
+    # canonical version advances; pin the forward move. Bumped again for the
+    # GitHub tracker adapter reaching the starter templates.
+    assert int(scaffold.TEMPLATE_VERSION) >= 4
+
+
+def test_starter_templates_point_at_the_github_adapter():
+    """A new project should not have to rediscover the metadata contract.
+
+    The two templates reach a project differently, and saying "preserve_existing"
+    about both is wrong: `project.py` carries that flag (CANONICAL_ENTRIES), so
+    the registration example lands in new projects only, while `harness/config.py`
+    does not — `harness-update` rewrites it everywhere, which is how
+    `github_project()` reaches a project that already exists.
+    """
+    context = RenderContext(project_name="t")
+    project = scaffold._render_template("project.py.tmpl", context)
+    assert "register_github_commands" in project
+    assert "github-issue-fields.md" in project
+
+    config = scaffold._render_template("harness/config.py.tmpl", context)
+    assert "GITHUB_PROJECT" in config
 
 
 def test_preflight_uses_harness_project_root_not_cwd(tmp_path, monkeypatch):
@@ -317,3 +336,15 @@ def test_cli_update_preserves_existing_config_context(tmp_path, monkeypatch):
     generated = legacy.read_text()
     assert 'BASE_BRANCH = "develop"' in generated
     assert config.read_text().startswith("issue_tracker: forgejo\nbase_branch: develop")
+
+
+def test_the_two_starter_templates_have_different_update_rules():
+    """Pins the asymmetry the README describes, against the live entry table.
+
+    Flipping either flag silently changes which projects receive the adapter,
+    and the README sentence explaining it would become false with nothing
+    failing.
+    """
+    by_path = {entry.rel_path: entry for entry in scaffold.CANONICAL_ENTRIES}
+    assert by_path[".claude/scripts/project.py"].preserve_existing is True
+    assert by_path[".claude/scripts/harness/config.py"].preserve_existing is False

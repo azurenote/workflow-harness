@@ -20,7 +20,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def register(sub) -> None:
-    """Register this project's tracker commands. Empty until the project adds them."""
+    """Register this project's tracker commands. Empty until the project adds them.
+
+    On GitHub, the shared adapter already implements the issue metadata contract
+    (type as the issue type; priority / size / status as project fields; labels
+    as area tags only). Opt in instead of reimplementing it — the project
+    constants are arguments, so nothing about this project reaches the library:
+
+        # Called here, not imported at module top: `from harness.config import
+        # GITHUB_PROJECT` would resolve the alias at import time and read the
+        # config on every `import project`. config.py's whole design is that
+        # importing it does no work.
+        from harness.config import github_project
+        from harness_core.trackers.github import register_github_commands
+
+        project = github_project()
+        if project:
+            register_github_commands(
+                sub,
+                # `owner`/`repo` address the REPOSITORY (repos/{owner}/{repo}),
+                # taken from `github_repo: <owner>/<repo>`.
+                owner="<owner>",
+                repo="<repo>",
+                # `project_owner` is the login that owns the BOARD. It is a
+                # separate value: a repo under one login can sit on a project
+                # owned by another, which is the case this argument exists for.
+                project_owner=project["owner"],
+                project_number=project["number"],
+                initial_status=project["status_names"]["backlog"],
+                field_names=project.get("field_names", {}),
+            )
+
+    That adds create-issue / get-issue / set-fields / audit-fields. See
+    skills/_shared/references/github-issue-fields.md for the config block.
+    """
 
 
 def main() -> int:

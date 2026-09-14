@@ -17,6 +17,7 @@
 | `harness_cli` | `.claude/scripts/harness_cli.py` | 프로젝트 **단일 진입점**. 코어 커맨드(`harness_core.cli`)와 이 프로젝트의 트래커 커맨드를 한 파서로 합쳐 노출한다. 모든 로컬/트래커 커맨드의 정본 주소 |
 | `project_py` | `.claude/scripts/project.py` | **크로스 레포 호출자를 위한 하위호환 진입점**(예: `cross-plan` 이 다른 레포의 `project.py` 를 리터럴 경로로 호출). 같은 레포 안에서는 항상 `harness_cli` 를 쓴다 — `project.py` 는 in-repo fallback 계층이 아니다 |
 | `github_repo` | (gh CLI 자동 감지) | `owner/repo` 형식 |
+| `github_project` | (없음) | GitHub 이슈 메타데이터 계약의 프로젝트(Projects V2) 좌표 — `owner`·`number`·`status_names`·`field_names`. 없으면 프로젝트 필드 경로를 쓸 수 없고 "미반영" 으로 degrade 한다. 아래 "GitHub 이슈 메타데이터" 참조 |
 | `jira_project` | — | Jira 프로젝트 키 (예: `SYN`) |
 | `forgejo_host` | — | Forgejo 인스턴스 호스트 (예: `forge.example.internal`) |
 | `forgejo_remote` | — | Forgejo 를 가리키는 git remote 이름 (선택 — 없으면 `forgejo_host`/`forgejo_repo` 로 조회) |
@@ -69,6 +70,11 @@ harness_enabled = false → gh CLI / jira CLI 직접 사용
 사슬은 `harness_cli → gh` 하나뿐이며 **중간에 `project.py` 계층은 없다**. `project.py`
 는 같은 레포 안에서 harness_cli 를 우회하는 fallback 이 아니라, `cross-plan` 처럼 **다른
 레포의 스크립트를 리터럴 경로로 호출**하는 크로스 레포 진입점으로만 남는다.
+
+**폴백은 경로를 바꾸는 것이지 모델을 바꾸는 것이 아니다.** `issue_tracker: github` 에서
+harness 를 못 쓰고 gh 로 내려가도 type·priority·size·status 가 적히는 자리는 같다 —
+라벨로 우회하지 않는다. 계약과 gh 폴백 명령은 `_shared/references/github-issue-fields.md`
+에 있다.
 
 ## Review Profile 공통 정책
 
@@ -140,6 +146,7 @@ harness_enabled = false → gh CLI / jira CLI 직접 사용
 | `_shared/references/release.md` | `release` 블록 전체 | project-release · project-release-doc |
 | `_shared/references/hooks.md` | lifecycle 훅 포인트와 실패 정책 | project-start · project-done |
 | `_shared/references/worktree.md` | 워크트리 CWD 주의사항 | project-start · project-done · project-clean |
+| `_shared/references/github-issue-fields.md` | GitHub 이슈 메타데이터 계약과 `github_project` 스키마 | project-issue · project-start · project-done |
 | `_shared/references/codex.md` | Codex 호스트 메커니즘 | Codex 에서 실행할 때만 |
 
 경로는 `~/.claude/skills/` 기준이다.
