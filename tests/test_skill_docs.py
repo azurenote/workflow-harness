@@ -588,6 +588,13 @@ def test_release_doc_rename_has_distinct_trigger_and_guard() -> None:
 
 MANIFEST_PATH = "skills/dependencies.yaml"
 
+# Every CLI guard selects on `kind`, so the set of spellings is part of the
+# contract rather than free text.
+MANIFEST_KINDS = {"cli", "claude-plugin", "claude-plugin-group", "env-flag"}
+
+# A version probe is an execution surface. Keep the accepted shape narrow.
+VERSION_PROBE_FLAGS = {"--version", "version"}
+
 MANIFEST_REQUIRED_FIELDS = (
     "id",
     "kind",
@@ -617,6 +624,18 @@ def _parse_manifest() -> list[dict[str, str]]:
     return yaml.safe_load(read_skill(MANIFEST_PATH))["tools"]
 
 
+def _min_version_cell(row: dict) -> str:
+    """The `최소 버전` value for one row — normalized in exactly one place.
+
+    Both sides go through this. A tool with no declared floor (plugins, env
+    flags) reads `-`, and that is the only accepted spelling of "none": an
+    empty cell stays empty here and therefore fails against the manifest's
+    `-`. Accepting both would make "I forgot to fill the column in" look
+    identical to "this tool has no floor".
+    """
+    return str(row.get("min_version", "-")).strip()
+
+
 def _parse_readme_prereq_table() -> list[dict[str, str]]:
     text = read_skill("README.md")
     section = text.split("### 전제 도구", 1)[1].split("### ", 1)[0]
@@ -632,9 +651,17 @@ def _parse_readme_prereq_table() -> list[dict[str, str]]:
                 "requirement": cells[1],
                 "install": cells[2].strip("`"),
                 "degrades": cells[3],
+                # A row that predates the column must fail readably ("the cell
+                # is empty"), not raise IndexError — an exception reads as a
+                # broken test rather than a missing column.
+                "min_version": cells[4] if len(cells) > 4 else "",
             }
         )
     return rows
+
+
+def _manifest_by_id() -> dict[str, dict[str, str]]:
+    return {t["id"]: t for t in _parse_manifest()}
 
 
 def test_dependency_manifest_declares_both_presence_and_probe() -> None:
@@ -651,7 +678,13 @@ def test_dependency_manifest_declares_both_presence_and_probe() -> None:
     for tool in tools:
         for field in MANIFEST_REQUIRED_FIELDS:
             assert field in tool, f"{tool.get('id')} is missing `{field}`"
-            assert str(tool[field]).strip(), f"{tool.get('id')} has an empty `{field}`"
+            # Not `str(tool[field]).strip()`: a key with no value parses as
+            # None and `str(None)` is non-empty, so that spelling accepts the
+            # empty declaration it is meant to reject.
+            value = tool[field]
+            assert isinstance(value, str) and value.strip(), (
+                f"{tool.get('id')} has an empty or non-string `{field}`: {value!r}"
+            )
         assert tool["requirement"] in {"required", "optional"}
 
     # A group entry needs its members, or the "any one satisfies it" check is empty.
@@ -685,6 +718,217 @@ def test_readme_prerequisite_table_matches_manifest() -> None:
             assert row[field] == manifest[tool_id][field], (
                 f"README row `{tool_id}` field `{field}` diverged from the manifest"
             )
+        assert _min_version_cell(row) == _min_version_cell(manifest[tool_id]), (
+            f"README row `{tool_id}` minimum version "
+            f"{_min_version_cell(row)!r} diverged from the manifest "
+            f"{_min_version_cell(manifest[tool_id])!r}"
+        )
+
+
+def test_cli_tools_declare_a_version_floor_and_a_probe() -> None:
+    """A CLI without a measured probe command is a CLI that gets misjudged.
+
+    `fj --version` exits non-zero; `fj version` is the answer. Inferring the
+    command reports an installed tool as missing, which is the exact failure
+    this manifest exists to stop. The floor and the probe are declared per
+    tool, never derived.
+    """
+    tools = _parse_manifest()
+    clis = [t for t in tools if t["kind"] == "cli"]
+    assert clis, "the manifest declares no CLI at all"
+
+    # Every guard in this file selects CLIs with `kind == "cli"`, so an
+    # unconstrained `kind` means one typo (`CLI`, `cli-tool`) silently removes a
+    # tool from all of them while the script — which keys off `presence` — still
+    # reports it. Demonstrated: `kind: CLI` plus a reverted `fj --version` left
+    # the whole suite green.
+    for tool in tools:
+        assert tool["kind"] in MANIFEST_KINDS, (
+            f"{tool['id']} declares kind {tool['kind']!r}, which no guard here selects; "
+            f"known kinds are {sorted(MANIFEST_KINDS)}"
+        )
+        # The reverse implication. Without it, `kind` alone decides whether a
+        # row is guarded, and `presence: on_path` is what the script acts on.
+        if tool["presence"] == "on_path":
+            assert tool["kind"] == "cli", (
+                f"{tool['id']} is resolved by PATH lookup but declares kind {tool['kind']!r}"
+            )
+
+    for tool in clis:
+        assert tool["presence"] == "on_path", (
+            f"{tool['id']} is a CLI but its presence check is {tool['presence']!r}"
+        )
+        for field in ("min_version", "version_probe"):
+            assert field in tool, f"{tool['id']} is missing `{field}`"
+            value = tool[field]
+            # Ask for the type, not for truthiness. `str(value).strip()` passes
+            # for `None` — a mutation pass caught this exact assertion letting
+            # an emptied `version_probe:` through. Both traps are YAML's:
+            # a key with no value is None, and unquoted `3.11` is a float that
+            # every later string comparison silently mishandles.
+            assert isinstance(value, str), (
+                f"{tool['id']} declares `{field}` as {value!r} "
+                f"({type(value).__name__}); it must be a quoted, non-empty string"
+            )
+            assert value.strip(), f"{tool['id']} has an empty `{field}`"
+
+        # A floor is printed verbatim to users and compared against pyproject
+        # for python3. Unconstrained, `min_version: "banana"` passes.
+        assert re.fullmatch(r"\d+(\.\d+){1,2}", tool["min_version"]), (
+            f"{tool['id']} declares min_version {tool['min_version']!r}, "
+            "which is not a dotted version"
+        )
+
+        # The probe is executed — by the local probe test, and by agents, which
+        # `skills/SKILL-CONFIG.md` now points at this field. So its *shape* is
+        # checked here, where it runs on every host, and not only in the
+        # execution test that CI skips. `argv[0] == id` alone is not a boundary:
+        # `git -c alias.v=!touch f v` satisfies it and still runs `touch`.
+        probe = tool["version_probe"]
+        assert not set(probe) & set("|;&$()<>`\n\\"), (
+            f"{tool['id']} declares a version_probe containing shell metacharacters: {probe!r}"
+        )
+        argv = probe.split()
+        assert argv[0] == tool["id"], (
+            f"{tool['id']} declares a version_probe that invokes {argv[0]!r}"
+        )
+        assert len(argv) == 2 and argv[1] in VERSION_PROBE_FLAGS, (
+            f"{tool['id']} declares version_probe {probe!r}; it must be the tool "
+            f"plus one of {sorted(VERSION_PROBE_FLAGS)}. Widen this deliberately "
+            "if a tool ever needs more — an argument list is an execution surface."
+        )
+
+        # CLI install is a docs URL, not a runnable command. `|` would shift the
+        # README table's cells; trailing punctuation rides into the script's
+        # output and the table cell verbatim.
+        install = tool["install"]
+        assert install.startswith("http"), (
+            f"{tool['id']} declares install {install!r}; CLI rows carry an official docs URL"
+        )
+        assert "|" not in install, f"{tool['id']} install contains `|`, which breaks the README table"
+        assert install[-1] not in ".,", f"{tool['id']} install ends in punctuation: {install!r}"
+
+
+def test_python_floor_matches_pyproject() -> None:
+    """The same floor is stated in two files. Let them disagree and the
+    manifest starts describing a Python this package will not install on."""
+    import tomllib
+
+    from harness_core.preflight import _minimum_python_version
+
+    requires_python = tomllib.loads(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["requires-python"]
+
+    # One parser for both sides — a second one would be a third statement of
+    # the same fact, free to drift from the first two.
+    packaged = _minimum_python_version(requires_python)
+    declared = _minimum_python_version(">=" + _manifest_by_id()["python3"]["min_version"])
+
+    # `_minimum_python_version` returns None when its regex misses. Without
+    # this, a pyproject moved to `~=3.11` and a mistyped floor both parse to
+    # None and compare equal while the two files disagree.
+    assert packaged is not None, f"could not parse requires-python {requires_python!r}"
+    assert declared is not None, "could not parse the manifest python3 floor"
+    assert declared == packaged, (
+        f"skills/dependencies.yaml declares python3 >= {declared} but "
+        f"pyproject.toml requires-python is {requires_python!r}"
+    )
+
+
+def test_gh_minimum_is_stated_once_and_cited() -> None:
+    """The gh floor lives in prose in one reference file, with its reason.
+
+    Pinned two ways: the number must match the manifest, and it must appear
+    exactly once — a fourth copy of the same fact is how the first three
+    diverged. The number is read from the manifest, never typed here.
+    """
+    floor = _manifest_by_id()["gh"]["min_version"]
+    reference = "skills/_shared/references/github-issue-fields.md"
+    text = read_skill(reference)
+
+    # Delimited, not a substring: `count("2.97")` is 1 against the prose's
+    # "2.97.0", so shortening the manifest floor to a prefix used to pass.
+    delimited = rf"(?<![\d.]){re.escape(floor)}(?![\d.])"
+    occurrences = len(re.findall(delimited, text))
+    assert occurrences == 1, (
+        f"gh minimum {floor!r} appears {occurrences} time(s) in {reference}; "
+        "it must be stated exactly once there and must match skills/dependencies.yaml"
+    )
+
+    # And repo-wide: the number is also stated in project-issue and
+    # project-start. The earlier version of this test checked one file while
+    # its docstring claimed "exactly once", so bumping the floor everywhere the
+    # red tests pointed still left two stale copies behind.
+    stale = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            if not re.search(r"(?<![A-Za-z0-9_])gh(?![A-Za-z0-9_])", line):
+                continue
+            for stated in re.findall(r"\d+\.\d+\.\d+", line):
+                if stated != floor:
+                    stale.append(f"{md.relative_to(ROOT)}:{lineno}: states {stated}")
+    assert not stale, (
+        f"a gh version other than the declared floor {floor} is stated in the shared layer:\n"
+        + "\n".join(stale)
+    )
+    # A version floor with no reason attached is a number nobody can revise.
+    assert "cli/cli#13807" in text, (
+        "the gh minimum lost its citation; state what the release changed"
+    )
+
+
+def test_preflight_required_tools_are_declared() -> None:
+    """Coverage in one direction only, and that is the whole claim.
+
+    `harness_core.preflight` gates scaffolding on its own hardcoded tool list.
+    This asserts every tool it demands is declared in the manifest, so the two
+    lists cannot drift apart silently.
+
+    What it does NOT catch: `preflight._check_tool` still hardcodes
+    `--version` for every tool and never reads `version_probe`. Widen
+    `DEFAULT_REQUIRED_TOOLS` to include `fj` and preflight will call
+    `fj --version`, get a non-zero exit, and report an installed tool as
+    unusable — with this test still green. That is a known follow-up, not
+    something this assertion fixes.
+    """
+    from harness_core.preflight import DEFAULT_REQUIRED_TOOLS
+
+    declared = {t["id"] for t in _parse_manifest() if t["kind"] == "cli"}
+    undeclared = sorted(set(DEFAULT_REQUIRED_TOOLS) - declared)
+
+    assert not undeclared, (
+        f"preflight requires {undeclared} but skills/dependencies.yaml does not declare "
+        f"them; declared CLIs are {sorted(declared)}"
+    )
+
+
+def test_readme_prerequisite_table_has_no_shifted_columns() -> None:
+    """The header is not derived, only the data rows are.
+
+    Dropping `최소 버전` from the header while leaving eleven 5-cell data rows
+    renders a shifted table and left the suite green — the DoD relegated this
+    to manual review, which is the one thing this ticket's design refuses to
+    rely on everywhere else.
+    """
+    text = read_skill("README.md")
+    section = text.split("### 전제 도구", 1)[1].split("### ", 1)[0]
+
+    rows = [
+        [c.strip() for c in line.strip().strip("|").split("|")]
+        for line in section.splitlines()
+        if line.strip().startswith("|") and not set(line.strip()) <= set("|- ")
+    ]
+    assert rows, "no prerequisite table found"
+
+    header, *body = rows
+    assert header[0] == "도구" and header[-1] == "최소 버전", (
+        f"prerequisite table header changed shape: {header}"
+    )
+    for row in body:
+        assert len(row) == len(header), (
+            f"row {row[0]!r} has {len(row)} cells but the header has {len(header)}"
+        )
 
 
 def test_readme_separates_presence_from_probe() -> None:

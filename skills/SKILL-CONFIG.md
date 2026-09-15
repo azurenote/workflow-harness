@@ -52,6 +52,8 @@ issue_tracker = jira    → jira CLI (ankitpokhrel/jira-cli 필요)
 issue_tracker = forgejo → fj CLI (forgejo-cli 필요) — 조회: fj -H <forgejo_host> issue view/search
 ```
 
+위 CLI 들의 최소 버전과 **버전 확인 명령**은 `~/.claude/skills/dependencies.yaml` 에 선언돼 있다. 확인 명령을 추측하지 말 것 — `--version` 이 모든 도구에 통하지는 않고, 추측하면 설치된 도구를 미설치로 오판한다.
+
 `forgejo` 는 현재 **조회(read) 경로만** 계약이다. 이슈 제목·상태 조회는
 `fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<N>"` 을 사용하고,
 로컬에 `forgejo_remote` 리모트가 실제로 존재하면 `fj issue view -R <forgejo_remote> <N>` 형태의 remote 기반 조회로 대체할 수 있다.
