@@ -17,12 +17,39 @@
 # **쓸 수 없을 때**도 degrade 경로로 내려가야 한다.
 #
 # requirement 의미:
-#   required — 스킬이 문서화한 **기본 경로**가 이 도구를 쓴다. 없어도 폴백으로
-#              절차는 끝까지 간다. 워크플로우를 막는 게이트가 아니다.
-#   optional — 있으면 리뷰/탐색 품질이 올라간다. 없어도 기본 경로가 성립한다.
+#   required — 스킬이 문서화한 **기본 경로**가 이 도구를 쓴다. 설치 스크립트가 막는
+#              게이트는 아니다. **폴백이 있는지, 없으면 무엇이 무너지는지는
+#              `degrades` 가 말한다** — 일부 도구(`git`·`python3`)에는 폴백이 없다.
+#   optional — 있으면 리뷰/탐색 품질이 올라가거나, 특정 설정에서만 쓰인다. 없어도
+#              기본 경로가 성립하거나 degrade 경로가 있다.
+#
+# 트래커 CLI(`gh`·`fj`·`jira`)는 `optional` 로 적혀 있지만 조건부다. 해당
+# `issue_tracker` 를 쓰는 프로젝트에서는 사실상 required 이고, 그 조건은 각 항목의
+# `degrades` **첫 문장**에 있다. `requirement` 가 이진값이라 기계가 읽는 자리에는
+# 담기지 않는다 — 조건을 읽는 것은 사람이다.
+#
+# CLI 항목만 추가로 갖는 필드 둘:
+#
+#   min_version    — 이 스킬셋이 문서화한 사용법의 하한. **선언될 뿐 아무도 비교하지
+#                    않는다.** install-skills.sh 는 이 값을 읽어 MISSING 행에 찍지만
+#                    판정에는 쓰지 않는다. 값 위 주석에 **근거의 등급**을 적는다 —
+#                    출처 있음 / 기능으로 뒷받침된 관측값 / 순수 관측값. 읽는 사람이
+#                    "조사된 요구사항" 과 "이 노트북에 깔려 있던 버전" 을 구분할 수
+#                    있어야 한다. 근거 없는 숫자를 지어내지 말 것.
+#   version_probe  — 버전을 확인하는 **실측된** 명령. 추론하지 말 것: `fj --version`
+#                    은 에러로 죽고 `fj version` 이 정답이며, `jira` 도 마찬가지다.
+#                    추론하면 설치된 도구를 미설치로 오판한다. **install-skills.sh 는
+#                    이 필드를 읽지 않는다** — 값이 셸에 도달할 경로 자체가 없다.
+#
+# CLI 항목의 `install` 은 **실행할 명령이 아니라 받으러 갈 곳**(공식 문서 URL)이다.
+# 이 스킬셋은 배포를 전제하고, `brew install …` 류는 한 플랫폼에서만 참인 값이라
+# published surface 에 넣지 않는다. 스크립트의 MISSING 행은 이 값을 그대로 찍으므로
+# 사람은 복사해 붙이는 대신 열어 봐야 한다 — 알고 택한 비용이다.
 #
 # 스키마는 의도적으로 평평하다(스칼라 값만). install-skills.sh 가 YAML 파서 없이
 # awk 로 읽어야 하기 때문이다. 중첩 리스트를 넣지 말 것 — 쉼표 구분 문자열을 쓴다.
+# 값에 `"` 를 넣지 말 것(awk 의 quoted-span 처리가 끝 따옴표 기준으로 자른다).
+# `install` 값에 `|` 를 넣지 말 것(README 표 파서가 셀을 `|` 로 쪼갠다).
 
 schema: 1
 
@@ -68,3 +95,92 @@ tools:
     probe: "대상 프로젝트 언어에 맞는 멤버가 켜져 있는가 — 다른 언어 멤버가 설치돼 있어도 이 프로젝트에서는 무의미하다"
     degrades: "`ENABLE_LSP_TOOL` 이 켜져 있어도 해당 언어의 심볼 질의가 되지 않는다. 텍스트 기반 탐색으로 내려간다."
     used_by: project-plan
+  # --- CLI ---------------------------------------------------------------
+  # presence: on_path — 이 스크립트를 띄운 셸의 PATH 에서 실행 파일을 찾을 수 있는가.
+  # "이 머신에 설치되어 있다" 보다 약한 주장이다: 에이전트가 실제로 도는 셸의 PATH 는
+  # 다를 수 있고, 그 차이가 바로 probe 축이다.
+  #
+  # min_version 근거 등급: 출처 있음(sourced)
+  # `git restore --staged` 가 2.23 에 들어왔다. 스킬이 쓰는 나머지 명령
+  # (worktree add/remove/list, merge-base --is-ancestor, rev-list --max-parents,
+  # branch -vv, fetch --prune)은 모두 그보다 이르다.
+  - id: git
+    kind: cli
+    requirement: required
+    presence: on_path
+    install: https://git-scm.com
+    min_version: "2.23.0"
+    version_probe: git --version
+    probe: "이 세션에서 셸 실행이 가능하고 `git status` 가 저장소를 인식하는가"
+    degrades: "폴백이 없다. 브랜치·워크트리·커밋·머지 판정이 전부 이 도구 위에 있어 없으면 워크플로우 스킬 자체가 성립하지 않는다."
+    used_by: project-start, project-done, project-clean, project-adr, project-plan, project-release, project-release-doc, project-iterate, project-harness-init
+  # min_version 근거 등급: 출처 있음(sourced)
+  # `gh project item-edit` 의 이름 기반 --field/--value 해석이 2.97.0 에 들어왔다
+  # (cli/cli#13807). _shared/references/github-issue-fields.md 가 그 근거를 적고 있고,
+  # 숫자는 그 한 곳과 여기서만 나온다.
+  - id: gh
+    kind: cli
+    requirement: optional
+    presence: on_path
+    install: https://cli.github.com/
+    min_version: "2.97.0"
+    version_probe: gh --version
+    probe: "`gh auth status` 가 인증된 계정을 보여주고 `gh issue view` 가 대상 저장소를 실제로 읽는가"
+    degrades: "`issue_tracker: github` 인 프로젝트에서는 사실상 required 다. 없으면 이슈 조회·생성, PR 생성, 프로젝트 필드 반영이 모두 막히고 스킬은 웹 UI 수동 처리를 안내한 뒤 사용자가 준 결과로 이어간다."
+    used_by: project-issue, project-start, project-done, project-adr, project-plan, project-release-doc, project-iterate
+  # min_version 근거 등급: 기능으로 뒷받침된 관측값
+  # 0.6.0 에 write 경로(issue create/edit/comment) 존재를 실측. 그 이전 릴리스 미확인.
+  - id: fj
+    kind: cli
+    requirement: optional
+    presence: on_path
+    install: https://codeberg.org/forgejo-contrib/forgejo-cli
+    min_version: "0.6.0"
+    version_probe: fj version
+    probe: "`fj version` 이 도는가, 그리고 `fj issue view` 가 대상 인스턴스에 실제로 닿는가 — 설치돼 있어도 호스트에 따라 사설망 접근이 막혀 조회만 실패할 수 있다"
+    degrades: "`issue_tracker: forgejo` 인 프로젝트에서는 사실상 required 다. 조회가 막히면 그 항목을 미확인으로 표기하고 절차를 계속하며, 쓰기가 필요한 단계는 웹 UI 수동 처리로 내려간다."
+    used_by: project-issue, project-start, project-done, project-release-doc
+  # min_version 근거 등급: 관측값 (이 환경의 설치본), 미검증 하한
+  # 쓰는 명령은 issue view/move/comment/create 뿐이고 도입 시점 미확인.
+  # 어느 바이너리인지는 이름이 아니라 설치본으로 확인했다 — ankitpokhrel/jira-cli 이고,
+  # 이름이 비슷한 go-jira 는 다른 도구다. install URL 이 그 구분을 값 자체로 드러낸다.
+  - id: jira
+    kind: cli
+    requirement: optional
+    presence: on_path
+    install: https://github.com/ankitpokhrel/jira-cli
+    min_version: "1.7.0"
+    version_probe: jira version
+    probe: "`jira issue view` 가 대상 프로젝트의 티켓을 실제로 읽는가 — 설치돼 있어도 초기 설정이 없으면 실패한다"
+    degrades: "`issue_tracker: jira` 인 프로젝트에서는 사실상 required 다. 없으면 티켓 조회·상태 전환·코멘트가 막히고 스킬은 웹 UI 수동 처리를 안내한 뒤 사용자가 준 결과로 이어간다."
+    used_by: project-issue, project-start, project-done, project-adr, project-release-doc
+  # min_version 근거 등급: 관측값 (이 환경의 설치본), 미검증 하한
+  # `uv sync`/`uv run` 의 도입 시점 미확인. 참고로 brew 의 현재 stable 은 이보다 훨씬
+  # 높다 — 선언값이 조사된 하한이 아니라 설치본 기준임이 그대로 드러난다.
+  - id: uv
+    kind: cli
+    requirement: required
+    presence: on_path
+    install: https://docs.astral.sh/uv/
+    min_version: "0.7.8"
+    version_probe: uv --version
+    probe: "`uv run` 이 대상 프로젝트에서 실제로 환경을 해석하고 명령을 실행하는가"
+    degrades: "harness 부트스트랩 스킬(project-harness-init·project-harness-update)에 폴백이 없다. preflight 가 게이트로 요구하므로 없으면 scaffold 가 파일을 하나도 쓰지 않고 멈춘다. 이미 설치된 프로젝트의 일상 워크플로우 스킬은 영향받지 않는다."
+    used_by: project-harness-init, project-harness-update
+  # min_version 근거 등급: 출처 있음(sourced)
+  # pyproject.toml 의 requires-python >=3.11. 두 곳이 갈라지면 테스트가 빨개진다.
+  #
+  # id 를 `python3` 로 둔 것은 선택이고, 스킬 산문과 어긋나 있다는 것을 알고 둔다:
+  # project-harness-init·project-harness-update 는 bare `python` 을 문서화한다.
+  # 그래서 이 행이 ok 여도 문서화된 명령이 `python: command not found` 로 죽는 호스트가
+  # 있다(python3 만 있는 stock macOS/Debian). 산문 쪽을 고치는 것이 follow-up 5 다.
+  - id: python3
+    kind: cli
+    requirement: required
+    presence: on_path
+    install: https://www.python.org/
+    min_version: "3.11.0"
+    version_probe: python3 --version
+    probe: "`harness_cli.py --help` 가 이 인터프리터로 실제로 돌아 커맨드 목록을 내놓는가"
+    degrades: "폴백이 없다. harness_cli.py 가 프로젝트의 단일 진입점이고, harness_enabled 인 프로젝트의 모든 로컬·트래커 커맨드가 이 인터프리터 위에서 돈다."
+    used_by: project-harness-init, project-harness-update, project-issue, project-start, project-done, project-clean, project-adr, project-plan

@@ -39,15 +39,25 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 
 이 스킬셋은 아래 도구를 전제한다. 정본은 `skills/dependencies.yaml` 이고 **이 표는 거기서 파생된다** — 표만 고치면 `tests/test_skill_docs.py` 의 일치 단언이 깨진다.
 
-| 도구 | 필수 | 설치 | 없으면 |
-|------|------|------|--------|
-| `code-review@claude-plugins-official` | required | `claude plugin install code-review@claude-plugins-official` | 리뷰가 사슬 첫 칸을 잃는다. 역할별 독립 서브에이전트로, 그마저 없으면 메인 에이전트가 역할별로 직접 수행하는 데까지 내려가며 리뷰 자체는 중단되지 않는다. |
-| `pr-review-toolkit@claude-plugins-official` | optional | `claude plugin install pr-review-toolkit@claude-plugins-official` | 역할별 전문 리뷰어(침묵 실패·타입 설계·테스트 커버리지)를 못 쓴다. 선언된 역할 또는 기본 3역할 리뷰로 수행한다. |
-| `security-guidance@claude-plugins-official` | optional | `claude plugin install security-guidance@claude-plugins-official` | 보안은 implementer 역할의 기본 focus 안에서만 다뤄진다. 이 스킬셋은 별도 보안 패스를 지휘하지 않으므로, 있으면 사용자가 직접 돌릴 수 있다는 뜻이다. |
-| `ENABLE_LSP_TOOL` | optional | `export ENABLE_LSP_TOOL=1` | 중복 탐색이 구조 기반에서 텍스트 기반으로 내려간다. Grep/Glob 만으로 수행하고, 구조적 중복을 놓쳤을 수 있음을 플랜에 남긴다. |
-| `language-lsp@claude-plugins-official` | optional | `claude plugin install rust-analyzer-lsp@claude-plugins-official` | `ENABLE_LSP_TOOL` 이 켜져 있어도 해당 언어의 심볼 질의가 되지 않는다. 텍스트 기반 탐색으로 내려간다. |
+| 도구 | 필수 | 설치 | 없으면 | 최소 버전 |
+|------|------|------|--------|-----------|
+| `code-review@claude-plugins-official` | required | `claude plugin install code-review@claude-plugins-official` | 리뷰가 사슬 첫 칸을 잃는다. 역할별 독립 서브에이전트로, 그마저 없으면 메인 에이전트가 역할별로 직접 수행하는 데까지 내려가며 리뷰 자체는 중단되지 않는다. | - |
+| `pr-review-toolkit@claude-plugins-official` | optional | `claude plugin install pr-review-toolkit@claude-plugins-official` | 역할별 전문 리뷰어(침묵 실패·타입 설계·테스트 커버리지)를 못 쓴다. 선언된 역할 또는 기본 3역할 리뷰로 수행한다. | - |
+| `security-guidance@claude-plugins-official` | optional | `claude plugin install security-guidance@claude-plugins-official` | 보안은 implementer 역할의 기본 focus 안에서만 다뤄진다. 이 스킬셋은 별도 보안 패스를 지휘하지 않으므로, 있으면 사용자가 직접 돌릴 수 있다는 뜻이다. | - |
+| `ENABLE_LSP_TOOL` | optional | `export ENABLE_LSP_TOOL=1` | 중복 탐색이 구조 기반에서 텍스트 기반으로 내려간다. Grep/Glob 만으로 수행하고, 구조적 중복을 놓쳤을 수 있음을 플랜에 남긴다. | - |
+| `language-lsp@claude-plugins-official` | optional | `claude plugin install rust-analyzer-lsp@claude-plugins-official` | `ENABLE_LSP_TOOL` 이 켜져 있어도 해당 언어의 심볼 질의가 되지 않는다. 텍스트 기반 탐색으로 내려간다. | - |
+| `git` | required | `https://git-scm.com` | 폴백이 없다. 브랜치·워크트리·커밋·머지 판정이 전부 이 도구 위에 있어 없으면 워크플로우 스킬 자체가 성립하지 않는다. | 2.23.0 |
+| `gh` | optional | `https://cli.github.com/` | `issue_tracker: github` 인 프로젝트에서는 사실상 required 다. 없으면 이슈 조회·생성, PR 생성, 프로젝트 필드 반영이 모두 막히고 스킬은 웹 UI 수동 처리를 안내한 뒤 사용자가 준 결과로 이어간다. | 2.97.0 |
+| `fj` | optional | `https://codeberg.org/forgejo-contrib/forgejo-cli` | `issue_tracker: forgejo` 인 프로젝트에서는 사실상 required 다. 조회가 막히면 그 항목을 미확인으로 표기하고 절차를 계속하며, 쓰기가 필요한 단계는 웹 UI 수동 처리로 내려간다. | 0.6.0 |
+| `jira` | optional | `https://github.com/ankitpokhrel/jira-cli` | `issue_tracker: jira` 인 프로젝트에서는 사실상 required 다. 없으면 티켓 조회·상태 전환·코멘트가 막히고 스킬은 웹 UI 수동 처리를 안내한 뒤 사용자가 준 결과로 이어간다. | 1.7.0 |
+| `uv` | required | `https://docs.astral.sh/uv/` | harness 부트스트랩 스킬(project-harness-init·project-harness-update)에 폴백이 없다. preflight 가 게이트로 요구하므로 없으면 scaffold 가 파일을 하나도 쓰지 않고 멈춘다. 이미 설치된 프로젝트의 일상 워크플로우 스킬은 영향받지 않는다. | 0.7.8 |
+| `python3` | required | `https://www.python.org/` | 폴백이 없다. harness_cli.py 가 프로젝트의 단일 진입점이고, harness_enabled 인 프로젝트의 모든 로컬·트래커 커맨드가 이 인터프리터 위에서 돈다. | 3.11.0 |
 
-`required` 는 **문서화된 기본 경로가 그 도구를 쓴다**는 뜻이지 워크플로우 게이트가 아니다. 이 스킬셋은 이 플러그인이 하나도 없는 호스트(Codex, CI)에서도 돌아야 하고, 거기서 폴백은 부수적 경로가 아니라 1급 경로다.
+`required` 는 **문서화된 기본 경로가 그 도구를 쓴다**는 뜻이지 워크플로우 게이트가 아니다. 다만 폴백이 있는지, 없으면 무엇이 무너지는지는 `없으면` 열이 말한다 — `git`·`python3` 처럼 폴백이 아예 없는 도구도 있다. 이 스킬셋은 이 **플러그인**이 하나도 없는 호스트(Codex, CI)에서도 돌아야 하고, 거기서 폴백은 부수적 경로가 아니라 1급 경로다.
+
+트래커 CLI(`gh`·`fj`·`jira`)가 `optional` 인 것은 조건부라는 뜻이다. 해당 `issue_tracker` 를 쓰는 프로젝트에서는 사실상 required 이고, 그 조건은 `없으면` 열의 첫 문장에 있다.
+
+`최소 버전` 열은 매니페스트의 `min_version` 에서 파생된다. CLI 가 아닌 항목은 `-` 다. 이 값은 **선언될 뿐 `./install-skills.sh` 가 비교하지 않는다**. 버전 확인 명령은 도구마다 달라 추론할 수 없으므로 매니페스트가 `version_probe` 로 따로 선언한다 — 명령 자체는 거기서 보고, 여기에 옮겨 적지 않는다.
 
 전제의 축은 둘이고 섞으면 안 된다.
 
