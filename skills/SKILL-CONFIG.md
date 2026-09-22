@@ -49,16 +49,16 @@
 ```
 issue_tracker = github  → gh CLI (또는 harness_cli.py, harness_enabled=true 시)
 issue_tracker = jira    → jira CLI (ankitpokhrel/jira-cli 필요)
-issue_tracker = forgejo → fj CLI (forgejo-cli 필요) — 조회: fj -H <forgejo_host> issue view/search
+issue_tracker = forgejo → fj CLI (forgejo-cli 필요) — 조회: issue view/search · 생성: issue create
 ```
 
 위 CLI 들의 최소 버전과 **버전 확인 명령**은 `~/.claude/skills/dependencies.yaml` 에 선언돼 있다. 확인 명령을 추측하지 말 것 — `--version` 이 모든 도구에 통하지는 않고, 추측하면 설치된 도구를 미설치로 오판한다.
 
-`forgejo` 는 현재 **조회(read) 경로만** 계약이다. 이슈 제목·상태 조회는
+`forgejo` 는 조회(read) 전체와, 쓰기(write) 중 **이슈 생성까지**가 계약이다. 생성의 상세 절차 — 필수 플래그, 이슈 번호 추출, 라벨 적용과 읽기 확인 — 는 `project-issue` 본문의 `### Forgejo` 절에 있다. 여기에 복제하지 않고 가리킨다. **상태 전환과 코멘트에는 아직 `fj` 계약이 없다** — 그 두 쓰기는 아래 웹 UI 수동 처리로 간다. 이슈 제목·상태 조회는
 `fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<N>"` 을 사용하고,
 로컬에 `forgejo_remote` 리모트가 실제로 존재하면 `fj issue view -R <forgejo_remote> <N>` 형태의 remote 기반 조회로 대체할 수 있다.
 조회가 실패하면(네트워크·인증·CLI 부재) 그 항목을 "미확인" 으로 표기한 뒤 절차를 계속한다 — 조회 실패로 스킬을 중단하지 않는다.
-이슈 생성·상태 전환처럼 쓰기가 필요한 단계에서 CLI/API 가 실패하면 웹 UI 수동 처리를 안내하고, 수동 결과(이슈 번호 등)를 받아 이후 단계를 진행한다.
+**이슈 생성은 `fj` 가 1순위이고, 웹 UI 수동 처리는 그 뒤의 마지막 단**이다. 계약이 있는 쓰기에서 `fj` 경로가 실패하거나, 애초에 계약이 없는 쓰기(상태 전환·코멘트)라면 웹 UI 수동 처리를 안내하고, 수동 결과(이슈 번호 등)를 받아 이후 단계를 진행한다. 읽기 실패는 "미확인" 으로 넘길 수 있지만 쓰기 실패는 그럴 수 없다 — 이슈 번호는 로컬에서 합성할 수 없고 `project-start` 가 그것을 입력으로 요구한다.
 
 ### harness 사용 여부
 

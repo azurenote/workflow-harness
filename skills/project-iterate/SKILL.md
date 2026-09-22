@@ -80,6 +80,8 @@ For each phase's detailed procedure, follow that skill document (`~/.claude/skil
 ### Phase 2: Issue
 
 1. Run the `issue` skill procedure:
+   - Phase 1 이 방금 만든 플랜 경로를 `project-issue` 에 위치 인자로 그대로 넘긴다. 경로는 이미 알려져 있으므로 자동 탐색을 다시 돌리지 않는다 — 초안이 여럿이면 그 탐색은 자기가 만든 파일조차 고르지 못하고 멈춘다.
+   - 다만 `## Re-entry After Interruption` 경로로 Phase 1 을 건너뛰고 여기서 시작했다면 경로를 모른다. 그때는 인자 없이 불러 기존 자동 탐색으로 돌아간다 — 인자가 선택인 이유가 이것이다.
    - register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as an issue-tracker ticket
    - rename the draft plan to `plan-<id>.md`
 2. Print the issue ID / ticket URL, then automatically continue to Phase 3.
@@ -122,6 +124,6 @@ For each phase's detailed procedure, follow that skill document (`~/.claude/skil
 | after Phase 4 complete | above + commit + PR + issue comment |
 
 To resume after interruption, call the relevant skill directly:
-- From Phase 2: `project-issue`
+- From Phase 2: `project-issue` (플랜 경로를 알고 있으면 `project-issue <plan-path>`)
 - From Phase 3: `project-start <id>`
 - From Phase 4: `project-done <id>`

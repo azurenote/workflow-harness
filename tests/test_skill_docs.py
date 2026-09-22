@@ -1586,3 +1586,511 @@ def test_readme_lists_trackers_module() -> None:
     assert "create-issue" in row, (
         f"the README still describes issue registration as tracker-shaped only: {row!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# The forgejo (`fj`) command surface
+#
+# No fixture backs these the way `gh_flags.yaml` backs gh, deliberately. A
+# fixture answers "does this flag exist", and a flag fj does not have fails
+# loudly with a non-zero exit. Every failure guarded here is *silent*: omitting
+# both `--body` and `--body-file` opens `$EDITOR` and hangs a headless run;
+# `--web` opens a browser; a label that does not exist is refused with exit 0,
+# an empty stderr, and the warning on stdout. Shape is what catches those.
+#
+# These guards were rewritten once already. The first draft asserted substring
+# presence and an adversarial pass walked past twenty of them — deleting the
+# isolate strip, exposing the title to command substitution, and turning a
+# label add into a silent `--rm`, all with the suite green. Where a guard below
+# looks pedantic about *position* or *argument role* rather than presence, that
+# is why. Presence is what a mutation edits around.
+# --------------------------------------------------------------------------
+
+# Files that carry a forgejo procedure. Bounded like GH_DOC_PATHS, and asserted
+# non-empty below: a scanner that quietly stops seeing a file takes every guard
+# that reads it green.
+FJ_DOC_PATHS = (
+    "skills/project-issue/SKILL.md",
+    "skills/SKILL-CONFIG.md",
+    "skills/project-release-doc/SKILL.md",
+)
+
+# An fj call, however the surrounding document dresses it: a `# fallback: `
+# comment, a `$ ` prompt, a list bullet, a `VAR="$(` capture, or inline
+# backticks mid-sentence. The first draft anchored on a bare line start, and
+# SKILL-CONFIG.md — which documents two real fj calls inside backticks — was
+# invisible to every guard here. A `--web` create could be added there with the
+# suite staying green.
+_FJ_LINE_RE = re.compile(
+    r"^(?:[-*>]\s+)?"
+    r"(?:#[^:]*:\s*)?"
+    r"(?:\$\s+)?"
+    r"(?:(?P<capture>[A-Za-z_][A-Za-z0-9_]*=\"?\$\())?"
+    r"(?P<tick>`)?"
+    r"(?P<cmd>fj\s.*)$"
+)
+
+# Flags that consume the token after them, so an argument-role scan does not
+# mistake a flag's value for a positional.
+_FJ_VALUE_FLAGS = frozenset({
+    "-H", "--host", "-R", "--remote", "-C", "--cwd", "-r", "--repo", "--rm",
+    "-a", "--add", "--body", "--body-file", "--template", "--style",
+    "-s", "--state", "-l", "--labels", "-c", "--creator", "--assignee",
+})
+
+
+def _fj_invocations(text: str) -> list[str]:
+    """Every fj call in a document, continuations joined and wrappers trimmed."""
+    found = []
+    for line in _logical_lines(text):
+        match = _FJ_LINE_RE.match(line)
+        if not match:
+            continue
+        cmd = match.group("cmd")
+        if match.group("tick"):
+            cmd = cmd.split("`", 1)[0]
+        if match.group("capture"):
+            cmd = cmd.split(')"', 1)[0]
+        for sep in (" || ", " && ", " ; ", " | "):
+            cmd = cmd.split(sep, 1)[0]
+        found.append(cmd.strip())
+    return found
+
+
+def _all_fj_invocations() -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        rel = str(md.relative_to(ROOT))
+        for invocation in _fj_invocations(md.read_text(encoding="utf-8")):
+            found.append((rel, invocation))
+    return found
+
+
+def _forgejo_section() -> str:
+    text = read_skill("skills/project-issue/SKILL.md")
+    return text.split("### Forgejo", 1)[1].split("**7. Read Back**", 1)[0]
+
+
+def _fj_positionals(invocation: str) -> list[str]:
+    """Arguments that are not flags and not a flag's value."""
+    tokens = invocation.split()
+    positionals: list[str] = []
+    skip = False
+    for index, token in enumerate(tokens):
+        if skip:
+            skip = False
+            continue
+        if token.startswith("-"):
+            if token in _FJ_VALUE_FLAGS and "=" not in token:
+                skip = True
+            continue
+        positionals.append(token)
+    # tokens[0] is `fj`, then the subcommand path (`issue`, `create`, `labels`…).
+    return positionals
+
+
+def test_fj_scanner_sees_every_documented_forgejo_file() -> None:
+    """Guards the scanner, per file, the way the gh section does.
+
+    `any(...)` over the whole tree was the first draft, and it let the entire
+    read-back block be deleted from the Forgejo section while another file's
+    `issue view` kept the assertion satisfied.
+    """
+    empty = [path for path in FJ_DOC_PATHS if not _fj_invocations(read_skill(path))]
+    assert not empty, f"no fj invocation parsed from: {empty}"
+
+    section = _fj_invocations(_forgejo_section())
+    for shape in ("issue create", "issue edit", "issue view"):
+        assert any(shape in inv for inv in section), (
+            f"the Forgejo section no longer invokes `fj {shape}`"
+        )
+
+
+def test_documented_fj_issue_create_always_passes_body_file() -> None:
+    """Without it — and without `--body` — fj opens `$EDITOR` and hangs."""
+    offenders = [
+        f"{path}: {inv}"
+        for path, inv in _all_fj_invocations()
+        if "issue create" in inv and "--body-file" not in inv
+    ]
+    assert not offenders, (
+        "a documented `fj issue create` would open an editor and hang:\n" + "\n".join(offenders)
+    )
+
+
+def test_no_documented_fj_call_opens_a_browser() -> None:
+    offenders = [f"{path}: {inv}" for path, inv in _all_fj_invocations() if "--web" in inv]
+    assert not offenders, "a documented fj call opens a web browser:\n" + "\n".join(offenders)
+
+
+def test_no_documented_fj_call_uses_dash_dash_version() -> None:
+    """`fj --version` is an error; `fj version` is the probe."""
+    offenders = [f"{path}: {inv}" for path, inv in _all_fj_invocations() if "--version" in inv]
+    assert not offenders, (
+        "`fj --version` is an error — the probe is `fj version`:\n" + "\n".join(offenders)
+    )
+
+
+def test_forgejo_section_follows_the_jira_section() -> None:
+    """`test_project_issue_creates_in_one_call` slices the GitHub branch at
+    `### Jira`. A Forgejo section before it falls inside that slice."""
+    text = read_skill("skills/project-issue/SKILL.md")
+
+    assert "### Jira" in text and "### Forgejo" in text
+    assert text.index("### Jira") < text.index("### Forgejo")
+
+
+def test_forgejo_section_claims_no_field_it_cannot_write() -> None:
+    """fj has no type/priority/size flag, and a label is not a substitute.
+
+    Checking only for the flags missed the bypass this rule exists to stop:
+    `labels -a "priority/P1"` passes a flag scan while doing exactly the
+    forbidden thing.
+    """
+    section = _forgejo_section()
+
+    for inv in _fj_invocations(section):
+        for flag in ("--type", "--priority", "--size"):
+            assert flag not in inv, f"the Forgejo section passes {flag}, which fj lacks: {inv}"
+
+        tokens = inv.split()
+        for index, token in enumerate(tokens[:-1]):
+            if token in ("-a", "--add"):
+                value = tokens[index + 1].strip("\"'").lower()
+                for reserved in ("type", "priority", "size"):
+                    assert reserved not in value, (
+                        f"a metadata field is being smuggled into a label: {inv}"
+                    )
+
+    assert_rule(
+        section, "셋 다 **미반영**으로 보고하고",
+        starts_with="type·priority·size 는 `fj` 에 대응 플래그가 없다",
+    )
+
+
+def test_forgejo_strips_isolates_before_extracting_the_number() -> None:
+    """The strip must be a pipe stage *preceding* the extractor.
+
+    Substring presence is not enough, twice over. Deleting the strip and
+    appending `# \\x{2068} 는 무시된다` as a comment keeps the codepoints on the
+    line; moving the strip *after* the sed keeps them too, and is worse than
+    deletion because the document still reads as correct while the extraction
+    can never match. Both leave `ISSUE_NUMBER` empty, and Step 8 then renames
+    the draft to `plan-.md`.
+    """
+    lines = [l for l in _logical_lines(_forgejo_section()) if l.startswith("ISSUE_NUMBER=")]
+    assert len(lines) == 1, f"expected one ISSUE_NUMBER pipeline, found {len(lines)}"
+
+    stages = lines[0].split("|")
+    strip = [i for i, s in enumerate(stages) if "2068" in s and "2069" in s]
+    extract = [i for i, s in enumerate(stages) if "created issue #" in s]
+
+    assert strip, "the issue-number pipeline no longer strips the directional isolates"
+    assert extract, "the issue-number pipeline no longer extracts the number"
+    assert min(strip) < min(extract), (
+        "the isolate strip does not precede the extractor, so the number parses "
+        f"empty: {lines[0]}"
+    )
+
+
+def test_forgejo_separates_create_failure_from_parse_failure() -> None:
+    """`$?` of `"$(a | b | c)"` is c's, so a dead `fj` looks like a parse miss.
+
+    They need different recoveries: a create that never happened must not be
+    "recovered" by `issue search`, which defaults to open issues over free text
+    and will happily bind a similar older ticket.
+    """
+    section = _forgejo_section()
+
+    assert "CREATE_FAILED" in section, (
+        "the create no longer captures its own exit status separately from parsing"
+    )
+    assert_rule(
+        section, "생성 실패와 파싱 실패를 한 덩어리로 다루지 마라",
+        starts_with="- **생성 실패와 파싱 실패를 한 덩어리로 다루지 마라.**",
+    )
+
+
+def test_forgejo_section_states_the_read_back_principle_first_and_once() -> None:
+    """One statement, at the top, with the two cases hung off it.
+
+    Uniqueness is checked against the whole file, not the section: a second copy
+    parked in Step 9 is still a second copy. Position is checked because the DoD
+    names this guard as the judge of "맨 앞", and an `assert_rule` alone would
+    let the principle sink to the bottom.
+    """
+    text = read_skill("skills/project-issue/SKILL.md")
+    assert_rule(
+        text, "읽기 확인이 증거다",
+        starts_with="**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다",
+    )
+
+    body = [l for l in _forgejo_section().splitlines() if l.strip()]
+    assert body[1].startswith("**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다"), (
+        f"the principle is no longer the first thing in the section: {body[1]!r}"
+    )
+
+
+def test_forgejo_label_edit_targets_the_issue_not_a_repo_flag() -> None:
+    """`-r` reverses meaning between subcommands, and the damage is silent.
+
+    On `fj issue create` it is `--repo`. On `fj issue edit <ISSUE> labels` there
+    is no `--repo` and `-r` is `--rm`. The first draft only rejected a value
+    containing `/`, which the placeholder `<forgejo_repo>` never does — so the
+    check could not fire on this document at all.
+    """
+    labels = [
+        inv for inv in _fj_invocations(_forgejo_section())
+        if "issue edit" in inv and "labels" in inv
+    ]
+    assert labels, "no `fj issue edit ... labels` invocation in the Forgejo section"
+
+    for inv in labels:
+        tokens = inv.split()
+        target = tokens[tokens.index("edit") + 1]
+        assert "#" in target, (
+            f"the label edit does not target the issue as <repo>#<N>: {inv}"
+        )
+        for flag in ("-r", "--rm"):
+            assert flag not in tokens, (
+                f"`{flag}` on a labels call is --rm: this removes labels silently: {inv}"
+            )
+
+
+def test_forgejo_create_never_puts_a_literal_title_in_the_command() -> None:
+    """A quoted expansion is safe; a pasted literal is not — either quote style.
+
+    The shell does not re-scan the result of a parameter expansion, so
+    `"$TITLE"` is safe even when the title holds backticks. A literal is
+    exposed: inside double quotes the backticks run, and inside single quotes
+    one apostrophe in the title closes the quote and runs them anyway — which
+    also leaves `--body-file` empty, so `$EDITOR` opens and a headless run
+    hangs. `project-plan` titles name files and symbols in backticks as a matter
+    of course, so this is the normal case, not the exotic one.
+    """
+    creates = [inv for inv in _fj_invocations(_forgejo_section()) if "issue create" in inv]
+    assert creates, "no `fj issue create` invocation in the Forgejo section"
+
+    quoted_variable = re.compile(r'^"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"$')
+    for inv in creates:
+        # positionals[0:2] are `fj` and the `issue create` command path.
+        for argument in _fj_positionals(inv)[3:]:
+            assert quoted_variable.match(argument), (
+                f"the title is a literal, exposed to command substitution: {argument} in {inv}"
+            )
+
+
+def test_no_skill_embeds_a_literal_directional_isolate() -> None:
+    """U+2068/U+2069 are invisible; they must appear only as escape notation."""
+    offenders: list[str] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            for char, name in (("\u2068", "U+2068"), ("\u2069", "U+2069")):
+                if char in line:
+                    offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {name}")
+    assert not offenders, (
+        "a directional isolate is embedded literally; write it as \\x{2068}:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_forgejo_section_records_what_it_could_not_verify() -> None:
+    """The template retry path and the multi-label form were never measured.
+
+    Both are reachable on a normal run — a repo with blank issues disabled, a
+    plan touching both BE and FE — so dropping the "unverified" marking is how a
+    guess gets read as a measurement.
+    """
+    section = _forgejo_section()
+
+    assert "fj issue templates" in section and "--template" in section, (
+        "the blank-issue retry path is gone"
+    )
+    assert "미검증" in section, "the section no longer marks its unverified claims"
+    assert "-a" in section and "쉼표" in section, (
+        "the multi-label form is no longer addressed"
+    )
+
+
+def test_forgejo_read_back_reads_the_body_surface_not_comments() -> None:
+    """`fj issue view <ID>` defaults to `body`; comments need `view <ID> comments`.
+
+    Reading the wrong surface looks exactly like a write that failed — the
+    section says so, and this pins the read-back to the surface labels live on.
+    """
+    views = [
+        inv for inv in _fj_invocations(_forgejo_section())
+        if "issue view" in inv and "$ISSUE_NUMBER" in inv
+    ]
+    assert views, "the Forgejo section no longer reads the issue back"
+
+    for inv in views:
+        assert not inv.rstrip().endswith("comments"), (
+            f"the read-back reads comments, where labels never appear: {inv}"
+        )
+    assert "comments" in _forgejo_section(), (
+        "the warning about reading the wrong surface is gone"
+    )
+
+
+def test_forgejo_section_states_it_has_no_harness_branch() -> None:
+    """No forgejo adapter exists, so `harness_enabled` must not send a reader
+    looking for a path that was never written."""
+    assert_rule(
+        _forgejo_section(), "harness 분기는 없다",
+        starts_with="harness 분기는 없다",
+    )
+
+
+def test_forgejo_does_not_share_a_parser_between_create_and_view() -> None:
+    """The two outputs place the number differently; one parser breaks both."""
+    assert_rule(
+        _forgejo_section(), "create 용 번호 파서를 이 확인에 재사용하지 않는다",
+        starts_with="- create 용 번호 파서를 이 확인에 재사용하지 않는다",
+    )
+
+
+def test_metadata_step_scope_markers_name_the_right_trackers() -> None:
+    """Counting `(GitHub only)` is order-blind — swapping steps 3 and 4 keeps the
+    count at three while inverting the contract. Assert the markers by step."""
+    text = read_skill("skills/project-issue/SKILL.md")
+
+    for marker in (
+        "**3. Infer Issue Type** (GitHub only)",
+        "**4. Infer Labels** (GitHub and Forgejo)",
+        "**5. Infer Priority / Size** (GitHub only)",
+        "**7. Read Back** (GitHub only)",
+    ):
+        assert marker in text, f"scope marker changed or moved: {marker}"
+
+
+def test_output_step_says_what_forgejo_can_show() -> None:
+    """Step 9's vocabulary was GitHub-only, leaving a forgejo run with no way to
+    know what it is expected to report."""
+    assert_rule(
+        read_skill("skills/project-issue/SKILL.md"), "On forgejo the only observable one is Labels",
+        starts_with="- On forgejo the only observable one is Labels",
+    )
+
+
+def test_project_issue_documents_the_explicit_plan_path_argument() -> None:
+    """The argument exists so a human can settle what discovery cannot."""
+    text = read_skill("skills/project-issue/SKILL.md")
+
+    assert "## Usage" in text, "project-issue still documents no argument contract"
+    assert "project-issue [<plan-path>]" in text
+
+    assert_rule(
+        text, "Step 1 does not run discovery at all",
+        starts_with="- **Given**",
+    )
+    assert_rule(
+        text, "never falling back to discovery",
+        starts_with="- An explicit path is accepted only when",
+    )
+
+
+def test_explicit_path_validation_command_performs_all_three_checks() -> None:
+    """Pinning the prose and not the command lets the command be gutted.
+
+    The rule line can keep promising three checks while the snippet below it
+    performs one. The name check is the only gate protecting Step 8's `mv`, and
+    the plan-directory check is what stops the same input landing in two places
+    depending on `harness_enabled`.
+    """
+    text = read_skill("skills/project-issue/SKILL.md")
+    command = text.split("do not run discovery", 1)[1].split("```", 2)[1]
+
+    assert "is_draft_plan(" in command, "the draft-name gate is gone from the command"
+    assert "plan_dir" in command and "path.parent" in command, (
+        "the plan-directory comparison is gone from the command"
+    )
+    assert "path.is_file()" in command, "the existence check is gone from the command"
+    assert command.count("sys.exit(") == 3, (
+        "each rejection must exit non-zero naming its check; "
+        f"found {command.count('sys.exit(')} exits"
+    )
+    # Rooted at the main worktree, because `.task/plan/` is gitignored and exists
+    # only there — resolving against CWD rejects every valid path from a linked
+    # worktree (harness_core records the same fix as plan-234).
+    # Asserted as calls, not as names: the `from harness_core.local import
+    # abs_under_main` line keeps the name alive after the call is removed, and a
+    # mutation walked past a name check on exactly that.
+    assert "abs_under_main(Path(sys.argv[1]))" in command, (
+        "the argument is resolved against CWD again; from a linked worktree that "
+        "rejects every valid path, because .task/plan/ exists only in the main one"
+    )
+    assert "main_worktree_root() /" in command, (
+        "the plan directory is no longer rooted at the main worktree"
+    )
+
+
+def test_draft_discovery_survives_the_new_argument() -> None:
+    """The no-argument path must be untouched, not rewritten around the new one.
+
+    Asserting on `is_draft_plan` alone is self-satisfying now: the new
+    explicit-path snippet imports it too, so the whole discovery fallback could
+    be deleted with this guard still green. Pin the fallback's own command.
+    """
+    text = read_skill("skills/project-issue/SKILL.md")
+
+    assert "<harness_cli> find-draft-plan" in text, "the harness discovery call is gone"
+    assert "Otherwise (or when no harness exists)" in text, "the discovery fallback is gone"
+    assert 'Path(".task/plan").glob("plan-*.md")' in text, (
+        "the discovery fallback no longer globs the plan directory"
+    )
+    assert "**Two or more files**" in text, "the ambiguity branch is gone"
+
+
+def test_codex_reference_shows_the_plan_path_argument() -> None:
+    assert "$project-issue [<plan-path>]" in read_skill("skills/_shared/references/codex.md")
+
+
+def test_skill_config_scopes_the_forgejo_write_contract() -> None:
+    """Creation is contracted; status transitions and comments are not.
+
+    Three skills read this document first, and none of them documents an `fj`
+    status-transition or comment command. Declaring write support unscoped sends
+    them hunting for a path that does not exist — which this document forbids
+    two lines above ("확인 명령을 추측하지 말 것").
+    """
+    text = read_skill("skills/SKILL-CONFIG.md")
+
+    assert "조회(read) 경로만" not in text, "forgejo is still declared read-only"
+    for retraction in ("읽기 전용", "read-only", "쓰기 계약이 아니"):
+        assert retraction not in text, f"the write contract is retracted in prose: {retraction}"
+
+    assert_rule(
+        text, "쓰기(write) 중 **이슈 생성까지**가 계약이다",
+        starts_with="`forgejo` 는 조회(read) 전체와",
+    )
+    assert "상태 전환과 코멘트에는 아직 `fj` 계약이 없다" in text, (
+        "the unwritten half of the forgejo surface is no longer named"
+    )
+    # Both fallbacks survive the correction, in substance and not just in word.
+    assert_rule(
+        text, '"미확인" 으로 표기한 뒤 절차를 계속한다',
+        starts_with="조회가 실패하면",
+    )
+    assert_rule(
+        text, "웹 UI 수동 처리는 그 뒤의 마지막 단",
+        starts_with="**이슈 생성은 `fj` 가 1순위이고",
+    )
+
+
+def test_iterate_passes_the_plan_path_it_already_knows() -> None:
+    """Phase 1 creates the file; Phase 2 rediscovering it is the waste.
+
+    The re-entry branch has to be stated alongside it: entering at Phase 2 means
+    the path is unknown, and that is precisely why the argument is optional.
+    """
+    text = read_skill("skills/project-iterate/SKILL.md")
+
+    assert_rule(
+        text, "위치 인자로 그대로 넘긴다",
+        starts_with="- Phase 1 이 방금 만든 플랜 경로를",
+    )
+    assert_rule(
+        text, "인자 없이 불러 기존 자동 탐색으로 돌아간다",
+        starts_with="- 다만 `## Re-entry After Interruption` 경로로",
+    )
