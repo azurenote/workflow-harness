@@ -2094,3 +2094,483 @@ def test_iterate_passes_the_plan_path_it_already_knows() -> None:
         text, "인자 없이 불러 기존 자동 탐색으로 돌아간다",
         starts_with="- 다만 `## Re-entry After Interruption` 경로로",
     )
+
+
+
+
+# --------------------------------------------------------------------------
+# Section slicing
+#
+# `project-done` and `project-start` number their steps with bold pseudo-
+# headings (`**4. Write impl-report**`), not Markdown headings, so no off-the-
+# shelf splitter finds them. Several rules below have to hold *in one step* and
+# must stay silent about the rest of the file: `--stat` is banned in the
+# impl-report step while `project-release-doc` uses it legitimately, and the
+# pipe ban has to be asserted at two separate steps independently.
+#
+# The number pattern allows dotted steps (`**3.5. ...**`, which `project-adr`
+# actually uses) — matching only `\d+` there would let a slice opened at step 3
+# swallow step 3.5 whole and assert against the wrong body. Requiring the line
+# to close with `**` keeps ordinary bolded prose from opening a section, and
+# fenced regions are skipped so a code sample can never look like a heading.
+# --------------------------------------------------------------------------
+
+_STEP_HEADING = re.compile(r"^\*\*\d+(?:\.\d+)*(?:-[A-Za-z])?\.\s.*\*\*\s*$")
+
+
+def _outside_fences(text: str):
+    """Yield (line, in_fence) so scanners can ignore fenced code."""
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            yield line, True
+            continue
+        yield line, in_fence
+
+
+def skill_section(text: str, title_starts_with: str) -> str:
+    """The lines of one numbered step, heading included, next heading excluded.
+
+    `title_starts_with` is matched against the heading line, so a caller names
+    the step the way the document does. Returns "" when no such step exists;
+    every caller asserts the slice is non-empty, because a whole-file scan that
+    silently received nothing passes while proving nothing.
+    """
+    out: list[str] = []
+    for line, in_fence in _outside_fences(text):
+        if not in_fence and _STEP_HEADING.match(line):
+            if out:
+                break
+            if line.startswith(title_starts_with):
+                out.append(line)
+            continue
+        if out:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _step_order(text: str) -> list[str]:
+    """Step headings in document order, so a reordering is visible to a test."""
+    return [
+        line.strip()
+        for line, in_fence in _outside_fences(text)
+        if not in_fence and _STEP_HEADING.match(line)
+    ]
+
+
+def _skill_docs() -> list[Path]:
+    return sorted((ROOT / "skills").rglob("*.md"))
+
+
+def _commands(text: str, starts_with: str) -> list[str]:
+    """Command lines in a slice, shell continuations already joined."""
+    return [line for line in _logical_lines(text) if line.startswith(starts_with)]
+
+
+def test_project_done_diffs_from_the_merge_base() -> None:
+    """The report must list this branch's work, not the base's, and all of it.
+
+    `git diff --name-only <base>` compares against the branch *tip*, so every
+    commit the base gained while this branch lived is reported as this ticket's.
+    The fix diverges at the merge base — but only in a form that keeps three
+    other properties, each of which is asserted here because each was a way of
+    reintroducing the defect while the earlier version of this guard stayed
+    green:
+
+      * no `..HEAD` anywhere in the command (a commit-vs-commit range drops all
+        uncommitted work, and this step runs *before* the commit step);
+      * the `|| { ... }` on the substitution, without which a dead `merge-base`
+        leaves an empty variable and `git diff --name-only "" --` returns the
+        same silent empty list the change was written to remove;
+      * a companion listing of untracked files, because `git diff` never
+        reports them and nothing is staged yet at this point in the flow.
+    """
+    text = read_skill("skills/project-done/SKILL.md")
+    section = skill_section(text, "**4. Write impl-report**")
+    assert section, "the impl-report step is no longer findable by its heading"
+
+    merge_base = _commands(section, "MERGE_BASE=")
+    assert len(merge_base) == 1, (
+        f"expected exactly one merge-base assignment, found {len(merge_base)}"
+    )
+    assert "git merge-base" in merge_base[0], "step 4 no longer derives a merge base"
+    assert "||" in merge_base[0], (
+        f"a failed merge-base is no longer caught: {merge_base[0]!r}"
+    )
+
+    commands = _commands(section, "git diff --name-only")
+    assert len(commands) == 1, (
+        f"expected exactly one file-list command in step 4, found {len(commands)}:\n"
+        + "\n".join(commands)
+    )
+    command = commands[0]
+    assert "$MERGE_BASE" in command, (
+        f"the file list no longer reads the merge base: {command!r}"
+    )
+    # Substring, not `endswith`: the mandatory trailing `--` means an
+    # `endswith("..HEAD")` check can never fire, so the regression it is named
+    # for stays reintroducible.
+    assert "..HEAD" not in command, (
+        f"a commit-vs-commit range drops uncommitted work: {command!r}"
+    )
+    assert command.endswith("--"), f"the command is not closed with `--`: {command!r}"
+
+    assert _commands(section, "git ls-files --others"), (
+        "step 4 no longer lists untracked files, so every file this round "
+        "created is missing from the report and from the PR body"
+    )
+
+    # `--stat` abbreviates long paths with `...`, and a reader expanding one
+    # invents a path that does not exist. Banned in this step only:
+    # `project-release-doc` uses it for a summary a human reads.
+    #
+    # Scoped to command lines *and* the report's placeholder line: the sentence
+    # that states the ban contains `--stat` itself, so a whole-slice absence
+    # scan is red the day the rule is written, while a scan of `git`-prefixed
+    # lines alone misses the angle-bracket placeholder form the file used
+    # before this change (`<git diff --stat ... 출력>`).
+    statted = [
+        line for line in section.splitlines()
+        if "--stat" in line and not line.lstrip().startswith(("-", ">", "*"))
+    ]
+    assert not statted, f"step 4 took a file list with `--stat`: {statted}"
+    assert_rule(
+        section, "`--name-only` only",
+        starts_with="**Take the file list with `--name-only` only.**",
+    )
+
+    # The superseded form must not survive anywhere in the tree. It is not a
+    # substring of the new command, so this stays honest.
+    old = 'git diff --name-only "<diff_base>"'
+    docs = _skill_docs()
+    assert docs, "no skill documents were scanned at all"
+    offenders = [
+        f"{path.relative_to(ROOT)}:{n}"
+        for path in docs
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if old in line
+    ]
+    assert not offenders, f"the tip-based file list is back: {offenders}"
+
+
+def test_project_done_writes_the_report_before_committing() -> None:
+    """Step 4's whole rationale is that nothing is committed when it runs.
+
+    The ban on `..HEAD` and the untracked-file listing are both justified by
+    that ordering, in prose, inside step 4. Reordering the steps leaves every
+    other guard green and turns that justification into a false statement, so
+    the order itself has to be pinned.
+    """
+    order = _step_order(read_skill("skills/project-done/SKILL.md"))
+    assert order, "no step headings were found at all"
+
+    def index_of(prefix: str) -> int:
+        matches = [i for i, line in enumerate(order) if line.startswith(prefix)]
+        assert len(matches) == 1, f"expected one {prefix!r} step, found {matches}"
+        return matches[0]
+
+    assert index_of("**4. Write impl-report") < index_of("**5. Commit source changes"), (
+        "the report is now written after the commit, which falsifies step 4's "
+        "own reason for excluding `..HEAD` and listing untracked files"
+    )
+
+
+def test_jira_issue_create_uses_only_real_flags() -> None:
+    """`jira issue create` has no `--description`; cobra dies on unknown flags.
+
+    Measured against the installed CLI (1.7.0): the body flags are `-b,--body`
+    and `-T,--template`, `--description` does not exist, and `--no-input` is
+    what suppresses the description editor — `--template` alone still opens it.
+
+    `-b/--body` is banned outright rather than merely unmentioned: the CLI's own
+    examples state it takes precedence over `--template`, so adding it silently
+    discards the plan file. That is the same silent-precedence class this ticket
+    exists to remove, and an earlier version of this guard let it through.
+
+    The zero-input assertion is load-bearing: this call appears exactly once in
+    the whole tree, so deleting it would make every flag assertion below pass
+    vacuously.
+    """
+    invocations = [
+        (path, line)
+        for path in _skill_docs()
+        for line in _logical_lines(path.read_text(encoding="utf-8"))
+        if line.startswith("jira issue create")
+    ]
+    assert invocations, "no `jira issue create` call is documented anywhere"
+
+    for path, line in invocations:
+        where = path.relative_to(ROOT)
+        assert "--description" not in line, (
+            f"{where}: `--description` does not exist on this CLI: {line!r}"
+        )
+        assert re.search(r"(?:^|\s)(?:-T|--template)(?:\s|=)", line), (
+            f"{where}: the body is no longer passed as a file: {line!r}"
+        )
+        assert not re.search(r"(?:^|\s)(?:-b|--body)(?:\s|=)", line), (
+            f"{where}: `-b/--body` silently overrides `--template`: {line!r}"
+        )
+        assert "--no-input" in line, (
+            f"{where}: without `--no-input` the description editor opens and "
+            f"an unattended run blocks: {line!r}"
+        )
+        assert "--raw" in line, (
+            f"{where}: the response is no longer requested as JSON: {line!r}"
+        )
+        # Quote-insensitive, and not limited to one literal: any concrete type
+        # name here is a hardcode, whichever one it is.
+        type_arg = re.search(r"--type\s+(\S+)", line)
+        assert type_arg, f"{where}: no issue type is passed at all: {line!r}"
+        assert type_arg.group(1).strip("\"'").startswith("<"), (
+            f"{where}: the type is hardcoded instead of inferred: {type_arg.group(1)!r}"
+        )
+
+
+def test_jira_create_is_followed_by_a_read_back() -> None:
+    """The create path's read-back is a separate rule from the move path's.
+
+    It lives in `project-issue` §6 rather than in Step 7, which is the GitHub
+    path; nothing else in the tree asserts it, so deleting the block left every
+    other guard green.
+    """
+    text = read_skill("skills/project-issue/SKILL.md")
+    start = text.index("### Jira (`issue_tracker: jira`)")
+    section = text[start:text.index("### Forgejo", start)]
+    assert section, "the Jira subsection is no longer findable"
+
+    assert _commands(section, "jira issue view"), (
+        "the created issue is no longer read back before it is reported"
+    )
+    assert "--raw" in section, "the read-back no longer asks for the raw response"
+    assert "Limitation:" in section, (
+        "the note that this path was never run against a live Jira is gone"
+    )
+
+
+def _jira_transition_contract(path: str, heading: str) -> str:
+    section = skill_section(read_skill(path), heading)
+    assert section, f"{path}: the status step is no longer findable: {heading}"
+    return section
+
+
+def test_jira_move_is_followed_by_a_read_back() -> None:
+    """A clean `jira issue move` is not evidence that the issue moved.
+
+    Both sites that transition an issue carry the same contract, so both are
+    asserted, and the two blocks are required to stay byte-identical — the
+    substring assertions that preceded this let the copies drift in wording and
+    rationale while staying green.
+
+    Each rule is pinned with `assert_rule`, not with `in`. Every one of these
+    survived being inverted in place, and one survived being replaced by a
+    sentence that retracted it ("an earlier draft told you to ... skip it"),
+    which is exactly what `RETRACTION_MARKERS` exists to catch.
+    """
+    sites = (
+        ("skills/project-start/SKILL.md", "**3. Issue status -> In Progress**"),
+        ("skills/project-done/SKILL.md", "**8. Project status -> In Review**"),
+    )
+    blocks = []
+    for path, heading in sites:
+        section = _jira_transition_contract(path, heading)
+
+        assert _commands(section, "jira issue view"), (
+            f"{path}: the transition is no longer read back"
+        )
+        assert_rule(
+            section, "not from the move's exit code",
+            starts_with="- **Judge from the re-read",
+        )
+        assert_rule(
+            section, "Always pass the state argument",
+            starts_with="- **Always pass the state argument.**",
+        )
+        assert "not applied" in section, (
+            f"{path}: the existing 'not applied' grade was dropped or promoted"
+        )
+        assert "--plain" in section and "--columns status" in section, (
+            f"{path}: the rejected `jira issue list` substitute is no longer warned against"
+        )
+
+        start = section.index("**The Jira fallback reads the result back.**")
+        blocks.append(section[start:section.index("> Limitation:", start)])
+
+    assert blocks[0] == blocks[1], (
+        "the two copies of the Jira transition contract have drifted; they are "
+        "duplicated verbatim on purpose, so any change belongs in both"
+    )
+
+    # Positive shape: the state argument is a placeholder, never a real label.
+    # A ban on labels starting with `In ` (the earlier form) let `"Done"`,
+    # `"Resolved"` and `"완료"` straight through, and a ban on the whole slice
+    # would be red on the legitimate step headings and status-field fallbacks.
+    moves = [
+        (path, line)
+        for path in _skill_docs()
+        for line in _logical_lines(path.read_text(encoding="utf-8"))
+        if re.search(r"(?:^|\s)jira issue move\s", line)
+    ]
+    assert moves, "no `jira issue move` call is documented anywhere"
+    for path, line in moves:
+        where = path.relative_to(ROOT)
+        args = re.search(r"jira issue move\s+(\S+)\s+(\S+)", line)
+        assert args, (
+            f"{where}: the bare form opens an interactive picker and unattended "
+            f"can run the first entry of the list: {line!r}"
+        )
+        assert args.group(2).strip("\"'").startswith("<"), (
+            f"{where}: a workflow-specific state name is hardcoded: {line!r}"
+        )
+
+
+def test_gate_commands_are_not_piped() -> None:
+    """A pipe hands you the last stage's exit code, so a red run reports green.
+
+    The rule has to hold at *both* gates, which is why this is a slice-by-slice
+    assertion rather than one `assert_rule` over the file: `rule_line` requires
+    an anchor to appear exactly once per file, so the two sites are worded
+    differently and anchored separately.
+
+    The prose assertions are not enough on their own — the earlier version of
+    this guard passed while the documented command was changed to
+    `... 2>&1 | tee "<log-file>"`. The command lines in each slice are checked
+    directly.
+    """
+    text = read_skill("skills/project-done/SKILL.md")
+
+    # The verdict rule is anchored on the phrase that states BOTH sources are
+    # required. Anchoring on "the verdict line" alone pinned nothing: the rule
+    # survived being rewritten to "Read the result from the verdict line alone
+    # — the exit code ... is noisy, so ignore it", which is the exact opposite
+    # of the requirement and keeps both the anchor and the line-start intact.
+    gates = (
+        ("**2-H. `pre_done` hook", "**Do not pipe the hook command.**",
+         "`$HOOK_RC` and the verdict line", "**Decide from two places"),
+        ("**11. Check CI**", "- **Do not pipe the check command.**",
+         "the exit code and the verdict line together",
+         "- **Do not pipe the check command."),
+    )
+    for heading, opening, verdict_anchor, verdict_start in gates:
+        section = skill_section(text, heading)
+        assert section, f"the gate step is no longer findable: {heading}"
+
+        assert_rule(section, "Do not pipe the", starts_with=opening)
+        assert_rule(section, verdict_anchor, starts_with=verdict_start)
+        assert "2>&1" in section, f"{heading}: no redirect-to-file alternative is given"
+        assert "set -o pipefail" in section, (
+            f"{heading}: the rule no longer says the caller's shell options are unknown"
+        )
+
+        piped = [line for line in _logical_lines(section) if "|" in line and (
+            line.startswith("<the hooks") or line.startswith("gh ")
+        )]
+        assert not piped, f"{heading}: the documented command is piped: {piped}"
+
+    # The existing bound on `--watch` is the neighbour this rule was placed
+    # beside; losing it while adding the pipe ban would be a net loss.
+    assert "blocking `--watch` without a bound" in text
+
+
+def test_project_done_checks_that_commit_and_merge_moved() -> None:
+    """An empty commit and an empty merge both end quietly, in opposite ways.
+
+    `git commit` on an empty index exits 1 and the following steps push an
+    unchanged branch and open a PR with nothing in it. `git merge` with nothing
+    to merge exits 0, prints `Already up to date.` and creates no merge commit,
+    so the history keeps no trace at all.
+
+    Both verdicts are pinned with `assert_rule`: asserted as substrings they
+    survived being reworded into their own opposites ("expected and harmless,
+    so continue", "the normal case and is passed over as success") and into a
+    retraction, all while the full suite stayed green.
+
+    The `MERGE:` envelope is asserted absent: promoting these checks into an
+    envelope contract is a separate, larger ticket, and importing the string
+    early would claim a contract that does not exist.
+    """
+    text = read_skill("skills/project-done/SKILL.md")
+
+    # Anchor on the DIRECTIVE, not on the symptom string. Anchoring on
+    # `nothing to commit` / `Already up to date.` pins only the diagnosis: both
+    # rules survived being rewritten, in the same line, into their opposites
+    # ("expected and harmless, so continue to Step 6 anyway", "the normal case
+    # and is passed over as success") because the symptom string and the bold
+    # lead-in were both left intact. What has to be pinned is what to DO.
+    commit = skill_section(text, "**5. Commit source changes**")
+    assert commit, "the commit step is no longer findable by its heading"
+    assert_rule(
+        commit, "means **stop and report**",
+        starts_with="**Check that the commit actually moved.**",
+    )
+    assert "nothing to commit" in commit, "the empty-index symptom is no longer named"
+
+    merge = skill_section(text, "**7. PR / Branch handling**")
+    assert merge, "the PR/branch step is no longer findable by its heading"
+    assert_rule(
+        merge, "is **reported**, not passed over as success",
+        starts_with="- **Check that the merge actually moved.**",
+    )
+    assert "Already up to date." in merge, "the empty-merge symptom is no longer named"
+    # `HEAD^2` is not a discriminator: after any earlier `--no-ff` merge the
+    # base tip is already a merge commit, so it resolves happily following a
+    # no-op and names the *previous* round's branch.
+    assert not re.search(r"confirm that `git rev-parse HEAD\^2`", merge), (
+        "`HEAD^2` is documented as a merge-happened check again"
+    )
+    assert "$BASE_BEFORE" in merge, "the before/after sha comparison is gone"
+
+    assert "MERGE:" not in text, (
+        "the envelope contract was imported before the ticket that defines it"
+    )
+
+
+def test_project_done_merges_from_the_main_checkout() -> None:
+    """Defect 1-4: in worktree mode `git checkout <base>` fails and the chain no-ops.
+
+    Nothing covered this fix, so deleting it whole left the suite green.
+
+    The resolution must not be derived by walking up from `--git-common-dir`:
+    wherever `.git` is not a directory beside the work tree (a submodule, a
+    `--separate-git-dir` clone, a bare repo) the parent is a different
+    directory that nonetheless *exists*, so `cd` succeeds and git quietly
+    re-targets another repository.
+    """
+    merge = skill_section(read_skill("skills/project-done/SKILL.md"),
+                          "**7. PR / Branch handling**")
+    assert merge, "the PR/branch step is no longer findable by its heading"
+
+    resolve = _commands(merge, "MAIN_CHECKOUT=")
+    assert len(resolve) == 1, f"expected one main-checkout resolution, got {resolve}"
+    assert "git worktree list" in resolve[0], (
+        f"the main checkout is no longer resolved by asking git for it: {resolve[0]!r}"
+    )
+    # Scoped to command lines: the bullet explaining *why not* to walk up from
+    # the git dir names both flags, so a whole-slice absence scan is red the day
+    # the rule is written. This is the third rule in this change to need that
+    # narrowing, and the reason `--stat` and `..HEAD` are scoped the same way.
+    commands = [
+        line for line in _logical_lines(merge)
+        if line.startswith(("MAIN_CHECKOUT=", "BASE_BEFORE=", "git ", "cd "))
+    ]
+    assert commands, "the merge fence has no commands in it at all"
+    for flag, why in (
+        ("--git-common-dir",
+         "lands in the wrong repository for a submodule or a --separate-git-dir clone"),
+        # `--path-format` needs git 2.31; the manifest declares a floor of 2.23.
+        ("--path-format",
+         "raises the git floor above the one declared in skills/dependencies.yaml"),
+    ):
+        offenders = [line for line in commands if flag in line]
+        assert not offenders, f"`{flag}` {why}: {offenders}"
+    assert re.search(r'\[\s*-n\s*"\$MAIN_CHECKOUT"', merge), (
+        "the resolved path is no longer checked for emptiness, and `cd \"\"` "
+        "returns 0 while leaving you in the worktree"
+    )
+    assert_rule(
+        merge, "Merge from the main checkout",
+        starts_with="**Merge from the main checkout.**",
+    )
+    assert "git worktree remove -f -f" in merge, (
+        "the ban on force-removing a worktree is gone"
+    )

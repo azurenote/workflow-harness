@@ -85,6 +85,17 @@ If `.claude/skill-config.yaml` has `hooks.pre_done`, run it through Bash.
 **If it fails, report the hook failure output to the user and stop the procedure. Do not run later steps.**
 See `~/.claude/skills/_shared/references/hooks.md`.
 
+**Do not pipe the hook command.** A pipe hands you the last stage's exit code, so `BUILD FAILED` arrives as exit 0 and this gate waves it through. Send long output to a file instead and read the file back:
+
+```bash
+<the hooks.pre_done command> > "<log-file>" 2>&1
+HOOK_RC=$?
+```
+
+Backgrounding the command changes nothing about this — capture it the same way. Do not assume `set -o pipefail` is in effect either; a shared skill does not know the caller's shell options, and the portable rule is simply not to pipe.
+
+**Decide from two places — `$HOOK_RC` and the verdict line in the log.** One alone is wrong in both directions: a swallowed code turns a failure green, and a run that reports zero failures can still exit non-zero (a build JVM running out of memory, for one). Agreement is the pass; a disagreement is reported as a failure, not resolved in favour of whichever looks better.
+
 **3. ADR (conditional)**
 
 If the `adr` argument is present, run `project-adr <issue-id>` first.
@@ -108,7 +119,7 @@ Create `.task/plan/impl-report-<issue-id>.md` in Korean:
 <구현 내용을 설명하는 한국어 2-4문장>
 
 ## 변경 파일
-<git diff --name-only "<diff_base>" 출력>
+<아래 "변경 파일 목록" 명령의 출력>
 
 ## Definition of Done
 - [x] <완료 조건>
@@ -129,7 +140,29 @@ Create `.task/plan/impl-report-<issue-id>.md` in Korean:
 <실행한 테스트와 결과를 한국어로 작성>
 ```
 
-> `<diff_base>` decision: if local `<base_branch>` ref exists, use it; otherwise use `origin/<base_branch>` after `git fetch origin <base_branch>` if needed. **Do not run `git diff` against a missing ref**, because it exits 128. Always use an existing ref. When the base is the project default base, `origin/<default base>` is safe.
+변경 파일 목록 — **run this fence as one shell invocation.** The second line reads a variable the first one sets, and a shell that does not carry that variable runs `git diff --name-only "" --`:
+
+```bash
+MERGE_BASE="$(git merge-base HEAD "<diff_base>")" || {
+  echo "merge-base failed against <diff_base>"; exit 1; }
+git diff --name-only "$MERGE_BASE" --
+git ls-files --others --exclude-standard
+```
+
+Four pieces each carry load, so do not fold them back together.
+
+- **Keep the substitution on its own line so the exit code survives.** Written inline as `"$(git merge-base …)"..HEAD`, a dead inner `merge-base` still leaves the outer `git diff` exiting 0 with an empty list — the exact failure the ref warning below describes, made invisible. Keep the `|| { … }` too: without it a dead `merge-base` yields an empty `$MERGE_BASE` and the same empty list comes back.
+- **Do not append `..HEAD`.** That turns the command into commit-vs-commit and drops uncommitted work. This step runs **before** `**5. Commit source changes**`, so in the normal flow nothing is committed yet and the result is an empty `## 변경 파일` with exit 0. The three-dot form (`<base>...HEAD`) drops it for the same reason.
+- **List untracked files separately.** `git diff` never reports a file git has not been told about, and nothing has been staged at this point in the flow, so the diff alone omits every file this round created — usually most of the work. The report is also the PR body, so the PR would under-report its own change set. (`git add -N .` would fold them into the diff instead, at the cost of writing to the index one step early; the separate listing keeps this step read-only.)
+- **Keep the closing `--`.** It separates revisions from paths. `$MERGE_BASE` is a commit id, so nothing is ambiguous as written — the separator is what keeps the command correct if anyone ever substitutes a branch name back in, where a file of the same name makes git exit on `fatal: ambiguous argument`.
+
+**Take the file list with `--name-only` only.** `git diff --stat` abbreviates long paths with `...`, and a reader who expands one of those invents a path that does not exist. `--stat` belongs in summaries a human reads, not in a list another step consumes.
+
+> `<diff_base>` decision, part 1 — which ref: if local `<base_branch>` ref exists, use it; otherwise use `origin/<base_branch>` after `git fetch origin <base_branch>` if needed. **Do not run `git diff` against a missing ref**, because it exits 128. Always use an existing ref. When the base is the project default base, `origin/<default base>` is safe.
+
+> `<diff_base>` decision, part 2 — which point on that ref: whatever `<diff_base>` resolves to, it is a **branch tip**. While a feature branch is alive the base moves ahead of it, and every one of those commits lands in this report as if it were this ticket's work. That is why the command above diverges at `git merge-base` instead of at the tip. **The two parts are separate axes**: picking an existing ref does not pick the right point on it.
+>
+> **Note why this stays quiet.** When the base has not moved ahead, the tip and the merge base are exactly equal, so the defect shows nothing while one person works alone and grows the moment a team shares the base. Without this note the next reader reverts it with "it matched in my repo." A `base_branch` that is an integration branch (sub-PR) is no exception — it moves ahead sooner, not later.
 
 **5. Commit source changes**
 
@@ -149,6 +182,8 @@ git commit -m "feat(<scope>): <title>
 
 <trailer>"
 ```
+
+**Check that the commit actually moved.** When the round's only output is the impl-report, there is nothing for `git add -A` to stage — `.task/plan/` is in `.gitignore`, so it was never a candidate and the `git restore --staged` line above is a no-op — and `git commit` then exits **1** with `nothing to commit`. Nothing in the steps that follow notices: Step 6 pushes an unchanged branch and Step 7 opens a PR with no changes in it. So read that exit code — a non-zero `git commit` means **stop and report**, not continue. An empty index here means the round produced nothing committable, and that fact belongs in the report rather than in a PR.
 
 Determine `<trailer>` from the sub-PR decision in 1-B:
 - base == project default base -> `Closes #<issue-id>` so the issue auto-closes on merge.
@@ -193,19 +228,49 @@ Read the PR URL.
 
 ### Jira (`issue_tracker: jira`)
 
+**Merge from the main checkout.** If `project-start` Step 2-B created a worktree, every later step runs with the worktree as CWD (`project-start` Step 2-B: *"perform all work inside `$WORKTREE_PATH`"*), and `git checkout <base_branch>` **fails there**: the main worktree already has the base checked out and git refuses to check out one branch in two worktrees. Because the line is an `&&` chain, that first failure takes the merge and the push with it — nothing happens and nothing looks broken.
+
+**Run this fence as one shell invocation**, and note it is the one deliberate exception to the "do not repeat `cd`" rule in `~/.claude/skills/_shared/references/worktree.md`: that rule keeps `git add`/`commit`/`push` in the worktree, and this merge is the one command that must not run there.
+
 ```bash
+MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+BASE_BEFORE="$(git -C "$MAIN_CHECKOUT" rev-parse <base_branch>)"
+cd "$MAIN_CHECKOUT" || exit 1
 git checkout <base_branch> && git merge --no-ff "<branch-name>" && git push origin <base_branch>
 ```
+
+- **Resolve the main checkout by asking for it, not by walking up from the git dir.** `git worktree list` names it directly and its first entry is always the main worktree. Deriving it as the parent of `--git-common-dir` is wrong wherever `.git` is not a directory beside the work tree — a submodule, a `--separate-git-dir` clone, a bare repo — and in each of those the wrong directory **exists**, so `cd` succeeds and git quietly re-targets a different repository.
+- **Validate the value before `cd`.** `cd ""` returns 0 and leaves you where you were, which puts you back in the worktree with the failure this block exists to prevent.
+- **Check that the merge actually moved.** If the branch tip holds nothing the base lacks, `git merge` prints `Already up to date.` and exits **0** without creating a merge commit, so the history keeps no trace that this round ran. Compare `$BASE_BEFORE` with `git rev-parse <base_branch>` afterwards. Do not test this with `git rev-parse HEAD^2`: once any earlier round merged with `--no-ff` the base tip is already a merge commit, so `HEAD^2` resolves happily after a no-op and points at the *previous* round's branch. An unchanged base is **reported**, not passed over as success.
+- **Leave no half-finished merge behind.** If you want to inspect the result before it is recorded, run the simulation and its abort **as one unit** — `git merge --no-commit --no-ff "<branch-name>"`, look, then `git merge --abort` — and do nothing else in between. A repository parked mid-merge blocks every later step and the next person inherits it without knowing why.
+- **Do not reach for `git worktree remove -f -f`.** Losing work is not a way out of a blocked checkout; removal belongs to `project-clean`, after the merge landed.
+- **The CWD stays on the base branch for the rest of this skill.** That is intentional, not leftover state: Steps 8 through 12 run from here, and the `project-clean` handoff at the end of Step 12 assumes the base is checked out. Do not `cd` back to the worktree to tidy up. Note this is the Jira path only — the GitHub path above does not change directory, so the two paths reach Step 8 from different places.
 
 **8. Project status -> In Review**
 
 ```bash
 <harness_cli> set-review <issue-id>
 # fallback (GitHub): gh project item-edit <github_project.number> --owner <github_project.owner> --url <issue-url> --field Status --value "<status_names.in_review>" || echo "status not applied"
-# fallback (Jira):   jira issue move <ticket-id> "In Review"
+# fallback (Jira):   jira issue move "<ticket-id>" "<target-state>"   # then read it back, below
 ```
 
 Same contract as `project-start` Step 3: the status is a project field. A failure here is reported as **not applied** and does not stop the flow, and it is never worked around with a label. See `~/.claude/skills/_shared/references/github-issue-fields.md`.
+
+**The Jira fallback reads the result back.** A `jira issue move` that returns cleanly is not evidence that the issue moved.
+
+```bash
+jira issue move "<ticket-id>" "<target-state>"
+jira issue view "<ticket-id>" --raw      # read the status field out of this response
+```
+
+- **Always pass the state argument.** `jira issue move <ticket-id>` with nothing after it opens an interactive picker (`Select desired state to transition %s to:`), and with no terminal attached the first entry of that list can be executed as-is. Never run the bare form from a skill.
+- **Do not write a transition label into this document.** State names differ per workflow, so `<target-state>` is filled in from the project's own workflow. Pinning a name here is the coupling this skillset avoids everywhere else.
+- **Judge from the re-read, not from the move's exit code.** If the status that comes back is not the intended one, report the status as **not applied** and continue — the same grade the paragraph above sets. This does not become a gate.
+- **Do not substitute `jira issue list -q "key = <ticket-id>" --plain --columns status`.** `--plain` prints a header row, and `-q` is scoped to the configured project context, so a key from another project silently yields zero rows.
+
+> Limitation: this skillset's own repo has no Jira project, so this path was checked against the installed CLI's flag surface and this document's internal consistency. It has not been executed against a live Jira.
 
 **9. Post issue comment**
 
@@ -235,6 +300,7 @@ Creating the PR, or merging the branch, is not the end of the step. Watch the ch
 
 - **PR path (GitHub)**: prefer the host's PR-watching path if one is available; otherwise poll with the CLI (`gh pr checks <PR_URL>`). Do not use a blocking `--watch` without a bound — it can outlive the command timeout and come back as an interrupted tool call rather than a result. Poll, report the state, and poll again.
 - **Branch-merge path (Jira, or any tracker without PRs)**: there is no PR to check. Read the CI run for the merge commit through whatever the project uses; if the project has no CI on that branch, say exactly that.
+- **Do not pipe the check command.** Its output is long, which is exactly what tempts a `| tail` or a `| grep`, and that hands you the filter's exit code instead of the check's. Redirect to a file (`> "<log-file>" 2>&1`) and read the file. **Read the result from the exit code and the verdict line together** — neither is sufficient alone, and when they disagree the run is reported as failed. Do not rely on `set -o pipefail`; the caller's shell options are not ours to assume.
 - `gh pr checks` exits non-zero when a PR has no checks at all. That is a **finding**, not a tool error — report it as "no checks ran".
 - **Do not report "complete" while CI is unverified.** A PR whose checks have not been read is an unknown, not a pass. Say "CI pending" and what you are waiting on.
 - On failure, report which check failed and its output. Do not summarize a red run as a warning.
