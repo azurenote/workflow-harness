@@ -120,10 +120,24 @@ After this, perform all work inside `$WORKTREE_PATH`.
 ```bash
 <harness_cli> add-progress "<node-id>"
 # fallback (GitHub): gh project item-edit <github_project.number> --owner <github_project.owner> --url <issue-url> --field Status --value "<status_names.in_progress>" || echo "status not applied"
-# fallback (Jira):   jira issue move <ticket-id> "In Progress"
+# fallback (Jira):   jira issue move "<ticket-id>" "<target-state>"   # then read it back, below
 ```
 
 Status is a project field, not a label. The fallback above writes that field; if it fails — no `github_project` block, a token without the `project` scope, a gh older than 2.97.0 — report the status as **not applied** and continue. Do not add a workflow-state label instead; see `~/.claude/skills/_shared/references/github-issue-fields.md`.
+
+**The Jira fallback reads the result back.** A `jira issue move` that returns cleanly is not evidence that the issue moved.
+
+```bash
+jira issue move "<ticket-id>" "<target-state>"
+jira issue view "<ticket-id>" --raw      # read the status field out of this response
+```
+
+- **Always pass the state argument.** `jira issue move <ticket-id>` with nothing after it opens an interactive picker (`Select desired state to transition %s to:`), and with no terminal attached the first entry of that list can be executed as-is. Never run the bare form from a skill.
+- **Do not write a transition label into this document.** State names differ per workflow, so `<target-state>` is filled in from the project's own workflow. Pinning a name here is the coupling this skillset avoids everywhere else.
+- **Judge from the re-read, not from the move's exit code.** If the status that comes back is not the intended one, report the status as **not applied** and continue — the same grade the paragraph above sets. This does not become a gate.
+- **Do not substitute `jira issue list -q "key = <ticket-id>" --plain --columns status`.** `--plain` prints a header row, and `-q` is scoped to the configured project context, so a key from another project silently yields zero rows.
+
+> Limitation: this skillset's own repo has no Jira project, so this path was checked against the installed CLI's flag surface and this document's internal consistency. It has not been executed against a live Jira.
 
 `add-progress` transitions the issue status only; it does not post a comment.
 (The optional `--issue-number`/`--branch-name` flags are still accepted for

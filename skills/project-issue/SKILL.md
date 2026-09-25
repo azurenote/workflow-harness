@@ -235,12 +235,29 @@ If the issue is not on the board yet, `gh project item-add <github_project.numbe
 DRAFT_PLAN="<draft-plan-path>"
 jira issue create \
   --project "<jira_project>" \
+  --type "<Type>" \
   --summary "<plan title>" \
-  --description "$(cat "$DRAFT_PLAN")" \
-  --type Task
+  --template "$DRAFT_PLAN" \
+  --no-input \
+  --raw
 ```
 
-Read the ticket ID from output, for example `SYN-42`.
+- **`jira issue create` has no `--description` flag.** Measured against the installed CLI (1.7.0): the body flags it accepts are `-b,--body` and `-T,--template`. Cobra aborts on an unknown flag, so a `--description` form does not degrade — it dies on the first call.
+- **`--template` closes a second problem at the same time**: it hands over the file instead of expanding the plan body on a command line, and plan bodies are full of backticks and `$`.
+- ★ **`-b/--body` wins over `--template`** (the CLI's own `EXAMPLES` say so). If someone later adds `-b` for convenience, the template is ignored **without a word** — the same silent precedence this skill guards against elsewhere.
+- **Pass the type inferred in Step 3.** The keyword matching in that step reads the plan, not the tracker, so running it on this path is sound even though its heading says "GitHub only". What is *not* portable is the vocabulary it emits: `Bug` / `Feature` / `Task` are GitHub's names, and Jira issue types are defined per project — `Feature` is not one of Jira's defaults. Map the inferred name onto a type the target project actually defines, the same way the GitHub path requires a type the repository defines. Do not hardcode a type in this call, and do not send an unmapped one.
+- **`--raw` returns the API response as JSON.** Read the issue key out of that response — for example `SYN-42`. Which field carries it is **not verified here** (see the limitation below), so do not write a field name into this document as though it were confirmed.
+- **`--no-input` is the flag that keeps this call unattended, and it is required.** It suppresses the prompts for non-required fields, the description editor among them; drop it and `--template` alone still opens `$EDITOR` pre-filled with the file, which blocks an unattended run indefinitely. Both flags are load-bearing and neither substitutes for the other.
+
+Then read the issue back before reporting anything about it, using the key from that response as `<TICKET_ID>` — the same name Step 8 consumes:
+
+```bash
+jira issue view "<TICKET_ID>" --raw
+```
+
+Compare the summary, type and project on the response with what was sent. This read-back stays **inside this section** — Step 7 is the GitHub path and is not generalized to cover other trackers.
+
+> Limitation: this skillset's own repo has no Jira project. Both calls above were checked against the installed CLI's flag surface and this document's internal consistency, and neither has been executed against a live Jira. Anything reported from this path should carry that qualification rather than read as verified.
 
 ### Forgejo (`issue_tracker: forgejo`)
 
