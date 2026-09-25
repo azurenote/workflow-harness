@@ -1544,6 +1544,40 @@ def test_project_issue_handles_partial_failure_without_recreating() -> None:
     )
 
 
+def test_project_issue_documents_the_unknown_create_outcome() -> None:
+    """Exit 4 exists because `gh` exiting non-zero does not mean nothing was made.
+
+    A skill that only knows 0/2/3 reads a 4 as an unhandled failure, and the
+    generic recovery for that is to try again — which is the duplicate issue the
+    code path was split to prevent.
+    """
+    text = read_skill("skills/project-issue/SKILL.md")
+
+    assert_rule(
+        text, "whether the issue exists",
+        starts_with="- **4**",
+    )
+    assert_rule(
+        text, "searched the repository for the title",
+        starts_with="- On exit 4",
+    )
+
+
+def test_an_environment_refusal_does_not_fall_back_to_bare_gh() -> None:
+    """The fallback carries no reserved-label judgement, so reaching it on a
+    refusal reopens the defect the refusal exists to close — one layer up."""
+    assert_rule(
+        read_skill("skills/project-issue/SKILL.md"),
+        'is **not** "the harness call failed"',
+        starts_with="- An environment refusal",
+    )
+    assert_rule(
+        read_skill("skills/_shared/references/github-issue-fields.md"),
+        "는 호출이 성립하지 않은 경우다",
+        starts_with="**\"실패\" 는 호출이 성립하지 않은 경우다.**",
+    )
+
+
 def test_project_issue_reports_observed_metadata() -> None:
     text = read_skill("skills/project-issue/SKILL.md")
     assert "**7. Read Back**" in text

@@ -1232,26 +1232,28 @@ def test_create_issue_unreadable_body_file_exits_two(monkeypatch, capsys, tmp_pa
     assert "--body-file" in captured.err
 
 
-def test_create_issue_reports_an_unreachable_project_in_the_json(
-    monkeypatch, capsys, body_file
-) -> None:
-    """Exit 0 with an empty `drift` is the machine-readable "all applied".
+def test_unreadable_project_refuses_before_creating(monkeypatch, capsys, body_file) -> None:
+    """A board that cannot be read is a 2, not a create judged against nothing.
 
-    A failed project lookup skipped registration and the initial status, and
-    said so only on stderr — the JSON the skill parses reported nothing.
+    This replaces a test that asserted the opposite: exit 0, the issue created,
+    and the absence recorded in `drift` alone. `project-issue` branches on the
+    exit code, so that contract reported a half-applied issue as a clean success
+    — and the same unread board answered "nothing is reserved" to the label
+    check on its way past.
     """
-    fake = FakeGh(types=_types_response(), create=_created(), read_issue=_issue_response(project_number=None))
+    fake = FakeGh(types=_types_response(), create=_created(), read_issue=_issue_response())
     fake.fail("fields", github.GhError(["api", "graphql"], 1, "missing 'project' scope"))
     code = _run(
         monkeypatch,
         fake,
         ["create-issue", "--title", "t", "--body-file", body_file, "--label", "BE"],
     )
-    out = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
 
-    assert code == 0
-    assert out["drift"], "an unreachable project left no trace in the output"
-    assert any("not added to project" in s for s in out["drift"])
+    assert code == 2
+    assert "create" not in fake.kinds(), "an issue was created against an unread board"
+    assert captured.out == ""
+    assert "project #4" in captured.err
 
 
 def test_audit_says_so_when_issue_types_cannot_be_read(monkeypatch, capsys) -> None:
@@ -1322,7 +1324,12 @@ def test_no_project_read_back_ignores_other_projects(monkeypatch, capsys, body_f
     """
     payload = _issue_response(field_values={PRIORITY_FIELD: PRIORITY_OPTIONS[0]})
     payload["data"]["repository"]["issue"]["projectItems"]["nodes"][0]["project"] = {"number": 99}
-    fake = FakeGh(types=_types_response(), create=_created(), read_issue=payload)
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        read_issue=payload,
+    )
     code = _run(
         monkeypatch,
         fake,
@@ -1332,3 +1339,516 @@ def test_no_project_read_back_ignores_other_projects(monkeypatch, capsys, body_f
 
     assert code == 0
     assert out["observed"]["priority"] is None, "another project's field was reported"
+
+
+# ── #19: an unread board is not a board with nothing on it ───────────────────
+#
+# The shape every defect below shares. `option_names={}` reads as "nothing is
+# reserved", a skipped field write reads as "no field was asked for", and a
+# fallback that raises reads as no fallback at all. Each test fails on the
+# pre-#19 module.
+
+
+def test_no_project_still_judges_labels_against_the_board(
+    monkeypatch, capsys, body_file
+) -> None:
+    """`--no-project` says where the issue goes, not what a label means.
+
+    A priority option is that field's value whether or not *this* issue joins
+    the board, so the judgement needs the board's options either way. Tying the
+    read to the registration let the option through as a label.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        read_issue=_issue_response(project_number=None),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        [
+            "create-issue", "--title", "t", "--body-file", body_file,
+            "--no-project", "--label", PRIORITY_OPTIONS[1],
+        ],
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert fake.mutations() == [], f"created despite a reserved label: {fake.kinds()}"
+    assert captured.out == ""
+    assert PRIORITY_FIELD in captured.err
+
+
+def test_unreadable_project_refuses_a_requested_field_before_creating(
+    monkeypatch, capsys, body_file
+) -> None:
+    """The reported reproduction: rc 0, one issue, no board, drift only."""
+    fake = FakeGh(types=_types_response(), create=_created(), read_issue=_issue_response())
+    fake.fail("fields", github.GhError(["api", "graphql"], 1, "server error"))
+    code = _run(
+        monkeypatch,
+        fake,
+        [
+            "create-issue", "--title", "t", "--body-file", body_file,
+            "--label", "BE", "--priority", PRIORITY_OPTIONS[1], "--size", SIZE_OPTIONS[0],
+        ],
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert fake.mutations() == []
+    assert captured.out == ""
+
+
+def test_no_configured_project_degrades_and_still_reports_the_field(
+    monkeypatch, capsys, body_file
+) -> None:
+    """A *declared* absence is a documented degrade, not an unread board.
+
+    `register_github_commands`, the starter template and two reference documents
+    all promise that a repo with no project still creates issues and reports the
+    fields as not applied. The requested value has to survive into `requested`
+    for that report to exist at all — dropping the key would turn "asked for and
+    not applied" into "never asked for".
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        create=_created(),
+        read_issue=_issue_response(project_number=None),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        ["create-issue", "--title", "t", "--body-file", body_file, "--priority", PRIORITY_OPTIONS[1]],
+        project_number=None,
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert "fields" not in fake.kinds(), "a board was read with none configured"
+    assert out["requested"]["priority"] == PRIORITY_OPTIONS[1]
+    assert any(
+        "priority" in sentence and "requested" in sentence for sentence in out["drift"]
+    ), f"the unapplied field left no trace: {out['drift']}"
+    assert any("no project configured" in sentence for sentence in out["drift"])
+
+
+def test_unknown_option_value_is_rejected_before_creating(
+    monkeypatch, capsys, body_file
+) -> None:
+    """The create-issue half of the option check `set-fields` already had."""
+    fake = FakeGh(types=_types_response(), fields=_fields_response())
+    code = _run(
+        monkeypatch,
+        fake,
+        ["create-issue", "--title", "t", "--body-file", body_file, "--priority", "U9"],
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert fake.mutations() == []
+    assert "U9" in captured.err
+
+
+def test_no_project_writes_nothing_to_the_board(monkeypatch, capsys, body_file) -> None:
+    """Reading the board must not become a reason to join it."""
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        read_issue=_issue_response(project_number=None),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        ["create-issue", "--title", "t", "--body-file", body_file, "--no-project"],
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert "add_item" not in fake.kinds(), "--no-project put the issue on the board"
+    assert "set_option" not in fake.kinds()
+    assert any("--no-project" in sentence for sentence in out["drift"])
+
+
+def test_create_failure_exits_four_because_the_outcome_is_unknown(
+    monkeypatch, capsys, body_file
+) -> None:
+    """`gh` exiting non-zero does not establish that the issue does not exist.
+
+    It exits non-zero for a 422 the server rejected and for a connection lost
+    after the 201 was written. Exit 2 asserts "nothing exists; fix the argument
+    and run it again", and that re-run files a second issue carrying the same
+    plan body. Uncaught — the original behaviour — it was exit 1, which the
+    skill has no rule for, so the re-run happened anyway.
+    """
+    fake = FakeGh(types=_types_response(), fields=_fields_response())
+    fake.fail("create", github.GhError(["api", "-X", "POST"], 1, "Validation Failed"))
+    code = _run(
+        monkeypatch,
+        fake,
+        ["create-issue", "--title", "t", "--body-file", body_file, "--label", "BE"],
+    )
+    captured = capsys.readouterr()
+
+    assert code == 4
+    assert captured.out == ""
+    assert "not known whether the issue exists" in captured.err
+    assert "Validation Failed" in captured.err
+
+
+def test_an_unreadable_create_response_is_also_four(monkeypatch, capsys, body_file) -> None:
+    """The POST returned 2xx — the issue exists — and its number was lost.
+
+    `create_issue` reads `number`/`node_id`/`html_url` out of the response after
+    `json.loads`. Both raise past an `except GhError`, through `dispatch`, as a
+    traceback at exit 1.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create={"html_url": "https://example.invalid/issues/7"},
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        ["create-issue", "--title", "t", "--body-file", body_file, "--label", "BE"],
+    )
+    captured = capsys.readouterr()
+
+    assert code == 4
+    assert captured.out == ""
+    assert "not known whether the issue exists" in captured.err
+
+
+def test_requested_records_the_boards_spelling(monkeypatch, capsys, body_file) -> None:
+    """A case variant matches the option, so it must not be reported as drift.
+
+    Option resolution ignores case; `_mismatches` does not. Recording what the
+    caller typed made the two disagree about a value they had both accepted.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue=_issue_response(
+            labels=(),
+            issue_type=None,
+            field_values={
+                STATUS_FIELD: STATUS_OPTIONS[0],
+                PRIORITY_FIELD: PRIORITY_OPTIONS[1],
+            },
+        ),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        [
+            "create-issue", "--title", "t", "--body-file", body_file,
+            "--priority", PRIORITY_OPTIONS[1].lower(),
+        ],
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["requested"]["priority"] == PRIORITY_OPTIONS[1]
+    assert out["drift"] == [], f"a case variant was reported as drift: {out['drift']}"
+
+
+def test_allowed_labels_compare_exactly() -> None:
+    """A label that only matches after folding is still POSTed as typed.
+
+    GitHub's issue REST then creates that spelling as a new label — the implicit
+    creation `allowed_labels` exists to stop.
+    """
+    assert github.reserved_label_violations(["be"], allowed_labels=["BE"]) == []
+    assert github.reserved_label_violations(["B-E"], allowed_labels=["BE"])
+    assert github.reserved_label_violations(["B.E"], allowed_labels=["BE"])
+    assert github.reserved_label_violations(["USER_STORY"], allowed_labels=["user-story"])
+    # Symmetric: the fold is absent on both sides, not just the caller's.
+    assert github.reserved_label_violations(["BE"], allowed_labels=["B-E"])
+
+
+def test_reserved_axis_still_ignores_separators() -> None:
+    """The two axes keep different keys, and folding the reserved one is right."""
+    option = PRIORITY_OPTIONS[1]
+    assert github.reserved_label_violations(
+        [f"{option[0]}-{option[1:]}"], option_names={PRIORITY_FIELD: PRIORITY_OPTIONS}
+    )
+
+
+def test_a_separator_variant_is_rejected_before_any_call(
+    monkeypatch, capsys, body_file
+) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        read_issue=_issue_response(),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        ["create-issue", "--title", "t", "--body-file", body_file, "--label", "B-E"],
+        allowed_labels=["BE", "FE"],
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert fake.calls == []
+    assert "not one of this project's labels" in captured.err
+
+
+def test_audit_degrades_to_labels_when_the_board_cannot_be_read(
+    monkeypatch, capsys
+) -> None:
+    """The designed fallback. It raised UnboundLocalError instead of taking it."""
+    fake = FakeGh(
+        types=_types_response(),
+        list_issues=_issue_list_page([1], has_next=False, labels=("BE", TYPE_NAMES[0].lower())),
+    )
+    fake.fail("fields", github.GhError(["api", "graphql"], 1, "missing 'project' scope"))
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert any("project fields could not be read" in w for w in out["warnings"])
+    assert out["with_drift"] == 1, "the label axis stopped auditing too"
+    assert any("issue type" in sentence for sentence in out["issues"][0]["drift"])
+
+
+def test_audit_judges_status_options_like_create_issue(monkeypatch, capsys) -> None:
+    """One judgement, one set of inputs.
+
+    The audit derived its options from the *writable* slots, which excludes
+    Status — so the one label shape the write path rejects by name was the one
+    shape the audit could not see.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=_issue_list_page([1], has_next=False, labels=("BE", STATUS_OPTIONS[1])),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["with_drift"] == 1
+    assert any(STATUS_FIELD in sentence for sentence in out["issues"][0]["drift"])
+
+
+def test_audit_exits_two_when_the_issue_list_cannot_be_read(monkeypatch, capsys) -> None:
+    """With no issues read there is nothing to degrade to. It was a traceback."""
+    fake = FakeGh(types=_types_response(), fields=_fields_response())
+    fake.fail("list_issues", github.GhError(["api", "graphql"], 1, "Bad credentials"))
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert "could not list the issues" in captured.err
+
+
+# ── Cells the first round left open, each one a surviving mutant ─────────────
+
+
+def test_no_project_with_an_unreadable_board_still_refuses(
+    monkeypatch, capsys, body_file
+) -> None:
+    """The crossing cell: `--no-project` **and** the board read fails.
+
+    An implementation that reads the board unconditionally but refuses only when
+    the issue is joining it restores defect 1 for exactly this cell — the same
+    `option_names={}` answering "nothing is reserved" — while every other test
+    stays green.
+    """
+    fake = FakeGh(types=_types_response(), create=_created(), read_issue=_issue_response())
+    fake.fail("fields", github.GhError(["api", "graphql"], 1, "missing 'project' scope"))
+    code = _run(
+        monkeypatch,
+        fake,
+        [
+            "create-issue", "--title", "t", "--body-file", body_file,
+            "--no-project", "--label", "BE",
+        ],
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "create" not in fake.kinds(), "an issue was created against an unread board"
+    assert captured.out == ""
+
+
+def test_no_project_without_labels_never_reads_the_board(
+    monkeypatch, capsys, body_file
+) -> None:
+    """A read whose result cannot change an outcome must not fail the command.
+
+    With no labels and no registration there is nothing the board's options could
+    decide. Refusing here closed the one escape a repo with an unreadable board
+    has left: `--no-project`, which `project-issue` documents for that case.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        create=_created(),
+        read_issue=_issue_response(project_number=None),
+    )
+    fake.fail("fields", github.GhError(["api", "graphql"], 1, "missing 'project' scope"))
+    code = _run(
+        monkeypatch,
+        fake,
+        ["create-issue", "--title", "t", "--body-file", body_file, "--no-project"],
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert "fields" not in fake.kinds(), "a board was read that could decide nothing"
+    assert any("--no-project" in sentence for sentence in out["drift"])
+
+
+def test_create_judges_status_options_like_the_audit(monkeypatch, capsys, body_file) -> None:
+    """The other half of "one judgement, one set of inputs".
+
+    The audit side is pinned by `test_audit_judges_status_options_like_create_issue`;
+    this is the side that actually rejects the write. Deriving stage two from the
+    writable slots drops Status and every other test stays green.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        read_issue=_issue_response(),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        [
+            "create-issue", "--title", "t", "--body-file", body_file,
+            "--label", STATUS_OPTIONS[1],
+        ],
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "create" not in fake.kinds()
+    assert STATUS_FIELD in captured.err
+
+
+def test_initial_status_is_recorded_in_the_boards_spelling(
+    monkeypatch, capsys, body_file
+) -> None:
+    """`initial_status` comes from config, not from an argument.
+
+    So its spelling drift is permanent: a `skill-config.yaml` that lower-cases
+    the option matches the board on every create and is reported as drift on
+    every create. `--priority` pins the loop; this pins the status slot.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue=_issue_response(
+            labels=(),
+            issue_type=None,
+            field_values={STATUS_FIELD: STATUS_OPTIONS[0]},
+        ),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        ["create-issue", "--title", "t", "--body-file", body_file],
+        initial_status=STATUS_OPTIONS[0].lower(),
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["requested"]["status"] == STATUS_OPTIONS[0]
+    assert out["drift"] == [], f"a config-cased status was reported as drift: {out['drift']}"
+
+
+def test_reserved_type_axis_folds_on_both_sides() -> None:
+    """The Drift Guard covers the whole reserved axis, not just its option half.
+
+    Folding only the label leaves a separator in a *type name* unmatched, which
+    is the same hole in the other direction.
+    """
+    assert github.reserved_label_violations(["userstory"], type_names=["User-Story"])
+    assert github.reserved_label_violations(["User-Story"], type_names=["userstory"])
+
+
+def test_set_fields_records_the_boards_spelling(monkeypatch, capsys) -> None:
+    """`set-fields` carried defect 6 verbatim, and it is where exit 3 sends people.
+
+    A false drift sentence is worst in the repair command: the caller arrives
+    there because something already went wrong, and is told the repair drifted.
+    """
+    fake = FakeGh(
+        fields=_fields_response(),
+        read_issue=_issue_response(field_values={PRIORITY_FIELD: PRIORITY_OPTIONS[1]}),
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        ["set-fields", "7", "--priority", PRIORITY_OPTIONS[1].lower()],
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["requested"]["priority"] == PRIORITY_OPTIONS[1]
+    assert out["drift"] == [], f"a case variant was reported as drift: {out['drift']}"
+
+
+def test_audit_exits_two_on_a_malformed_issue_node(monkeypatch, capsys) -> None:
+    """`_shape_issue_node` raises LookupError, not GhError, on a missing key.
+
+    `_get_issue_handler` catches that family for the same reads. The audit's new
+    refusal caught GhError alone, so a malformed node stayed a traceback at
+    exit 1 — the shape the refusal was added to remove.
+    """
+    page = _issue_list_page([1], has_next=False)
+    del page["data"]["repository"]["issues"]["nodes"][0]["url"]
+    fake = FakeGh(types=_types_response(), fields=_fields_response(), list_issues=page)
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert "could not list the issues" in captured.err
+
+
+def test_no_project_with_labels_reads_the_board_but_writes_nothing(
+    monkeypatch, capsys, body_file
+) -> None:
+    """Reading the board must not become a reason to join it.
+
+    The sibling test reaches this with no labels, where the read is skipped
+    entirely — so it cannot see the write gate at all. Here the board *is* read,
+    the label passes stage two, and the create must still leave the board alone.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        read_issue=_issue_response(project_number=None),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        [
+            "create-issue", "--title", "t", "--body-file", body_file,
+            "--no-project", "--label", "BE",
+        ],
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert "fields" in fake.kinds(), "the board was not read, so this proves nothing"
+    assert "add_item" not in fake.kinds(), "--no-project put the issue on the board"
+    assert "set_option" not in fake.kinds()
+    assert any("--no-project" in sentence for sentence in out["drift"])
