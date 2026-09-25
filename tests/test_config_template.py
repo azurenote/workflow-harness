@@ -10,11 +10,14 @@ aliases, and the generic re-exports.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from harness_core import scaffold
+from harness_core.git import main_worktree_root
 from harness_core.scaffold import RenderContext
 
 
@@ -54,19 +57,25 @@ def test_reexports_generic_patterns(tmp_path):
     assert module.extract_issue_number("plan-473.md") == 473
 
 
-def test_lazy_uppercase_aliases_resolve_from_main_worktree(tmp_path, monkeypatch):
+def test_lazy_uppercase_aliases_split_by_tracked_or_ignored(tmp_path, monkeypatch):
     module = _load_rendered(tmp_path)
-    # Rebind the name the module looked up so plan_dir()/state_file() and the
-    # __getattr__ aliases resolve against a controlled root, no real repo needed.
-    monkeypatch.setattr(module, "main_worktree_root", lambda: tmp_path)
+    # Rebind the names the module looked up so the functions and the
+    # __getattr__ aliases resolve against controlled roots, no real repo needed.
+    # Two different roots, or a path taken from the wrong one would still match.
+    main = tmp_path / "main"
+    tree = tmp_path / "tree"
+    monkeypatch.setattr(module, "main_worktree_root", lambda: main)
+    monkeypatch.setattr(module, "worktree_root", lambda: tree)
     module.plan_dir.cache_clear()
     module.state_file.cache_clear()
 
-    assert module.PLAN_DIR == tmp_path / ".task" / "plan"
-    assert module.STATE_FILE == tmp_path / ".claude" / "state.json"
-    assert module.SKILL_CONFIG == tmp_path / ".claude" / "skill-config.yaml"
-    # plan_dir() and PLAN_DIR must agree — they are one value with two names.
+    # Gitignored: exists only in the main checkout.
+    assert module.PLAN_DIR == main / ".task" / "plan"
+    assert module.STATE_FILE == main / ".claude" / "state.json"
     assert module.plan_dir() == module.PLAN_DIR
+    assert module.state_file() == module.STATE_FILE
+    # Tracked: the current worktree's copy (#23).
+    assert module.SKILL_CONFIG == tree / ".claude" / "skill-config.yaml"
 
 
 def test_adr_dir_is_cwd_relative(tmp_path):
@@ -80,6 +89,10 @@ def test_unknown_attribute_still_raises(tmp_path):
     module = _load_rendered(tmp_path)
     with pytest.raises(AttributeError):
         _ = module.NOPE
+
+
+def _not_the_main_checkout():
+    raise AssertionError("tracked config was resolved against the main checkout")
 
 
 class TestGithubProjectBlock:
@@ -97,7 +110,11 @@ class TestGithubProjectBlock:
 
     def _module(self, tmp_path, monkeypatch, name="cfg_gh"):
         module = _load_rendered(tmp_path, name)
-        monkeypatch.setattr(module, "main_worktree_root", lambda: tmp_path)
+        monkeypatch.setattr(module, "worktree_root", lambda: tmp_path)
+        # The tracked config must not be looked up from the main checkout. A
+        # stand-in that fails makes every test here catch that, instead of
+        # quietly reading whatever this repo's own main checkout holds.
+        monkeypatch.setattr(module, "main_worktree_root", _not_the_main_checkout)
         module.github_project.cache_clear()
         return module
 
@@ -144,3 +161,71 @@ class TestGithubProjectBlock:
         module = _load_rendered(tmp_path, "cfg_gh_lazy")  # must not raise
 
         assert callable(module.github_project)
+
+
+def _git(*args: str, cwd: Path) -> None:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    subprocess.run(
+        ["git", *args], cwd=str(cwd), env=env, check=True, capture_output=True,
+    )
+
+
+def _commit_config(tree: Path, body: str, message: str) -> None:
+    (tree / ".claude").mkdir(exist_ok=True)
+    (tree / ".claude" / "skill-config.yaml").write_text(body)
+    _git("add", ".claude/skill-config.yaml", cwd=tree)
+    _git("commit", "-m", message, cwd=tree)
+
+
+class TestTrackedConfigFollowsTheWorktree:
+    """#23, end to end against real git: code and config from the same branch.
+
+    The main checkout's branch has no `github_project` block; a linked
+    worktree's branch adds one. Run from the worktree, the rendered config must
+    see the block — the main checkout's copy would reject a board command the
+    worktree's own branch is introducing.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_git(self, monkeypatch):
+        # Under a git hook these point at the outer repo and override CWD.
+        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+            monkeypatch.delenv(var, raising=False)
+        main_worktree_root.cache_clear()
+        yield
+        main_worktree_root.cache_clear()
+
+    def test_worktree_reads_its_own_branch_config(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git("init", "-b", "main", cwd=repo)
+        _commit_config(repo, "issue_tracker: github\n", "main: no block")
+        wt = tmp_path / "wt"
+        _git("worktree", "add", "-b", "feature", str(wt), cwd=repo)
+        _commit_config(
+            wt,
+            "issue_tracker: github\n"
+            "github_project:\n"
+            "  owner: <login>\n"
+            "  number: 7\n",
+            "feature: add block",
+        )
+        module = _load_rendered(tmp_path, "cfg_gh_worktree")
+
+        monkeypatch.chdir(wt)
+        module.github_project.cache_clear()
+        main_worktree_root.cache_clear()
+        assert module.github_project() == {"owner": "<login>", "number": 7}
+        assert module.SKILL_CONFIG == (wt / ".claude" / "skill-config.yaml").resolve()
+
+        # Control: the same module from the main checkout sees main's config.
+        # Without it, a fixture that leaked the block onto main would let the
+        # assertion above pass whichever root is read.
+        monkeypatch.chdir(repo)
+        module.github_project.cache_clear()
+        main_worktree_root.cache_clear()
+        assert module.github_project() is None
