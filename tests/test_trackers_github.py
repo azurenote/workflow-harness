@@ -136,6 +136,16 @@ class FakeGh:
                     written.append(token.split("=", 1)[1])
         return written
 
+    def item_ids_written(self) -> list[str]:
+        written = []
+        for call in self.calls:
+            if call["kind"] != "set_option":
+                continue
+            for token in call["argv"]:
+                if token.startswith("item="):
+                    written.append(token.split("=", 1)[1])
+        return written
+
     def field_ids_written(self) -> list[str]:
         written = []
         for call in self.calls:
@@ -155,6 +165,20 @@ def _fields_response(root="organization") -> dict:
     return {"data": {root: {"projectV2": PROJECT_FIELDS_PAYLOAD}}}
 
 
+def _project_item(item_id, number, owner_login, field_values=None) -> dict:
+    """One ``projectItems`` node, owner included as the query now selects it."""
+    return {
+        "id": item_id,
+        "project": {"number": number, "owner": {"login": owner_login}},
+        "fieldValues": {
+            "nodes": [
+                {"name": value, "field": {"name": name}}
+                for name, value in (field_values or {}).items()
+            ]
+        },
+    }
+
+
 def _issue_response(
     *,
     number=7,
@@ -164,19 +188,13 @@ def _issue_response(
     project_number=4,
     field_values=None,
     item_id="item-1",
+    project_owner="<owner>",
+    leading_items=(),
 ) -> dict:
-    project_items = []
+    project_items = list(leading_items)
     if project_number is not None:
-        nodes = [
-            {"name": value, "field": {"name": name}}
-            for name, value in (field_values or {}).items()
-        ]
         project_items.append(
-            {
-                "id": item_id,
-                "project": {"number": project_number},
-                "fieldValues": {"nodes": nodes},
-            }
+            _project_item(item_id, project_number, project_owner, field_values)
         )
     return {
         "data": {
@@ -645,7 +663,7 @@ def test_issue_in_two_projects_picks_configured_number(monkeypatch, capsys) -> N
         0,
         {
             "id": "item-other",
-            "project": {"number": 99},
+            "project": {"number": 99, "owner": {"login": "<owner>"}},
             "fieldValues": {"nodes": [{"name": "wrong", "field": {"name": PRIORITY_FIELD}}]},
         },
     )
@@ -655,6 +673,214 @@ def test_issue_in_two_projects_picks_configured_number(monkeypatch, capsys) -> N
 
     assert out["project"]["item_id"] == "item-1"
     assert out["project"]["priority"] == PRIORITY_OPTIONS[0]
+
+
+# ── #24: a board is its owner and its number ─────────────────────────────────
+#
+# Project numbers are per owner. The crossed fixture puts the repository owner's
+# #4 FIRST and the configured board's #4 second, and registers a `project_owner`
+# that differs from the repository owner — so a call site that drops the owner,
+# or passes `config["owner"]` in its place, reads the wrong board and goes red.
+
+BOARD_OWNER = "board-org"
+_OWNER_SELECTION = "project { number owner { ... on Organization { login } ... on User { login } } }"
+
+
+def _crossed_issue(right_values, wrong_values) -> dict:
+    return _issue_response(
+        field_values=right_values,
+        project_owner=BOARD_OWNER,
+        leading_items=[_project_item("item-wrong", 4, "<owner>", wrong_values)],
+    )
+
+
+@pytest.mark.parametrize("name", ["_ISSUE_META_QUERY", "_LIST_ISSUES_QUERY"])
+def test_query_selects_the_board_owner_through_both_account_kinds(name) -> None:
+    """`ProjectV2Owner` is an interface without `login`; only the fragments have it.
+
+    FakeGh never validates GraphQL, so this string and the live check recorded in
+    the impl-report are the only guards against a query GitHub rejects outright.
+    """
+    query = " ".join(getattr(github, name).split())
+    assert _OWNER_SELECTION in query
+    assert not re.search(r"owner\s*\{\s*login", query), "login asked of the interface"
+
+
+def test_get_issue_picks_the_configured_owners_board(monkeypatch, capsys) -> None:
+    fake = FakeGh(
+        read_issue=_crossed_issue(
+            {PRIORITY_FIELD: PRIORITY_OPTIONS[0]}, {PRIORITY_FIELD: PRIORITY_OPTIONS[2]}
+        )
+    )
+    code = _run(monkeypatch, fake, ["get-issue", "7"], project_owner=BOARD_OWNER)
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["project"]["item_id"] == "item-1"
+    assert out["project"]["priority"] == PRIORITY_OPTIONS[0]
+
+
+def test_set_fields_reads_and_writes_the_configured_owners_item(monkeypatch, capsys) -> None:
+    wrong = {STATUS_FIELD: STATUS_OPTIONS[2], PRIORITY_FIELD: PRIORITY_OPTIONS[2]}
+    responses = iter(
+        [
+            _crossed_issue({STATUS_FIELD: STATUS_OPTIONS[1], PRIORITY_FIELD: PRIORITY_OPTIONS[1]}, wrong),
+            _crossed_issue({STATUS_FIELD: STATUS_OPTIONS[1], PRIORITY_FIELD: PRIORITY_OPTIONS[0]}, wrong),
+        ]
+    )
+    fake = FakeGh(
+        fields=_fields_response(),
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue=lambda *_: json.dumps(next(responses)),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        ["set-fields", "7", "--priority", PRIORITY_OPTIONS[0]],
+        project_owner=BOARD_OWNER,
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    # The before read picks the item written to ...
+    assert fake.item_ids_written() == ["item-1"]
+    assert "add_item" not in fake.kinds()
+    assert out["status_before"] == STATUS_OPTIONS[1]
+    # ... and the after read, separately, picks the item reported.
+    assert out["observed"]["priority"] == PRIORITY_OPTIONS[0]
+    assert out["status_after"] == STATUS_OPTIONS[1]
+    assert out["drift"] == []
+
+
+def test_create_issue_read_back_reads_the_configured_owners_board(
+    monkeypatch, capsys, body_file
+) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue=_crossed_issue(
+            {STATUS_FIELD: STATUS_OPTIONS[0], PRIORITY_FIELD: PRIORITY_OPTIONS[0]},
+            {STATUS_FIELD: STATUS_OPTIONS[2], PRIORITY_FIELD: PRIORITY_OPTIONS[2]},
+        ),
+    )
+    code = _run(
+        monkeypatch,
+        fake,
+        [
+            "create-issue", "--title", "t", "--body-file", body_file,
+            "--label", "BE", "--priority", PRIORITY_OPTIONS[0],
+        ],
+        project_owner=BOARD_OWNER,
+    )
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["observed"]["priority"] == PRIORITY_OPTIONS[0]
+    assert out["drift"] == []
+
+
+def test_audit_judges_the_configured_owners_board(monkeypatch, capsys) -> None:
+    """The wrong board's item has no Priority, so reading it is drift."""
+    wrong = _project_item("item-wrong", 4, "<owner>", {STATUS_FIELD: STATUS_OPTIONS[0]})
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=_issue_list_page(
+            [1], has_next=False, owner=BOARD_OWNER, leading_items=[wrong]
+        ),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"], project_owner=BOARD_OWNER)
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["scanned"] == 1
+    assert out["with_drift"] == 0, out["issues"]
+
+
+def _shape(items, *, project_number=4, project_owner=BOARD_OWNER) -> dict | None:
+    node = _issue_response(project_number=None, leading_items=items)["data"]["repository"]["issue"]
+    return github._shape_issue_node(
+        node,
+        project_number=project_number,
+        project_owner=project_owner,
+        field_names=FIELD_NAMES,
+    )["project"]
+
+
+def test_owner_login_compares_case_insensitively_on_both_sides() -> None:
+    project = _shape([_project_item("item-1", 4, "board-ORG")], project_owner="Board-Org")
+    assert project is not None and project["item_id"] == "item-1"
+
+
+@pytest.mark.parametrize("login", ["board-org-archive", "old-board-org", "board"])
+def test_owner_login_must_match_exactly_not_by_substring(login) -> None:
+    """A same-numbered board whose owner merely contains the configured one."""
+    project = _shape([_project_item("item-near", 4, login), _project_item("item-1", 4, BOARD_OWNER)])
+    assert project is not None and project["item_id"] == "item-1"
+
+
+def test_the_first_matching_item_wins() -> None:
+    project = _shape([_project_item("item-1", 4, BOARD_OWNER), _project_item("item-dup", 4, BOARD_OWNER)])
+    assert project is not None and project["item_id"] == "item-1"
+
+
+def test_an_all_digit_project_owner_from_yaml_is_compared_as_text(monkeypatch, capsys) -> None:
+    """YAML reads `owner: 12345` as an int; comparing it must not raise."""
+    payload = _issue_response(
+        field_values={PRIORITY_FIELD: PRIORITY_OPTIONS[0]}, project_owner="12345"
+    )
+    code = _run(monkeypatch, FakeGh(read_issue=payload), ["get-issue", "7"], project_owner=12345)
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["project"]["item_id"] == "item-1"
+
+
+def test_owner_login_is_not_separator_folded() -> None:
+    """`board-org` and `boardorg` are two accounts; `_label_key` would merge them."""
+    assert _shape([_project_item("item-1", 4, "boardorg")]) is None
+
+
+@pytest.mark.parametrize(
+    "project",
+    [{"number": 4}, {"number": 4, "owner": None}, {"number": 4, "owner": {}}],
+    ids=["no-owner-key", "owner-null", "owner-without-login"],
+)
+def test_an_item_whose_owner_cannot_be_read_does_not_match(project) -> None:
+    item = _project_item("item-1", 4, BOARD_OWNER)
+    item["project"] = project
+    assert _shape([item]) is None
+
+
+def test_an_ownerless_item_does_not_shadow_the_configured_one() -> None:
+    ownerless = _project_item("item-ownerless", 4, BOARD_OWNER)
+    ownerless["project"] = {"number": 4}
+    project = _shape([ownerless, _project_item("item-1", 4, BOARD_OWNER)])
+    assert project is not None and project["item_id"] == "item-1"
+
+
+def test_no_project_owner_compares_the_number_alone(monkeypatch) -> None:
+    """External callers that pass no owner keep working."""
+    item = _project_item("item-1", 4, BOARD_OWNER)
+    item["project"] = {"number": 4}
+    payload = _issue_response(project_number=None, leading_items=[item])
+    monkeypatch.setattr(github, "run_gh", FakeGh(read_issue=payload))
+
+    meta = github.read_issue_meta("<owner>", "<repo>", 7, project_number=4, field_names=FIELD_NAMES)
+
+    assert meta["project"] is not None and meta["project"]["item_id"] == "item-1"
+
+
+def test_no_project_number_still_takes_the_first_item_whatever_its_owner() -> None:
+    project = _shape(
+        [_project_item("item-first", 9, "y"), _project_item("item-1", 4, BOARD_OWNER)],
+        project_number=None,
+        project_owner="x",
+    )
+    assert project is not None and project["item_id"] == "item-first"
 
 
 # ── project field resolution ─────────────────────────────────────────────────
@@ -709,7 +935,9 @@ def test_option_names_skips_a_field_the_project_lacks(monkeypatch) -> None:
 # ── audit-fields ─────────────────────────────────────────────────────────────
 
 
-def _issue_list_page(numbers, *, has_next, cursor=None, labels=("BE",)) -> dict:
+def _issue_list_page(
+    numbers, *, has_next, cursor=None, labels=("BE",), owner="<owner>", leading_items=()
+) -> dict:
     return {
         "data": {
             "repository": {
@@ -725,9 +953,10 @@ def _issue_list_page(numbers, *, has_next, cursor=None, labels=("BE",)) -> dict:
                             "labels": {"nodes": [{"name": label} for label in labels]},
                             "projectItems": {
                                 "nodes": [
+                                    *leading_items,
                                     {
                                         "id": f"item-{n}",
-                                        "project": {"number": 4},
+                                        "project": {"number": 4, "owner": {"login": owner}},
                                         "fieldValues": {
                                             "nodes": [
                                                 {"name": STATUS_OPTIONS[0], "field": {"name": STATUS_FIELD}},
@@ -1323,7 +1552,13 @@ def test_no_project_read_back_ignores_other_projects(monkeypatch, capsys, body_f
     reported another project's priority as this issue's.
     """
     payload = _issue_response(field_values={PRIORITY_FIELD: PRIORITY_OPTIONS[0]})
-    payload["data"]["repository"]["issue"]["projectItems"]["nodes"][0]["project"] = {"number": 99}
+    # Same owner, other number: this test stays on the number axis. Without the
+    # owner the item would be rejected for that instead, and dropping the number
+    # comparison would go unnoticed.
+    payload["data"]["repository"]["issue"]["projectItems"]["nodes"][0]["project"] = {
+        "number": 99,
+        "owner": {"login": "<owner>"},
+    }
     fake = FakeGh(
         types=_types_response(),
         fields=_fields_response(),
