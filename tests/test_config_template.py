@@ -9,9 +9,12 @@ aliases, and the generic re-exports.
 
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import os
 import subprocess
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -151,6 +154,226 @@ class TestGithubProjectBlock:
         self._write_config(tmp_path, "github_project: [unclosed\n")
         module = self._module(tmp_path, monkeypatch, name="cfg_gh_bad")
         assert module.GITHUB_PROJECT is None
+
+    def test_block_comes_back_without_a_reason(self, tmp_path, monkeypatch):
+        self._write_config(tmp_path, "github_project:\n  owner: <login>\n  number: 4\n")
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_reason_ok")
+
+        assert module.github_project_or_reason() == ({"owner": "<login>", "number": 4}, None)
+
+    # Each cause of "no block", with a fragment only its own reason carries. The
+    # fragments are pairwise distinct, so a reason that merged two causes back
+    # into one message would fail the other cause's row.
+    CAUSES = [
+        pytest.param(None, "does not exist", id="no-file"),
+        pytest.param(b"github_project: [unclosed\n", "not valid YAML: ParserError", id="bad-yaml"),
+        # safe_load raises more than YAMLError; each of these escaped once.
+        pytest.param(b"github_project:\n  d: 2020-13-45\n", "not valid YAML: ValueError", id="bad-date"),
+        pytest.param(b"github_project:\n  n: !!int abc\n", "not valid YAML: ValueError", id="bad-tag"),
+        pytest.param(
+            b"github_project: " + b"[" * 5000 + b"]" * 5000 + b"\n",
+            "not valid YAML: RecursionError",
+            id="deep-nesting",
+        ),
+        pytest.param(b"\xff\xfe github_project:\n", "UnicodeDecodeError", id="not-utf8"),
+        pytest.param(b"- github_project\n", "top level is a list", id="top-level-list"),
+        # Falsy non-mappings: an `or {}` would fold these into "no block".
+        pytest.param(b"[]\n", "top level is a list", id="top-level-empty-list"),
+        pytest.param(b"false\n", "top level is a bool", id="top-level-false"),
+        pytest.param(b"just a string\n", "top level is a str", id="top-level-scalar"),
+        pytest.param(b"issue_tracker: forgejo\n", "has no github_project block", id="no-key"),
+        pytest.param(b"", "has no github_project block", id="empty-file"),
+        pytest.param(b"github_project: 4\n", "is a int, not a mapping", id="block-not-mapping"),
+        # The key is present with no value — the commonest half-written block.
+        # Not "no block": the key is there.
+        pytest.param(b"github_project:\n", "is a NoneType, not a mapping", id="block-null"),
+        # `if project:` in a caller would skip `{}` silently, reason None.
+        pytest.param(b"github_project: {}\n", "is empty", id="block-empty"),
+    ]
+
+    @pytest.mark.parametrize("raw, fragment", CAUSES)
+    def test_each_cause_is_a_reason_not_an_exception(self, tmp_path, monkeypatch, raw, fragment):
+        if raw is not None:
+            (tmp_path / ".claude").mkdir()
+            (tmp_path / ".claude" / "skill-config.yaml").write_bytes(raw)
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_cause")
+
+        block, reason = module.github_project_or_reason()
+
+        assert block is None
+        assert fragment in reason
+        # Every file-level reason names the file it is about.
+        assert str(tmp_path / ".claude" / "skill-config.yaml") in reason
+        # The fail-open form stays None and still does not raise.
+        assert module.github_project() is None
+
+    def test_not_a_regular_file_is_a_reason(self, tmp_path, monkeypatch):
+        (tmp_path / ".claude" / "skill-config.yaml").mkdir(parents=True)
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_dir")
+
+        block, reason = module.github_project_or_reason()
+
+        assert block is None
+        assert "is not a regular file" in reason
+        assert str(tmp_path / ".claude" / "skill-config.yaml") in reason
+        assert module.github_project() is None
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+    def test_fifo_is_a_reason_not_a_hang(self, tmp_path, monkeypatch):
+        # read_text() on a FIFO blocks until a writer opens it — forever, at
+        # parser build. Run the call on a thread so a regression fails instead
+        # of hanging the suite; a daemon thread left blocked dies with pytest.
+        (tmp_path / ".claude").mkdir()
+        os.mkfifo(tmp_path / ".claude" / "skill-config.yaml")
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_fifo")
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(
+                (module.github_project_or_reason(), module.github_project())
+            ),
+            daemon=True,
+        )
+
+        worker.start()
+        worker.join(timeout=5)
+
+        assert result, "reading the config blocked on a FIFO"
+        (block, reason), cached = result[0]
+        assert block is None
+        assert "is not a regular file" in reason
+        assert str(tmp_path / ".claude" / "skill-config.yaml") in reason
+        assert cached is None
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+    def test_unreadable_file_is_a_reason(self, tmp_path, monkeypatch):
+        self._write_config(tmp_path, "github_project:\n  owner: <login>\n")
+        config = tmp_path / ".claude" / "skill-config.yaml"
+        config.chmod(0)
+        try:
+            module = self._module(tmp_path, monkeypatch, name="cfg_gh_unreadable")
+            block, reason = module.github_project_or_reason()
+            cached = module.github_project()
+        finally:
+            config.chmod(0o644)
+
+        assert block is None
+        assert "could not be read: PermissionError" in reason
+        assert str(config) in reason
+        assert cached is None
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root searches a mode-000 directory")
+    def test_unsearchable_parent_is_not_called_absent(self, tmp_path, monkeypatch):
+        # Python 3.14's is_file()/exists() return False here instead of
+        # raising, which would report a present file as missing.
+        self._write_config(tmp_path, "github_project:\n  owner: <login>\n")
+        parent = tmp_path / ".claude"
+        parent.chmod(0)
+        try:
+            module = self._module(tmp_path, monkeypatch, name="cfg_gh_parent")
+            block, reason = module.github_project_or_reason()
+        finally:
+            parent.chmod(0o755)
+
+        assert block is None
+        assert "could not be read: PermissionError" in reason
+        assert "does not exist" not in reason
+
+    def test_dangling_symlink_says_so(self, tmp_path, monkeypatch):
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "skill-config.yaml").symlink_to(tmp_path / "nowhere.yaml")
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_dangling")
+
+        block, reason = module.github_project_or_reason()
+
+        assert block is None
+        assert "symlink whose target does not exist" in reason
+        assert str(tmp_path / ".claude" / "skill-config.yaml") in reason
+
+    @pytest.mark.parametrize(
+        "error",
+        [UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), RuntimeError("loop")],
+        ids=["non-utf8-toplevel", "resolve-loop"],
+    )
+    def test_any_path_resolution_failure_is_a_reason(self, tmp_path, monkeypatch, error):
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_resolve")
+
+        def _fail():
+            raise error
+
+        monkeypatch.setattr(module, "worktree_root", _fail)
+
+        block, reason = module.github_project_or_reason()
+
+        assert block is None
+        assert f"working tree could not be resolved: {type(error).__name__}" in reason
+        assert module.github_project() is None
+
+    def test_reason_loader_is_not_cached(self, tmp_path, monkeypatch):
+        # It is the diagnostic form: the reason must describe the file as it
+        # is now, not as it was on the first call.
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_fresh")
+        assert not hasattr(module.github_project_or_reason, "cache_clear")
+
+        _, first = module.github_project_or_reason()
+        self._write_config(tmp_path, "github_project:\n  owner: <login>\n")
+
+        assert "does not exist" in first
+        assert module.github_project_or_reason() == ({"owner": "<login>"}, None)
+
+    def test_deleted_cwd_is_a_reason(self, tmp_path, monkeypatch):
+        # The real worktree_root(), not a stand-in: git fails in a removed
+        # directory and its fallback, Path.cwd(), raises FileNotFoundError.
+        module = _load_rendered(tmp_path, "cfg_gh_gone")
+        module.github_project.cache_clear()
+        gone = tmp_path / "gone"
+        gone.mkdir()
+        monkeypatch.chdir(gone)
+        gone.rmdir()
+
+        block, reason = module.github_project_or_reason()
+
+        assert block is None
+        assert "working tree could not be resolved" in reason
+        assert module.github_project() is None
+
+    @pytest.mark.parametrize(
+        "error",
+        [ModuleNotFoundError("No module named 'yaml'"), ImportError("broken _yaml extension")],
+        ids=["absent", "broken-extension"],
+    )
+    def test_pyyaml_not_importable_is_a_reason(self, tmp_path, monkeypatch, error):
+        self._write_config(tmp_path, "github_project:\n  owner: <login>\n")
+        module = self._module(tmp_path, monkeypatch, name="cfg_gh_noyaml")
+        real_import = builtins.__import__
+
+        def _import(name, *args, **kwargs):
+            if name == "yaml":
+                raise error
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _import)
+
+        block, reason = module.github_project_or_reason()
+
+        assert block is None
+        assert "PyYAML is not importable" in reason
+        assert str(error) in reason
+        # Which interpreter, and how to fix it — the half a caller used to re-probe.
+        assert f"{sys.executable} -m pip install pyyaml" in reason
+        assert module.github_project() is None
+
+    def test_import_needs_no_pyyaml(self, tmp_path, monkeypatch):
+        # PyYAML is optional: without it, importing the config still works
+        # and only the block read reports why. A module-level `import yaml`
+        # would fail right here.
+        monkeypatch.setitem(sys.modules, "yaml", None)
+        module = _load_rendered(tmp_path, "cfg_gh_no_yaml_import")
+        monkeypatch.setattr(module, "worktree_root", lambda: tmp_path)
+
+        block, reason = module.github_project_or_reason()
+
+        assert block is None
+        assert "PyYAML is not importable" in reason
 
     def test_reading_the_block_runs_no_subprocess_at_import(self, tmp_path, monkeypatch):
         def _boom(*args, **kwargs):

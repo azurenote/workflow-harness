@@ -10,7 +10,7 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 
 1. **`harness_core`** (이 repo, `src/harness_core/`) — 제네릭 파이썬 패키지. git/io/state/local/config/preflight/scaffold 모듈. 프로젝트 상수를 모른다(경로·base 브랜치 등은 호출측이 주입). `pip install -e .` 로 설치.
    - `trackers/github` 는 **opt-in 어댑터**다. 코어 커맨드 8개와 달리 `build_core_parser()` 가 등록하지 않고, 프로젝트 `project.py` 가 `register_github_commands(sub, ...)` 로 직접 가져간다. owner·repo·프로젝트 번호·필드/옵션 이름은 전부 **인자로 주입**되고, 예약 라벨 목록은 리포의 issue type 이름과 프로젝트 필드 옵션 이름에서 런타임에 도출된다 — 어댑터 소스에 특정 프로젝트의 값이 등장하지 않는다. 계약은 `skills/_shared/references/github-issue-fields.md`.
-   - 두 템플릿의 갱신 규칙이 다르다. `project.py` 는 `preserve_existing` 이라 위 예시는 **새 프로젝트에만** 닿고, 기존 프로젝트는 자기 `project.py` 에 등록을 직접 넣는다. 반면 `harness/config.py` 는 관리 대상이므로 `harness-update` 가 **기존 프로젝트에서도 덮어쓴다** — `github_project()` 는 그 경로로 전달된다.
+   - 두 템플릿의 갱신 규칙이 다르다. `project.py` 는 `preserve_existing` 이라 위 예시는 **새 프로젝트에만** 닿고, 기존 프로젝트는 자기 `project.py` 에 등록을 직접 넣는다. 반면 `harness/config.py` 는 관리 대상이므로 `harness-update` 가 **기존 프로젝트에서도 덮어쓴다** — `github_project()` 와, 없는 사유까지 돌려주는 `github_project_or_reason()` 은 그 경로로 전달된다.
 2. **per-project harness** — 각 프로젝트의 `.claude/scripts/harness/`. `harness_core`를 프로젝트 기본값(PLAN_DIR, STATE_FILE, BASE_BRANCH 등)으로 감싸는 얇은 래퍼. `harness-init`/`harness-update`가 canonical wrapper를 생성·갱신한다.
 3. **글로벌 스킬** (이 repo, `skills/`) — `harness_core`/`project.py`를 구동하는 오케스트레이션 레이어. 아래 참조.
 

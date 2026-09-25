@@ -31,11 +31,18 @@ def register(sub) -> None:
         # GITHUB_PROJECT` would resolve the alias at import time and read the
         # config on every `import project`. config.py's whole design is that
         # importing it does no work.
-        from harness.config import github_project
+        from harness.config import github_project_or_reason
         from harness_core.trackers.github import register_github_commands
 
-        project = github_project()
-        if project:
+        # The loader never raises: an unreadable config comes back as
+        # `reason`, not as an exception that would take down every command
+        # while the parser builds.
+        project, reason = github_project_or_reason()
+        if project is not None:
+            # The loader checks only that the block is a non-empty mapping;
+            # its keys are this project's to validate. The indexing below
+            # raises KeyError on a partial block — during the same parser
+            # build — so check the keys first if a partial block can get here.
             register_github_commands(
                 sub,
                 # `owner`/`repo` address the REPOSITORY (repos/{owner}/{repo}),
@@ -50,6 +57,12 @@ def register(sub) -> None:
                 initial_status=project["status_names"]["backlog"],
                 field_names=project.get("field_names", {}),
             )
+        # else: what to do without a block is this project's policy. Fail-open,
+        # as here: leave the board commands unregistered — the shared
+        # contract's "not applied". Fail-closed: register them as a stub that
+        # prints `reason` and exits 2, so a board command says why instead of
+        # argparse's "invalid choice". Either way, no early `return`: the
+        # project's own commands registered after this must still register.
 
     That adds create-issue / get-issue / set-fields / audit-fields. See
     skills/_shared/references/github-issue-fields.md for the config block.
