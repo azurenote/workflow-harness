@@ -76,6 +76,29 @@ jira issue view <ticket-id>
 Read `title`, `node_id` (GitHub) / ticket ID (Jira), and derive the branch name.
 Branch naming rule: `feat/issue-<id>-<slug>` for GitHub, or `feat/<ticket-id>-<slug>` for Jira.
 
+**1-A. Require the local plan (before any side effect)**
+
+```bash
+<harness_cli> plan-file <issue-id>
+# fallback, and always for a Jira key (plan-file parses an integer):
+# rooted at the main worktree — .task/plan/ is gitignored and exists only there
+python -c '
+import re, sys
+from harness_core.git import main_worktree_root
+if not re.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", sys.argv[1]):
+    sys.exit("reject (id): not an issue number or ticket key: %r" % sys.argv[1])
+plan = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])
+sys.exit(0 if plan.is_file() else "no plan: %s" % plan)
+' '<issue-id>'
+```
+
+- If `plan-<issue-id>.md` does not exist, stop here — before any branch, worktree, status change or ADR — and point the user to `project-iterate <issue-id>`, or to writing a draft and running `project-issue <plan-path> --issue <issue-id>`.
+
+`project-done` stops on the same missing file (its Step 1), so going on without it only moves the
+failure past the side effects of Steps 2–4. Worse, those side effects hide the cause: once the branch
+exists, `project-iterate <issue-id>` reads the issue as started and never returns to plan it.
+An issue whose body already is a plan is no exception — save the body as a draft and link it.
+
 **1-B. Read base branch (frontmatter - no inference)**
 
 Read the base declared in plan frontmatter. `/start` does **not infer** the base; it only follows this value.
@@ -88,7 +111,7 @@ Here, **"project default base"** means whatever `base_branch` the project's `ski
 
 - If `base_branch` is **non-null and different from the project default base**, that branch is both the PR review/merge target and the branch base. Pass `--base-ref "<base_branch>"` in 2-A/2-B below.
 - If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use **existing behavior** (branch from current HEAD, assuming the task starts on the default base). Do not add a new prompt.
-- Fallback without harness: inspect the leading `base_branch:` line in `.task/plan/plan-<issue-id>.md` frontmatter directly. If absent, use the project default base.
+- Fallback without harness: inspect the leading `base_branch:` line in the frontmatter of the plan Step 1-A found in the main worktree. If absent, use the project default base.
 
 **2-A. Normal Branch (default)**
 
@@ -152,7 +175,7 @@ Start implementation only after the ADR commit is complete.
 
 **5. Load plan**
 
-Read `.task/plan/plan-<issue-id>.md`. If the file is not local and the issue body is accessible, read the plan from the issue body using the same criteria.
+Read the `plan-<issue-id>.md` that Step 1-A found in the main worktree's plan directory.
 
 Before implementation, read in this order:
 

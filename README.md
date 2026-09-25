@@ -21,14 +21,14 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 | 스킬 | 역할 |
 |------|------|
 | `project-plan` | 플랜 문서 작성(frontmatter 선언 포함) |
-| `project-issue` | 플랜을 이슈 트래커에 등록. GitHub 은 단일 `create-issue` 호출로 type·label·priority·size·초기 Status 를 함께 적용한다 |
-| `project-start` | 브랜치/워크트리 생성 + 이슈 In Progress + 구현 시작 |
+| `project-issue` | 플랜을 이슈 트래커에 등록. GitHub 은 단일 `create-issue` 호출로 type·label·priority·size·초기 Status 를 함께 적용한다. `--issue <id>` 면 새 티켓 없이 기존 이슈에 연결한다 |
+| `project-start` | 브랜치/워크트리 생성 + 이슈 In Progress + 구현 시작. 로컬 `plan-<id>.md` 가 없으면 브랜치를 만들기 전에 멈춘다 |
 | `project-done` | PR 생성 + 리뷰 상태 전환 |
 | `project-adr` | ADR 문서 작성 |
 | `project-clean` | stale 브랜치/워크트리 정리 |
 | `project-release` | Cargo 변경을 조사해 패키지별 SemVer를 제안하고, 확인 후 단일 release commit과 로컬 annotated tag 생성(publish/push 금지) |
 | `project-release-doc` | 두 릴리즈 지점을 비교해 변경·리스크·배포 체크리스트를 담은 한국어 릴리즈 문서 생성(배포 실행 금지) |
-| `project-iterate` | plan → issue → start → done 을 한 번에 실행(단계 사이 사용자 확인) |
+| `project-iterate` | plan → issue → start → done 을 한 번에 실행(단계 사이 사용자 확인). `project-iterate <id>` 는 기존 이슈에서 출발하며, 플랜이 없으면 이슈 본문으로 쓰고 연결 모드로 붙인다 |
 | `project-harness-init` | 새 프로젝트에 local harness scaffold 생성 |
 | `project-harness-update` | 기존 프로젝트 local harness를 canonical wrapper로 갱신 |
 | `SKILL-CONFIG.md` | 스킬 공통 설정/규약 |

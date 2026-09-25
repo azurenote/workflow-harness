@@ -15,12 +15,13 @@ Codex invokes a skill with a `$`-prefixed name:
 
 ```
 $project-plan <task description>
-$project-issue [<plan-path>]
+$project-issue [<plan-path>] [--issue <id>]
 $project-start <issue-id> [worktree] [adr]
 $project-done <issue-id> [adr]
 $project-adr <issue-id>
 $project-clean
 $project-iterate <task description> [worktree] [adr]
+$project-iterate <id> [worktree] [adr]
 $project-release
 $project-release-doc <package> [<from>..<to>]
 $project-harness-init <target-project-root>
