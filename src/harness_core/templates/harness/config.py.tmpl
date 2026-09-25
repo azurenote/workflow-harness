@@ -29,10 +29,14 @@ subprocess — the value is computed only on first access.
 it is new, and ``github_project()`` is the form to call. Prefer the function.
 Reaching for the alias with ``from harness.config import GITHUB_PROJECT`` resolves
 it at import time, which is exactly the work this module is built not to do.
+``github_project_or_reason()`` is the same read with the reason it came back
+empty — the form for a caller that has to tell the user why, or refuse (#22).
 """
 
 from __future__ import annotations
 
+import stat
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -97,25 +101,98 @@ def github_project() -> dict | None:
 
     Lazy for the same reason as ``plan_dir()``: resolving the config path runs
     ``git``, and importing this module must stay side-effect free. Returns None
-    when the block is absent or PyYAML is not installed — every command then
-    reports the project fields as not applied instead of failing.
+    whenever the block cannot be had — every command then reports the project
+    fields as not applied instead of failing. Never raises.
+
+    None says nothing about why. A caller that has to tell the user — or refuse
+    instead of degrading — calls ``github_project_or_reason()``.
+    """
+    return github_project_or_reason()[0]
+
+
+def github_project_or_reason() -> tuple[dict | None, str | None]:
+    """``(block, None)``, or ``(None, reason)`` saying why there is no block.
+
+    Exactly one side is None. The causes are kept apart — PyYAML not importable,
+    no working tree to resolve the path from, no config file, something other
+    than a regular file there, the file unreadable or not UTF-8, not parseable
+    as YAML, a top level that is not a mapping, no ``github_project`` key, a
+    block that is not a mapping or is empty — and each becomes a reason instead
+    of an exception. This runs while the CLI builds its parser
+    (``register_github_commands`` takes the values at registration), so an
+    exception here would take down every command, not just the board ones.
+
+    The block is checked only for being a non-empty mapping. Its keys — which
+    are required, what types they hold — are the caller's to validate; an
+    unchecked ``block["status_names"]["backlog"]`` in the caller raises during
+    the same parser build.
+
+    Whether a missing block degrades or refuses is the caller's policy, not
+    this function's: the shared contract degrades to "not applied", and a
+    project that rejects board commands without a board can print ``reason``.
 
     The file is ``_skill_config_path()`` — the current worktree's copy, not the
     main checkout's; see the module docstring.
+
+    Not cached: it is the diagnostic form and reports the file as it is now.
+    ``github_project()`` keeps a snapshot from its first call, so within one
+    process the two can disagree if the file changes in between — a caller
+    uses one form or the other, not both.
+
+    A tuple rather than an exception carrying the reason, so the loader itself
+    never raises during the parser build. A caller that fails closed can wrap
+    ``reason`` in its own exception.
     """
     try:
         import yaml
-    except ModuleNotFoundError:
-        return None
-    path = _skill_config_path()
-    if not path.exists():
-        return None
+    except ImportError as error:  # also a broken C extension, not only absence
+        return None, (
+            f"PyYAML is not importable by {sys.executable}: {error}; "
+            f"install it: {sys.executable} -m pip install pyyaml"
+        )
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
-        return None
-    block = loaded.get("github_project")
-    return block if isinstance(block, dict) else None
+        path = _skill_config_path()
+    except Exception as error:  # noqa: BLE001
+        # A deleted CWD makes git fail and then its Path.cwd() fallback raise
+        # FileNotFoundError; a non-UTF-8 toplevel path or a resolve() loop
+        # raises other types. Whatever stops the path, it is this reason.
+        return None, f"the working tree could not be resolved: {type(error).__name__}: {error}"
+    try:
+        # stat() rather than is_file()/exists(): those return False for some
+        # OSErrors on newer Pythons, which would call an unreadable parent
+        # directory "does not exist". And the mode is checked before reading,
+        # because read_text() on a FIFO blocks until a writer comes.
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            if path.is_symlink():
+                return None, f"{path} is a symlink whose target does not exist"
+            return None, f"{path} does not exist"
+        if not stat.S_ISREG(mode):
+            return None, f"{path} is not a regular file"
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return None, f"{path} could not be read: {type(error).__name__}: {error}"
+    try:
+        loaded = yaml.safe_load(text)
+    except Exception as error:  # noqa: BLE001
+        # Not only YAMLError: a mistyped date (``2020-13-45``) or a bad
+        # ``!!int`` tag raises ValueError, deep nesting RecursionError. The
+        # parser's exception surface is not a closed list, so it is not
+        # enumerated here — any failure to parse is this reason.
+        return None, f"{path} is not valid YAML: {type(error).__name__}: {error}"
+    if loaded is None:  # an empty file; only None — a falsy [] is still a list
+        loaded = {}
+    if not isinstance(loaded, dict):
+        return None, f"{path} top level is a {type(loaded).__name__}, not a mapping"
+    if "github_project" not in loaded:
+        return None, f"{path} has no github_project block"
+    block = loaded["github_project"]
+    if not isinstance(block, dict):
+        return None, f"github_project in {path} is a {type(block).__name__}, not a mapping"
+    if not block:
+        return None, f"github_project in {path} is empty"
+    return block, None
 
 
 # Intentionally CWD-relative: ADRs are tracked content, and a feature branch may

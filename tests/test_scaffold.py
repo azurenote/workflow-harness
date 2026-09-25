@@ -274,8 +274,9 @@ def test_template_version_bumped_past_three():
     # canonical version advances; pin the forward move. Bumped again for the
     # GitHub tracker adapter reaching the starter templates, and again when the
     # rendered config started importing `worktree_root` from the core (#23) —
-    # an older core then fails `import harness.config` outright.
-    assert int(scaffold.TEMPLATE_VERSION) >= 5
+    # an older core then fails `import harness.config` outright — and again for
+    # `github_project_or_reason()` (#22), a new config surface callers import.
+    assert int(scaffold.TEMPLATE_VERSION) >= 6
 
 
 def test_starter_templates_point_at_the_github_adapter():
@@ -294,6 +295,23 @@ def test_starter_templates_point_at_the_github_adapter():
 
     config = scaffold._render_template("harness/config.py.tmpl", context)
     assert "GITHUB_PROJECT" in config
+
+    # The example calls the reason-bearing loader and branches on None, not on
+    # truthiness; the config defines that loader. Renaming it in one template
+    # only, or reverting the example to `github_project()`, fails here (#22).
+    assert "def github_project_or_reason(" in config
+    assert "from harness.config import github_project_or_reason\n" in project
+    assert "project, reason = github_project_or_reason()" in project
+    assert "if project is not None:" in project
+    # No early `return` in `register()`: it would skip the project's own
+    # commands registered after the board block whenever the block is absent.
+    assert "\n            return\n" not in project
+
+    # harness-update delivers config.py, so the README's account of what it
+    # delivers and the module docstring have to name the new loader too.
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    assert "github_project_or_reason()" in readme
+    assert "``github_project_or_reason()`` is the same read" in config
 
 
 def test_preflight_uses_harness_project_root_not_cwd(tmp_path, monkeypatch):
