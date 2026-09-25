@@ -272,8 +272,10 @@ class TestHarnessCliOwnership:
 def test_template_version_bumped_past_three():
     # The manifest drift (installed "1"/"2" vs current) is only healed if the
     # canonical version advances; pin the forward move. Bumped again for the
-    # GitHub tracker adapter reaching the starter templates.
-    assert int(scaffold.TEMPLATE_VERSION) >= 4
+    # GitHub tracker adapter reaching the starter templates, and again when the
+    # rendered config started importing `worktree_root` from the core (#23) —
+    # an older core then fails `import harness.config` outright.
+    assert int(scaffold.TEMPLATE_VERSION) >= 5
 
 
 def test_starter_templates_point_at_the_github_adapter():

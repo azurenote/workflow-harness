@@ -345,3 +345,31 @@ def main_worktree_root() -> Path:
         return Path(common).resolve().parent
     except (subprocess.CalledProcessError, FileNotFoundError):
         return Path.cwd().resolve()
+
+
+def worktree_root() -> Path:
+    """Return the absolute path of the working tree that contains CWD.
+
+    The counterpart of :func:`main_worktree_root` for *tracked* content. In a
+    linked worktree this is the linked worktree's own root, not the main
+    checkout's — so a file committed on the current branch is read at the
+    version this branch carries. Gitignored state (``.task/plan/``,
+    ``.claude/state.json``) exists only in the main checkout and stays on
+    :func:`main_worktree_root`.
+
+    Fallbacks (same as :func:`main_worktree_root`):
+        - bare repository, or CWD inside a ``.git`` directory: git has no
+          working tree to report, so returns Path.cwd().resolve().
+        - non-git environment: returns Path.cwd().resolve().
+
+    Deliberately not cached: the value follows CWD, and a cached copy would
+    outlive a ``chdir`` between worktrees.
+    """
+    try:
+        top = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        return Path(top).resolve()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return Path.cwd().resolve()

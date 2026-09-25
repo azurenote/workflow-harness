@@ -11,6 +11,7 @@ import pytest
 from harness_core.git import (
     derive_branch_name,
     main_worktree_root,
+    worktree_root,
     create_branch,
     create_worktree,
     branch_exists,
@@ -453,3 +454,73 @@ class TestMainWorktreeRoot:
         _git("init", "--bare", cwd=bare)
         chdir(bare)
         assert main_worktree_root() == bare.resolve()
+
+
+class TestWorktreeRoot:
+    """The tracked-content root: the working tree that contains CWD.
+
+    `main_worktree_root()` answers "where does gitignored state live"; this
+    answers "which checkout's committed files are in play". In a linked
+    worktree the two differ, and reading tracked config from the first is how
+    code and config ended up on different branches (#23).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_git_env(self, monkeypatch):
+        # Under a git hook these point at the outer repo, and `--show-toplevel`
+        # then answers for it instead of for CWD.
+        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+            monkeypatch.delenv(var, raising=False)
+
+    def _repo_with_worktree(self, tmp_path: Path) -> tuple[Path, Path]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git("init", "-b", "main", cwd=repo)
+        (repo / "sub").mkdir()
+        (repo / "sub" / "seed").write_text("x")
+        _git("add", "sub/seed", cwd=repo)
+        _git("commit", "-m", "init", cwd=repo)
+        wt = tmp_path / "wt"
+        _git("worktree", "add", "-b", "feature", str(wt), cwd=repo)
+        return repo, wt
+
+    def test_from_main_checkout(self, tmp_path, chdir):
+        repo, _ = self._repo_with_worktree(tmp_path)
+        chdir(repo)
+        assert worktree_root() == repo.resolve()
+
+    def test_from_linked_worktree_is_the_worktree_not_main(self, tmp_path, chdir):
+        repo, wt = self._repo_with_worktree(tmp_path)
+        chdir(wt)
+        assert worktree_root() == wt.resolve()
+        assert main_worktree_root() == repo.resolve()
+
+    def test_from_subdirectory_is_the_worktree_root(self, tmp_path, chdir):
+        _, wt = self._repo_with_worktree(tmp_path)
+        chdir(wt / "sub")
+        assert worktree_root() == wt.resolve()
+
+    def test_follows_cwd_without_cache_clearing(self, tmp_path, monkeypatch):
+        # monkeypatch.chdir, not the `chdir` fixture: nothing is cleared here,
+        # so a cache on worktree_root() would return the first answer twice.
+        repo, wt = self._repo_with_worktree(tmp_path)
+        monkeypatch.chdir(repo)
+        first = worktree_root()
+        monkeypatch.chdir(wt)
+        assert first == repo.resolve()
+        assert worktree_root() == wt.resolve()
+
+    def test_non_git_fallback(self, tmp_path, chdir):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        chdir(outside)
+        assert worktree_root() == outside.resolve()
+
+    def test_bare_repo_fallback(self, tmp_path, chdir):
+        # `--show-toplevel` fails in a bare repo (no working tree); the failure
+        # path, not a success value, is what lands on CWD.
+        bare = tmp_path / "bare.git"
+        bare.mkdir()
+        _git("init", "--bare", cwd=bare)
+        chdir(bare)
+        assert worktree_root() == bare.resolve()

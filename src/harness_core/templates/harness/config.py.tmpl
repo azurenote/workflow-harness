@@ -9,9 +9,15 @@ rather than eagerly-computed module constants, so that:
 - Import is side-effect free — ``import harness.config`` runs no ``git``
   subprocess. pytest collection and CI sandboxes stay safe. (A prior harness
   sync made these eager module constants and broke exactly this.)
-- Every caller resolves to the *main worktree* root even when invoked from a
-  linked worktree — ``.task/plan/`` and ``.claude/state.json`` are gitignored
-  and exist only in the main checkout.
+- Gitignored state resolves to the *main worktree* root even when invoked from
+  a linked worktree — ``.task/plan/`` and ``.claude/state.json`` exist only in
+  the main checkout.
+- Tracked content resolves to the working tree that contains CWD —
+  ``.claude/skill-config.yaml`` is committed, and a feature branch may change
+  it, so it is read at the version the running code's branch carries. The same
+  rule as ``ADR_DIR`` below, and the same file the skills read CWD-relative.
+  Reading it from the main checkout mixed one branch's code with another
+  branch's config in a linked worktree (#23).
 
 The upper-case aliases ``PLAN_DIR`` / ``STATE_FILE`` / ``SKILL_CONFIG`` are kept
 for backward compatibility with older ``harness_cli.py`` copies in sibling repos
@@ -36,7 +42,7 @@ from harness_core.config import (  # noqa: F401
     is_committed_plan,
     extract_issue_number,
 )
-from harness_core.git import main_worktree_root
+from harness_core.git import main_worktree_root, worktree_root
 
 
 BASE_BRANCH = "$BASE_BRANCH"
@@ -53,7 +59,8 @@ def plan_dir() -> Path:
     Tests that change CWD in-process must clear all three caches together —
     ``plan_dir``, ``state_file``, and ``harness_core.git.main_worktree_root`` —
     otherwise the wrappers return stale paths even after the underlying cache is
-    cleared.
+    cleared. ``github_project`` caches a CWD-dependent value too; clear it when
+    moving between worktrees.
     """
     return main_worktree_root() / ".task" / "plan"
 
@@ -69,6 +76,16 @@ def state_file() -> Path:
     return main_worktree_root() / ".claude" / "state.json"
 
 
+def _skill_config_path() -> Path:
+    """``.claude/skill-config.yaml`` in the working tree that contains CWD.
+
+    The one place this path is built; ``github_project()`` and the
+    ``SKILL_CONFIG`` alias both go through it. Not cached — the answer follows
+    CWD.
+    """
+    return worktree_root() / ".claude" / "skill-config.yaml"
+
+
 @lru_cache(maxsize=1)
 def github_project() -> dict | None:
     """The ``github_project`` block from ``.claude/skill-config.yaml``, or None.
@@ -82,12 +99,15 @@ def github_project() -> dict | None:
     ``git``, and importing this module must stay side-effect free. Returns None
     when the block is absent or PyYAML is not installed — every command then
     reports the project fields as not applied instead of failing.
+
+    The file is ``_skill_config_path()`` — the current worktree's copy, not the
+    main checkout's; see the module docstring.
     """
     try:
         import yaml
     except ModuleNotFoundError:
         return None
-    path = main_worktree_root() / ".claude" / "skill-config.yaml"
+    path = _skill_config_path()
     if not path.exists():
         return None
     try:
@@ -116,7 +136,7 @@ def __getattr__(name: str):
     if name == "STATE_FILE":
         return state_file()
     if name == "SKILL_CONFIG":
-        return main_worktree_root() / ".claude" / "skill-config.yaml"
+        return _skill_config_path()
     if name == "GITHUB_PROJECT":
         return github_project()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
