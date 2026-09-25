@@ -491,7 +491,10 @@ _ISSUE_META_QUERY = """
         projectItems(first:20){
           nodes{
             id
-            project { number }
+            project {
+              number
+              owner { ... on Organization { login } ... on User { login } }
+            }
             fieldValues(first:50){
               nodes{
                 ... on ProjectV2ItemFieldSingleSelectValue {
@@ -515,6 +518,7 @@ def read_issue_meta(
     *,
     project_number: int | None,
     field_names: Mapping[str, str],
+    project_owner: str | None = None,
     run: Run | None = None,
 ) -> dict:
     """Read what is *actually* on an issue: type, labels and project fields.
@@ -527,6 +531,12 @@ def read_issue_meta(
             ``project``; the caller names the fields because the names are its
             constants. ``status`` / ``priority`` / ``size`` are the slots the
             commands use.
+        project_owner: Login that owns the board. Project numbers are per
+            owner, so an issue on an organization's #4 and a user's #4 has two
+            items with the same number; this picks the one on the configured
+            board. ``None`` compares the number alone, which is only safe when
+            the issue cannot sit on two owners' boards. Ignored when
+            ``project_number`` is ``None``.
 
     Returns:
         ``{number, title, node_id, url, type, labels, project}`` where ``project``
@@ -542,7 +552,10 @@ def read_issue_meta(
     if not issue:
         raise LookupError(f"{owner}/{repo}#{number} not found")
     return _shape_issue_node(
-        issue, project_number=project_number, field_names=field_names
+        issue,
+        project_number=project_number,
+        project_owner=project_owner,
+        field_names=field_names,
     )
 
 
@@ -559,7 +572,10 @@ _LIST_ISSUES_QUERY = """
           projectItems(first:20){
             nodes{
               id
-              project { number }
+              project {
+                number
+                owner { ... on Organization { login } ... on User { login } }
+              }
               fieldValues(first:50){
                 nodes{
                   ... on ProjectV2ItemFieldSingleSelectValue {
@@ -583,6 +599,7 @@ def iter_issue_meta(
     *,
     project_number: int | None,
     field_names: Mapping[str, str],
+    project_owner: str | None = None,
     state: str = "open",
     limit: int | None = None,
     run: Run | None = None,
@@ -592,6 +609,9 @@ def iter_issue_meta(
     Cursor pagination, because the 100-issue first page is exactly where an
     audit stops being an audit: a repository past that point would report a
     clean bill of health for the 101st issue onward.
+
+    ``project_number``, ``project_owner`` and ``field_names`` select and shape
+    each issue's project item exactly as in :func:`read_issue_meta`.
     """
     if limit is not None and limit <= 0:
         return []
@@ -613,7 +633,12 @@ def iter_issue_meta(
         for node in issues.get("nodes") or []:
             if node:
                 collected.append(
-                    _shape_issue_node(node, project_number=project_number, field_names=field_names)
+                    _shape_issue_node(
+                        node,
+                        project_number=project_number,
+                        project_owner=project_owner,
+                        field_names=field_names,
+                    )
                 )
                 if limit is not None and len(collected) >= limit:
                     return collected
@@ -625,21 +650,53 @@ def iter_issue_meta(
             return collected
 
 
+def _is_configured_board(
+    project: Mapping, project_number: int, project_owner: str | None
+) -> bool:
+    """Whether a ``projectItems`` node's project is the configured board.
+
+    The number must match, and so must the owner's login when ``project_owner``
+    is given — exactly, case aside. An owner that cannot be read never matches.
+    """
+    if project.get("number") != int(project_number):
+        return False
+    if project_owner is None:
+        return True
+    # Logins are case-insensitive on GitHub; the config and the API may spell
+    # one differently. Not `_label_key`: that folds separators, and `a-b` and
+    # `ab` are two accounts.
+    login = (project.get("owner") or {}).get("login")
+    return isinstance(login, str) and _normalize(login) == _normalize(project_owner)
+
+
 def _shape_issue_node(
-    node: Mapping, *, project_number: int | None, field_names: Mapping[str, str]
+    node: Mapping,
+    *,
+    project_number: int | None,
+    field_names: Mapping[str, str],
+    project_owner: str | None = None,
 ) -> dict:
     """Shape one issue node into the observed-metadata dict.
 
     The single shaper: both the one-issue query and the list query select the
     same fields and go through here. It was briefly duplicated, which put the
     project-item selection rule in two places with two sets of tests.
+
+    An item is the board's when its number matches and, if ``project_owner`` is
+    given, so does its owner's login. Numbers are per owner: matching on the
+    number alone read — and let ``set-fields`` write — a same-numbered board of
+    another owner. With ``project_owner`` given, an item whose owner cannot be
+    read does not match; passing it would be that same wrong-board read with the
+    check switched off.
     """
     labels = [n["name"] for n in (node.get("labels") or {}).get("nodes") or [] if n]
     item = None
     for candidate in (node.get("projectItems") or {}).get("nodes") or []:
         if not candidate:
             continue
-        if project_number is None or (candidate.get("project") or {}).get("number") == int(project_number):
+        if project_number is None or _is_configured_board(
+            candidate.get("project") or {}, project_number, project_owner
+        ):
             item = candidate
             break
     project: dict | None = None
@@ -1057,6 +1114,7 @@ def _create_issue_handler(args) -> int:
             repo,
             created["number"],
             project_number=project_number,
+            project_owner=config["project_owner"],
             field_names=slots,
         )
         return meta
@@ -1095,6 +1153,7 @@ def _get_issue_handler(args) -> int:
             config["repo"],
             args.number,
             project_number=config["project_number"],
+            project_owner=config["project_owner"],
             field_names=_field_slots(config["field_names"]),
         )
     except (GhError, LookupError) as exc:
@@ -1127,7 +1186,12 @@ def _set_fields_handler(args) -> int:
 
     try:
         before = read_issue_meta(
-            owner, repo, args.number, project_number=project_number, field_names=slots
+            owner,
+            repo,
+            args.number,
+            project_number=project_number,
+            project_owner=config["project_owner"],
+            field_names=slots,
         )
     except (GhError, LookupError) as exc:
         print_error(str(exc))
@@ -1221,7 +1285,12 @@ def _set_fields_handler(args) -> int:
 
     try:
         after = read_issue_meta(
-            owner, repo, args.number, project_number=project_number, field_names=slots
+            owner,
+            repo,
+            args.number,
+            project_number=project_number,
+            project_owner=config["project_owner"],
+            field_names=slots,
         )
     except (GhError, LookupError) as exc:
         return _fail(exc, applied)
@@ -1284,6 +1353,7 @@ def _audit_fields_handler(args) -> int:
             config["owner"],
             config["repo"],
             project_number=config["project_number"],
+            project_owner=config["project_owner"],
             field_names=slots,
             state=args.state,
             limit=args.limit,
@@ -1356,7 +1426,9 @@ def register_github_commands(
         "owner": owner,
         "repo": repo,
         "project_number": project_number,
-        "project_owner": project_owner or owner,
+        # `str`: an all-digit login read from YAML arrives as an int, and the
+        # owner comparison and the board query both need the login as text.
+        "project_owner": str(project_owner or owner),
         "initial_status": initial_status,
         "field_names": dict(field_names or {}),
         "allowed_labels": None if allowed_labels is None else list(allowed_labels),
