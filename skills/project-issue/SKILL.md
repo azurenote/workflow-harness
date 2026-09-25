@@ -198,10 +198,13 @@ DRAFT_PLAN="<draft-plan-path>"
 Exit codes:
 
 - **0** — created. The JSON on stdout carries `number`, `node_id`, `url`, `requested`, `observed` and `drift`.
-- **2** — refused *before* creating anything. Nothing exists; fix the argument and run it again.
+- **2** — refused *before* creating anything. Nothing exists. Two kinds, and they need different responses: a **bad argument**, which you fix and run again; and an **environment refusal** — the project board could not be read, so a label cannot be told apart from a field value. Re-running an environment refusal changes nothing. Report it.
 - **3** — the issue exists but its fields did not all apply.
+- **4** — the create request failed and it is **not known** whether the issue exists. The server may have committed it before the connection dropped.
 
 - On exit 3 the issue already exists: never re-run create-issue; run set-fields <number> instead.
+- On exit 4 do not run create-issue again until you have searched the repository for the title: a blind re-run is how one plan becomes two issues.
+- An environment refusal (2) or an unknown outcome (4) is **not** "the harness call failed": the judgement ran and answered. Do not drop to the bare `gh` fallback, which carries no reserved-label check at all.
 
 Read `number` (ISSUE_NUMBER) and `node_id` (ISSUE_NODE_ID) from the output.
 

@@ -119,6 +119,13 @@ def reserved_label_violations(
     network, then again with the observed names. Both stages are the same
     judgement, so they are the same function.
 
+    The stages do not have the same reach, and a project that declares no
+    ``allowed_labels`` is the one that feels it: stage one then checks patterns
+    only, so a label shaped like an issue type (``bug``) or a field option
+    (``P1``) survives the offline stage and is caught in stage two, after the
+    reads. Declaring ``allowed_labels`` moves that rejection ahead of every
+    network call.
+
     This **rejects**; it never converts. Rewriting ``--label <priority option>``
     into ``--priority`` would guess at an intent only the caller knows, and a
     guess that is usually right is the worst kind for metadata nobody re-reads.
@@ -134,6 +141,7 @@ def reserved_label_violations(
         allowed_labels: The complete set of labels this project accepts. ``None``
             means "not declared" — stage one then checks only patterns. An empty
             *collection* means the project declared that no label is allowed.
+            Compared case-insensitively but **exactly**: ``B-E`` is not ``BE``.
         reserved_patterns: Case-insensitive glob patterns the caller reserves.
 
     Returns:
@@ -147,7 +155,13 @@ def reserved_label_violations(
     allowed_list = None if allowed_labels is None else list(allowed_labels)
     patterns = list(reserved_patterns)
 
-    allowed = None if allowed_list is None else {_label_key(a) for a in allowed_list}
+    # Two comparison keys, deliberately. The reserved axis folds separators away,
+    # because `P-1` and `P1` are the same claim on the same field. The allowed
+    # axis folds case only: a label that matches the list only once its
+    # separators are stripped is a different label, and it goes out with the
+    # spelling the caller typed. The fold is symmetric — a listed `B-E` does not
+    # admit `BE` any more than a listed `BE` admits `B-E`.
+    allowed = None if allowed_list is None else {_normalize(a) for a in allowed_list}
     types = {_label_key(t) for t in type_names}
     options: dict[str, str] = {}
     for field_name, names in (option_names or {}).items():
@@ -174,7 +188,7 @@ def reserved_label_violations(
                 violations.append(
                     f"label {label!r} matches the reserved pattern {pattern!r}"
                 )
-        if allowed is not None and key not in allowed:
+        if allowed is not None and _normalize(label) not in allowed:
             listed = ", ".join(sorted(allowed_list)) or "(none)"
             violations.append(
                 f"label {label!r} is not one of this project's labels: {listed}"
@@ -290,14 +304,25 @@ class SingleSelectField:
     name: str
     options: dict[str, tuple[str, str]] = dataclass_field(default_factory=dict)
 
-    def option_id(self, option_name: str) -> str:
+    def option(self, option_name: str) -> tuple[str, str]:
+        """``(id, canonical name)`` for one option, matched case-insensitively.
+
+        The canonical name comes back with the id because the caller records what
+        it asked for and then compares that record against the read-back.
+        Recording the spelling the caller typed made ``--priority p1`` report
+        ``requested 'p1', observed 'P1'`` — drift against the very option it had
+        just matched.
+        """
         try:
-            return self.options[_normalize(option_name)][0]
+            return self.options[_normalize(option_name)]
         except KeyError:
             available = ", ".join(name for _, name in self.options.values()) or "(none)"
             raise OptionNotFoundError(
                 f"{self.name!r} has no option {option_name!r}; available: {available}"
             ) from None
+
+    def option_id(self, option_name: str) -> str:
+        return self.option(option_name)[0]
 
 
 @dataclass(frozen=True)
@@ -829,6 +854,9 @@ def _create_issue_handler(args) -> int:
     - **2** — refused *before* anything was created; stdout is empty.
     - **3** — the issue exists but its metadata is incomplete; stdout carries
       the number so the caller repairs it instead of creating a second one.
+    - **4** — the create request failed without saying whether the issue exists.
+      Neither 2 nor 3 can be claimed: there is nothing to repair and nothing is
+      safe to retry blind.
 
     Everything that can be checked without writing is checked first, including
     every option name, so a typo in the config is a 2 rather than an issue that
@@ -836,6 +864,12 @@ def _create_issue_handler(args) -> int:
     exit-3 guarantee — including the read-back, which is the call most likely to
     fail, since it runs last and GitHub can legitimately 404 an issue it has
     just created.
+
+    "Checked without writing" includes reading the project's field options, and
+    that read is a precondition rather than a step of joining the board: it is
+    what tells a label apart from a field value. A board that cannot be read is
+    therefore a 2, not a create judged against an empty option set — the empty
+    set is exactly what let ``--label P1`` through.
     """
     config = args.github
     owner, repo = config["owner"], config["repo"]
@@ -863,11 +897,9 @@ def _create_issue_handler(args) -> int:
         print_error("\n".join(violations))
         return 2
 
-    try:
-        type_names = repo_issue_type_names(owner, repo)
-    except GhError as exc:
-        print_error(f"could not read the repository's issue types: {exc}")
-        return 2
+    # No `except GhError`: `repo_issue_type_names` turns a failed read into None,
+    # which the next line already refuses on. Catching it as well was dead code.
+    type_names = repo_issue_type_names(owner, repo)
     if type_names is None:
         # Proceeding would silently create an untyped issue and report success.
         print_error(
@@ -876,19 +908,31 @@ def _create_issue_handler(args) -> int:
         )
         return 2
 
+    # Read the board whenever one is configured *and* the read can change an
+    # outcome — there are labels to judge, or this issue is joining the board.
+    # `--no-project` does not excuse the read: a priority option belongs to the
+    # priority field whether or not this issue joins, and skipping the read used
+    # to leave `option_names={}`, which is not a degraded check but the check
+    # answering "nothing is reserved". With no labels and no registration there
+    # is nothing the board's options could decide, and failing the command on a
+    # read whose result it would discard blocks the one escape (`--no-project`)
+    # that a repo with an unreadable board has left.
     fields = None
-    field_error: str | None = None
     option_names: dict[str, list[str]] = {}
-    if wants_project:
+    if project_number is not None and (labels or wants_project):
         try:
             fields = ProjectFields.load(config["project_owner"], project_number)
-            # Status options join the derivation: `in-progress` as a label is the
-            # same drift as `P1` as a label, and it is the one the skills used to
-            # instruct directly.
-            option_names = fields.option_names(slots.values())
         except (GhError, FieldNotFoundError) as exc:
-            field_error = str(exc)
-            print_error(f"project fields unavailable: {exc}")
+            print_error(
+                f"could not read the fields of project #{project_number}: {exc}; "
+                f"refusing to create an issue whose labels cannot be checked "
+                f"against them"
+            )
+            return 2
+        # Status options join the derivation: `in-progress` as a label is the
+        # same drift as `P1` as a label, and it is the one the skills used to
+        # instruct directly.
+        option_names = fields.option_names(slots.values())
 
     # Stage two: the names that already have a home of their own.
     violations = reserved_label_violations(
@@ -913,16 +957,25 @@ def _create_issue_handler(args) -> int:
     # and a config typo that is only caught afterwards creates an issue on every
     # single invocation, forever, while telling the caller not to retry.
     initial_status = config["initial_status"] if wants_project else None
+    # `fields` is the schema, read for the judgement above. `board` is the thing
+    # this issue is written to, which `--no-project` turns off. They were one
+    # name, and folding them back together puts a `--no-project` issue on the
+    # board — every write below hangs off `board`.
+    board = fields if wants_project else None
     pending: list[tuple[str, str]] = []
-    if fields is not None:
+    # The board's own spelling of each value, which is what the read-back reports.
+    resolved: dict[str, str] = {}
+    if board is not None:
         try:
             if initial_status:
-                status_field = fields.field(slots["status"])
-                pending.append((status_field.id, status_field.option_id(initial_status)))
+                status_field = board.field(slots["status"])
+                option_id, resolved["status"] = status_field.option(initial_status)
+                pending.append((status_field.id, option_id))
             for slot, value in (("priority", args.priority), ("size", args.size)):
                 if value:
-                    field = fields.field(writable[slot])
-                    pending.append((field.id, field.option_id(value)))
+                    field = board.field(writable[slot])
+                    option_id, resolved[slot] = field.option(value)
+                    pending.append((field.id, option_id))
         except (FieldNotFoundError, OptionNotFoundError) as exc:
             print_error(str(exc))
             return 2
@@ -933,25 +986,41 @@ def _create_issue_handler(args) -> int:
         print_error(f"--body-file could not be read: {exc}")
         return 2
 
-    created = create_issue(
-        owner, repo, title=args.title, body=body, issue_type=issue_type, labels=labels
-    )
+    try:
+        created = create_issue(
+            owner, repo, title=args.title, body=body, issue_type=issue_type, labels=labels
+        )
+    except (GhError, LookupError, ValueError) as exc:
+        # A failed create does not say whether the issue exists. `gh` exits
+        # non-zero both for a 422 the server rejected and for a connection lost
+        # after the 201 was written; a response this module cannot parse means
+        # the create landed and the number was lost. Calling that 2 would assert
+        # "nothing exists; fix the argument and run it again", and the re-run
+        # files a second issue carrying the same plan body. Uncaught — which is
+        # what this was — it left as exit 1, which the skill has no rule for at
+        # all, so the re-run happened anyway.
+        print_error(
+            f"the create request failed and it is not known whether the issue "
+            f"exists: {exc}\n"
+            f"Do not retry blind: search {owner}/{repo} for an issue titled "
+            f"{args.title!r} first."
+        )
+        return 4
 
     # ── Past this point the issue exists. Nothing below may raise. ────────────
+    # The board's spelling where there was a board to ask, the caller's where
+    # there was not. Recording the value either way is what puts an unapplied
+    # field into `drift`; dropping the key would report a silent absence as if
+    # nothing had been asked for.
     requested: dict[str, object] = {"type": issue_type, "labels": labels}
     if initial_status:
-        requested["status"] = initial_status
+        requested["status"] = resolved.get("status", initial_status)
     for slot, value in (("priority", args.priority), ("size", args.size)):
         if value:
-            requested[slot] = value
+            requested[slot] = resolved.get(slot, value)
 
     notes: list[str] = []
-    if wants_project and fields is None:
-        notes.append(
-            f"not added to project #{project_number} and no project field was set: "
-            f"{field_error}"
-        )
-    elif args.no_project:
+    if args.no_project:
         notes.append("--no-project: the issue was not added to any project")
     elif project_number is None:
         notes.append("no project configured for this repo; no project field was set")
@@ -975,10 +1044,10 @@ def _create_issue_handler(args) -> int:
         return 3
 
     try:
-        if fields is not None:
-            item_id = ensure_project_item(fields.project_id, created["node_id"])
+        if board is not None:
+            item_id = ensure_project_item(board.project_id, created["node_id"])
             for field_id, option_id in pending:
-                set_single_select(fields.project_id, item_id, field_id, option_id)
+                set_single_select(board.project_id, item_id, field_id, option_id)
     except (GhError, FieldNotFoundError, OptionNotFoundError, KeyError, ValueError) as exc:
         return _fail(exc)
 
@@ -1070,11 +1139,9 @@ def _set_fields_handler(args) -> int:
     # ── Resolve everything first. No write has happened yet. ─────────────────
     issue_type = None
     if args.type:
-        try:
-            type_names = repo_issue_type_names(owner, repo)
-        except GhError as exc:
-            print_error(f"could not read the repository's issue types: {exc}")
-            return 2
+        # No `except GhError`: a failed read comes back as None. The third and
+        # last copy of that dead catch.
+        type_names = repo_issue_type_names(owner, repo)
         if type_names is None:
             print_error(f"could not read the issue types of {owner}/{repo}")
             return 2
@@ -1092,6 +1159,10 @@ def _set_fields_handler(args) -> int:
               (("priority", args.priority), ("size", args.size)) if value}
     fields = None
     pending: list[tuple[str, str]] = []
+    # The board's own spelling, for the same reason `create-issue` keeps it: the
+    # read-back reports that spelling, so recording the caller's turned
+    # `--priority p1` into drift against the option it had just matched.
+    resolved: dict[str, str] = {}
     if wanted:
         if project_number is None:
             notes.append("priority/size not applied: no project configured for this repo")
@@ -1100,7 +1171,8 @@ def _set_fields_handler(args) -> int:
                 fields = ProjectFields.load(config["project_owner"], project_number)
                 for slot, value in wanted.items():
                     field = fields.field(writable[slot])
-                    pending.append((field.id, field.option_id(value)))
+                    option_id, resolved[slot] = field.option(value)
+                    pending.append((field.id, option_id))
             except (GhError, FieldNotFoundError, OptionNotFoundError, KeyError) as exc:
                 print_error(str(exc))
                 return 2
@@ -1140,8 +1212,7 @@ def _set_fields_handler(args) -> int:
                 # automation assigns is the status, and it shows up in `after`.
                 item_id = ensure_project_item(fields.project_id, before["node_id"])
                 applied.append("project item")
-            for slot in wanted:
-                requested[slot] = wanted[slot]
+            requested.update(resolved)
             for field_id, option_id in pending:
                 set_single_select(fields.project_id, item_id, field_id, option_id)
             applied.extend(wanted)
@@ -1171,23 +1242,35 @@ def _set_fields_handler(args) -> int:
 
 
 def _audit_fields_handler(args) -> int:
-    """List metadata drift across the repository's issues. Reads only."""
+    """List metadata drift across the repository's issues. Reads only.
+
+    Degrades one axis at a time: an axis that cannot be read drops out of the
+    judgement and is named in ``warnings``, so a half audit never reads as a
+    clean bill of health. The issue list is the exception — with no issues read
+    there is nothing to degrade *to*, so that one is a 2.
+    """
     config = args.github
     slots = _field_slots(config["field_names"])
+    # Declared above the first degradation that appends to it. It used to sit
+    # below, so the one path designed to degrade — "audit labels only" — raised
+    # UnboundLocalError instead of taking its fallback.
+    warnings: list[str] = []
     option_names: dict[str, list[str]] = {}
     if config["project_number"] is not None:
         try:
             fields = ProjectFields.load(config["project_owner"], config["project_number"])
-            option_names = fields.option_names(_writable_slots(config["field_names"]).values())
+            # The option set `create-issue` judges against, Status included.
+            # Deriving it from the *writable* slots instead left the audit blind
+            # to the one label the write path rejects: `in-progress`. The two
+            # commands are one judgement and must not take two different inputs.
+            option_names = fields.option_names(slots.values())
         except (GhError, FieldNotFoundError) as exc:
             warnings.append(f"project fields could not be read: {exc}")
             print_error(f"project fields unavailable, auditing labels only: {exc}")
 
-    warnings: list[str] = []
-    try:
-        type_names = repo_issue_type_names(config["owner"], config["repo"])
-    except GhError as exc:
-        type_names, _ = None, print_error(f"issue types unavailable: {exc}")
+    # No `except GhError`: `repo_issue_type_names` returns None on a failed read,
+    # which the next line already handles. Catching it as well was dead code.
+    type_names = repo_issue_type_names(config["owner"], config["repo"])
     if type_names is None:
         # Reporting zero findings because half the contract could not be read is
         # the failure this command exists to prevent, one level up.
@@ -1196,14 +1279,25 @@ def _audit_fields_handler(args) -> int:
         )
         print_error(warnings[-1])
 
-    issues = iter_issue_meta(
-        config["owner"],
-        config["repo"],
-        project_number=config["project_number"],
-        field_names=slots,
-        state=args.state,
-        limit=args.limit,
-    )
+    try:
+        issues = iter_issue_meta(
+            config["owner"],
+            config["repo"],
+            project_number=config["project_number"],
+            field_names=slots,
+            state=args.state,
+            limit=args.limit,
+        )
+    except (GhError, LookupError, ValueError) as exc:
+        owner, repo = config["owner"], config["repo"]
+        # `_get_issue_handler` catches the same family for the same reads: a
+        # malformed node raises LookupError out of `_shape_issue_node`, not
+        # GhError. Repeat the degradations above, so a run that lost three axes
+        # does not read as one failure. stdout stays empty — there is no audit.
+        for warning in warnings:
+            print_error(warning)
+        print_error(f"could not list the issues of {owner}/{repo}: {exc}")
+        return 2
     findings = []
     for meta in issues:
         drift = field_drift(meta, option_names=option_names, type_names=type_names)
