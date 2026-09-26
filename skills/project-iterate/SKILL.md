@@ -109,7 +109,9 @@ git branch --list "*issue-<id>-*" "*/<id>-*" --format='%(refname:lstrip=2)'
 - 로컬 2개 이상: 멈추고 보고한다.
 - 로컬 1개: 그 브랜치로 2를 잇는다.
 
-2. `git worktree list --porcelain` 레코드에서 그 브랜치가 체크아웃된 자리를 찾는다. `detached` 레코드는 그 브랜치를 rebase 하는 중일 때만 그 브랜치의 자리로 본다:
+2. `git worktree list --porcelain` 레코드에서 그 브랜치가 체크아웃된 자리를 찾는다. `detached` 레코드는 그 브랜치를 rebase 하는 중일 때만 그 브랜치의 자리로 본다.
+   레코드의 경로를 그대로 CWD 로 쓰지 않는다: submodule 에서 첫 레코드는 작업 트리가 아니라 git dir(`<super>/.git/modules/<name>`)이다.
+   main checkout 정본 블록과 같은 규칙을 따른다 — `main`·`linked` 자리는 그 경로의 작업 트리를 git 에게 다시 묻고(`git -C <path> rev-parse --show-toplevel`), 그 작업 트리의 HEAD 가 그 브랜치인지 확인한다. 답이 없거나 다른 브랜치이면 멈춘다:
 
 ```bash
 git worktree list --porcelain | python3 -c '
@@ -117,6 +119,8 @@ import os, subprocess, sys
 branch, standard = "refs/heads/" + sys.argv[1], sys.argv[2]
 records = [dict((l.split(" ", 1) + [""])[:2] for l in r.splitlines())
            for r in sys.stdin.read().strip().split("\n\n")]
+def git_out(path, *args):
+    return subprocess.run(["git", "-C", path, *args], capture_output=True, text=True).stdout.rstrip("\n")
 def rebasing(path):
     for name in ("rebase-merge/head-name", "rebase-apply/head-name"):
         rel = subprocess.run(["git", "-C", path, "rev-parse", "--git-path", name],
@@ -132,7 +136,14 @@ if hit:
     i, r = hit[0]
     state = "prunable" if "prunable" in r else "missing" if not os.path.isdir(r["worktree"]) \
         else "main" if i == 0 else "linked"
-    print(state, r["worktree"])
+    path = r["worktree"]
+    if state in ("main", "linked"):
+        top = git_out(path, "rev-parse", "--show-toplevel")
+        if top and git_out(top, "symbolic-ref", "-q", "HEAD") == branch:
+            path = top
+        else:
+            state = "unresolved"
+    print(state, path)
 elif stuck:
     print("detached", stuck[0]["worktree"])
 else:
@@ -140,8 +151,9 @@ else:
 ' '<branch>' '/.claude/worktrees/<project>-issue-<id>'
 ```
 
-- `main`: main checkout 에서 Phase 4 를 돈다.
-- `linked`: 이 워크트리를 다른 세션이 쓰고 있을 수 있다고 먼저 알리고, 그 경로를 CWD 로 Phase 4 를 돈다.
+- `main`: 출력된 경로(main checkout 의 작업 트리)를 CWD 로 Phase 4 를 돈다.
+- `linked`: 이 워크트리를 다른 세션이 쓰고 있을 수 있다고 먼저 알리고, 출력된 작업 트리 경로를 CWD 로 Phase 4 를 돈다.
+- `unresolved`: 그 브랜치가 체크아웃된 작업 트리를 확정할 수 없다 — git 이 레코드 경로의 작업 트리를 답하지 않았거나(git dir, 저장소가 아닌 경로), 답한 작업 트리가 다른 브랜치에 있다(지운 워크트리 자리에 다시 만든 디렉터리). 멈추고 보고한다.
 - `prunable`: 멈춘다. 디렉터리를 옮겼으면 `git worktree repair <새 경로>` 를, 지웠으면 `git worktree prune` 을 안내한다 — 이 상태에서는 checkout 도 워크트리 추가도 실패한다.
 - `missing`: 잠긴(locked) 워크트리의 디렉터리가 없다. 멈추고 `git worktree repair <새 경로>` 를 안내한다.
 - `detached`: 그 브랜치를 rebase 하는 중인 checkout(main checkout 포함)이거나, 표준 경로의 워크트리가 rebase·bisect 같은 작업 중이다. 멈추고 보고한다.

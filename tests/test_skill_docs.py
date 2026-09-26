@@ -3926,13 +3926,17 @@ _G_REENTRY = (
     '- 로컬 0개(원격에만 있음): 멈추고 두 선택지를 명령과 함께 보인다 — 제자리 `git checkout <branch>`, 또는 워크트리 `git worktree add "<main checkout>/.claude/worktrees/<project>-issue-<id>" <branch>`. 어느 쪽도 자동으로 실행하지 않는다.',
     '- 로컬 2개 이상: 멈추고 보고한다.',
     '- 로컬 1개: 그 브랜치로 2를 잇는다.',
-    '2. `git worktree list --porcelain` 레코드에서 그 브랜치가 체크아웃된 자리를 찾는다. `detached` 레코드는 그 브랜치를 rebase 하는 중일 때만 그 브랜치의 자리로 본다:',
+    '2. `git worktree list --porcelain` 레코드에서 그 브랜치가 체크아웃된 자리를 찾는다. `detached` 레코드는 그 브랜치를 rebase 하는 중일 때만 그 브랜치의 자리로 본다.',
+    '레코드의 경로를 그대로 CWD 로 쓰지 않는다: submodule 에서 첫 레코드는 작업 트리가 아니라 git dir(`<super>/.git/modules/<name>`)이다.',
+    'main checkout 정본 블록과 같은 규칙을 따른다 — `main`·`linked` 자리는 그 경로의 작업 트리를 git 에게 다시 묻고(`git -C <path> rev-parse --show-toplevel`), 그 작업 트리의 HEAD 가 그 브랜치인지 확인한다. 답이 없거나 다른 브랜치이면 멈춘다:',
     '```bash',
     "git worktree list --porcelain | python3 -c '",
     'import os, subprocess, sys',
     'branch, standard = "refs/heads/" + sys.argv[1], sys.argv[2]',
     'records = [dict((l.split(" ", 1) + [""])[:2] for l in r.splitlines())',
     'for r in sys.stdin.read().strip().split("\\n\\n")]',
+    'def git_out(path, *args):',
+    'return subprocess.run(["git", "-C", path, *args], capture_output=True, text=True).stdout.rstrip("\\n")',
     'def rebasing(path):',
     'for name in ("rebase-merge/head-name", "rebase-apply/head-name"):',
     'rel = subprocess.run(["git", "-C", path, "rev-parse", "--git-path", name],',
@@ -3948,15 +3952,23 @@ _G_REENTRY = (
     'i, r = hit[0]',
     'state = "prunable" if "prunable" in r else "missing" if not os.path.isdir(r["worktree"]) \\',
     'else "main" if i == 0 else "linked"',
-    'print(state, r["worktree"])',
+    'path = r["worktree"]',
+    'if state in ("main", "linked"):',
+    'top = git_out(path, "rev-parse", "--show-toplevel")',
+    'if top and git_out(top, "symbolic-ref", "-q", "HEAD") == branch:',
+    'path = top',
+    'else:',
+    'state = "unresolved"',
+    'print(state, path)',
     'elif stuck:',
     'print("detached", stuck[0]["worktree"])',
     'else:',
     'print("none")',
     "' '<branch>' '/.claude/worktrees/<project>-issue-<id>'",
     '```',
-    '- `main`: main checkout 에서 Phase 4 를 돈다.',
-    '- `linked`: 이 워크트리를 다른 세션이 쓰고 있을 수 있다고 먼저 알리고, 그 경로를 CWD 로 Phase 4 를 돈다.',
+    '- `main`: 출력된 경로(main checkout 의 작업 트리)를 CWD 로 Phase 4 를 돈다.',
+    '- `linked`: 이 워크트리를 다른 세션이 쓰고 있을 수 있다고 먼저 알리고, 출력된 작업 트리 경로를 CWD 로 Phase 4 를 돈다.',
+    '- `unresolved`: 그 브랜치가 체크아웃된 작업 트리를 확정할 수 없다 — git 이 레코드 경로의 작업 트리를 답하지 않았거나(git dir, 저장소가 아닌 경로), 답한 작업 트리가 다른 브랜치에 있다(지운 워크트리 자리에 다시 만든 디렉터리). 멈추고 보고한다.',
     '- `prunable`: 멈춘다. 디렉터리를 옮겼으면 `git worktree repair <새 경로>` 를, 지웠으면 `git worktree prune` 을 안내한다 — 이 상태에서는 checkout 도 워크트리 추가도 실패한다.',
     '- `missing`: 잠긴(locked) 워크트리의 디렉터리가 없다. 멈추고 `git worktree repair <새 경로>` 를 안내한다.',
     '- `detached`: 그 브랜치를 rebase 하는 중인 checkout(main checkout 포함)이거나, 표준 경로의 워크트리가 rebase·bisect 같은 작업 중이다. 멈추고 보고한다.',
@@ -4187,10 +4199,19 @@ def test_iterate_main_checkout_fences_resolve_and_stop() -> None:
 def test_iterate_reentry_record_parser_names_each_location(tmp_path: Path) -> None:
     """Run the documented parser on porcelain records for every state it names."""
     code = _reentry_parser()
+    tmp_path = tmp_path.resolve()
+    env = _isolated_git_env(tmp_path)
     main, wt = tmp_path / "r", tmp_path / "r" / ".claude" / "worktrees" / "p-issue-1"
-    wt.mkdir(parents=True)
+    # #54: main and linked are asked of git, so both have to be real checkouts of the branch.
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run([*git, "init", "-q", "-b", "feat/issue-1-x", str(main)], env=env, check=True)
+    subprocess.run([*git, "-C", str(main), "commit", "-q", "--allow-empty", "-m", "i"], env=env, check=True)
+    subprocess.run([*git, "-C", str(main), "worktree", "add", "-q", "-f", str(wt), "feat/issue-1-x"],
+                   env=env, check=True)
+    norepo = tmp_path / "norepo"
+    norepo.mkdir()
     rebasing = tmp_path / "rebasing"
-    subprocess.run(["git", "init", "-q", str(rebasing)], check=True)
+    subprocess.run(["git", "init", "-q", str(rebasing)], env=env, check=True)
     (rebasing / ".git" / "rebase-merge").mkdir()
     (rebasing / ".git" / "rebase-merge" / "head-name").write_text("refs/heads/feat/issue-1-x\n")
 
@@ -4207,11 +4228,13 @@ def test_iterate_reentry_record_parser_names_each_location(tmp_path: Path) -> No
         other + "\n" + f"worktree {rebasing}\nHEAD ccc\ndetached\n": f"detached {rebasing}",
         other + "\n" + f"worktree {tmp_path / 'elsewhere'}\nHEAD ccc\ndetached\n": "none",
         other: "none",
+        f"worktree {norepo}\nHEAD aaa\nbranch refs/heads/feat/issue-1-x\n": f"unresolved {norepo}",
+        other + "\n" + f"worktree {norepo}\nHEAD bbb\nbranch refs/heads/feat/issue-1-x\n": f"unresolved {norepo}",
     }
     for porcelain, expected in cases.items():
         out = subprocess.run(
             [sys.executable, "-c", code, "feat/issue-1-x", "/.claude/worktrees/p-issue-1"],
-            input=porcelain, capture_output=True, text=True, check=True,
+            input=porcelain, capture_output=True, text=True, check=True, env=env,
         ).stdout.strip()
         assert out == expected, f"porcelain {porcelain!r} -> {out!r}, expected {expected!r}"
 
@@ -5540,6 +5563,7 @@ _I50_RESOLUTION_LINES = (
     ('skills/project-iterate/SKILL.md', '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {', 1),
     ('skills/project-iterate/SKILL.md', "git worktree list --porcelain | python3 -c '", 1),
     ('skills/project-iterate/SKILL.md', 'rel = subprocess.run(["git", "-C", path, "rev-parse", "--git-path", name],', 1),
+    ('skills/project-iterate/SKILL.md', 'top = git_out(path, "rev-parse", "--show-toplevel")', 1),  # #54
     ('skills/project-plan/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 1),
     ('skills/project-plan/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
     ('skills/project-plan/SKILL.md', 'PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}-${N}.md"', 1),
@@ -8422,3 +8446,197 @@ def test_i41_fences_match_the_branch_point() -> None:
         assert _i41_raw_fences(read_skill(path)) == _i41_raw_fences(before), (
             f"{path}: a fence changed; #41 moves prose only"
         )
+
+
+# --------------------------------------------------------------------------
+# #54 — project-iterate "Start" re-entry hands Phase 4 a work tree
+#
+# The location parser printed the `worktree` path of the record it found and
+# Phase 4 took that as its CWD. In a submodule the first record is the git
+# dir (`<super>/.git/modules/<name>`), not the work tree. The parser now asks
+# git for the work tree of a `main` or `linked` record, checks that the work
+# tree's HEAD is the branch, and prints `unresolved` when either answer is
+# missing — the #50 rule (ask git, stop when it has no answer) applied to the
+# record the parser found.
+#
+# Matrix rows run the documented python on the #50 layouts (`_i50_matrix`),
+# fed the real `git worktree list --porcelain` of the row's CWD. Fake rows
+# feed hand-written records, so they hold on any git. Each mutant names the
+# rows meant to catch it, as `_MUTANT_CATCHERS` does.
+# --------------------------------------------------------------------------
+
+# (row, cwd, branch, state, path) — cwd and path under the matrix root.
+# "sep@sep" is decided by its first record (`_i54_expected`).
+_I54_ROWS = (
+    ("main@main", "main", "main", "main", "main"),
+    ("main@wt/sub/dir", "wt/sub/dir", "main", "main", "main"),
+    ("wt@main", "main", "wt", "linked", "wt"),
+    ("wt@wt", "wt", "wt", "linked", "wt"),
+    ("sub@super/sub", "super/sub", "main", "main", "super/sub"),
+    ("sub@sub-wt", "sub-wt", "main", "main", "super/sub"),
+    ("subwt@sub-wt", "sub-wt", "sub-wt", "linked", "sub-wt"),
+    ("barewt@bare-wt", "bare-wt", "main", "linked", "bare-wt"),
+    ("sep@sep", "sep", "main", None, None),
+)
+
+# (row, branch, records, state, path) — run from the matrix `main` checkout,
+# which is on `main`. Paths in the records are under the matrix root.
+_I54_MAIN_RECORD = ("main", "main")
+_I54_FAKE_ROWS = (
+    ("unres-main", "main", (("norepo", "main"),), "unresolved", "norepo"),
+    ("unres-linked", "feat", (_I54_MAIN_RECORD, ("norepo", "feat")), "unresolved", "norepo"),
+    ("unres-gitdir", "main", (("sep.git", "main"),), "unresolved", "sep.git"),
+    # A plain directory inside another checkout: git answers that checkout.
+    ("stale-linked", "feat", (_I54_MAIN_RECORD, ("wt/sub/dir", "feat")), "unresolved", "wt/sub/dir"),
+    ("prunable", "feat", (_I54_MAIN_RECORD, ("moved", "feat", "prunable gitdir file points to non-existent location")),
+     "prunable", "moved"),
+    ("missing", "feat", (_I54_MAIN_RECORD, ("gone", "feat", "locked")), "missing", "gone"),
+)
+
+_I54_MUTANTS = {
+    "a: no re-query": ('top = git_out(path, "rev-parse", "--show-toplevel")', "top = path"),
+    "b: no stop on an empty answer": ("if top and git_out(top,", "if git_out(top,"),
+    "c: i == 0 flipped": ('"main" if i == 0 else "linked"', '"linked" if i == 0 else "main"'),
+    "d: re-query the CWD": ('git_out(path, "rev-parse", "--show-toplevel")',
+                            'git_out(".", "rev-parse", "--show-toplevel")'),
+    "e: re-query main only": ('if state in ("main", "linked"):', 'if state == "main":'),
+    "f: no HEAD check": ('if top and git_out(top, "symbolic-ref", "-q", "HEAD") == branch:', "if top:"),
+    "g: query before the state decides": ('if state in ("main", "linked"):', "if True:"),
+}
+_I54_CATCHERS = {
+    "a: no re-query": {"sub@super/sub", "sub@sub-wt"},
+    "b: no stop on an empty answer": {"unres-main", "unres-gitdir"},
+    "c: i == 0 flipped": {"main@main"},
+    "d: re-query the CWD": {"wt@main", "sub@sub-wt"},
+    "e: re-query main only": {"unres-linked"},
+    "f: no HEAD check": {"stale-linked"},
+    "g: query before the state decides": {"prunable", "missing"},
+}
+
+
+def _i54_porcelain(tmp: Path, records: tuple) -> str:
+    return "\n".join(
+        f"worktree {tmp / path}\nHEAD {'a' * 40}\nbranch refs/heads/{branch}\n" + "".join(f"{x}\n" for x in extra)
+        for path, branch, *extra in records
+    )
+
+
+def _i54_run(code: str, cwd: Path, branch: str, porcelain: str, env: dict) -> str:
+    result = subprocess.run([sys.executable, "-c", code, branch, "/.claude/worktrees/p-issue-54"],
+                            input=porcelain, cwd=cwd, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        return f"<rc {result.returncode}: {result.stderr.strip()[-200:]!r}>"
+    return result.stdout.strip()
+
+
+def _i54_matches(out: str, state: str, path: str, tmp: Path) -> bool:
+    got = out.split(" ", 1)
+    return (len(got) == 2 and got[0] == state and os.path.isabs(got[1])
+            and Path(got[1]).resolve() == (tmp / path).resolve())
+
+
+def _i54_expected(tmp: Path, porcelain: str, state, path) -> tuple:
+    """`sep@sep` follows its first record: the git dir stops, a work tree is main."""
+    if state is not None:
+        return state, path
+    first = Path(porcelain.splitlines()[0].split(" ", 1)[1]).resolve()
+    if first == (tmp / "sep.git").resolve():
+        return "unresolved", "sep.git"
+    if first == (tmp / "sep").resolve():
+        return "main", "sep"
+    return "<first record is neither sep.git nor sep>", str(first)
+
+
+def _i54_failures(code: str, tmp: Path, env: dict) -> dict:
+    """Row name -> what the parser printed, for every row it gets wrong."""
+    failures = {}
+    for row, cwd, branch, state, path in _I54_ROWS:
+        listing = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=tmp / cwd, env=env,
+                                 capture_output=True, text=True, check=True).stdout
+        state, path = _i54_expected(tmp, listing, state, path)
+        out = _i54_run(code, tmp / cwd, branch, listing, env)
+        if not _i54_matches(out, state, path, tmp):
+            failures[row] = f"{out!r}, expected {state} {path}"
+    for row, branch, records, state, path in _I54_FAKE_ROWS:
+        out = _i54_run(code, tmp / "main", branch, _i54_porcelain(tmp, records), env)
+        if not _i54_matches(out, state, path, tmp):
+            failures[row] = f"{out!r}, expected {state} {path}"
+    return failures
+
+
+def _i54_fence() -> str:
+    fences = [f for f in _fences_of(_iterate_skill()) if "python3 -c '" in f]
+    assert len(fences) == 1, "expected one location fence in the iterate skill"
+    return fences[0]
+
+
+def test_i54_rows_are_all_present() -> None:
+    assert [r[0] for r in _I54_ROWS] == [
+        "main@main", "main@wt/sub/dir", "wt@main", "wt@wt", "sub@super/sub", "sub@sub-wt", "subwt@sub-wt",
+        "barewt@bare-wt", "sep@sep",
+    ], "a layout row was dropped or renamed"
+    assert [r[0] for r in _I54_FAKE_ROWS] == [
+        "unres-main", "unres-linked", "unres-gitdir", "stale-linked", "prunable", "missing",
+    ], "a record row was dropped or renamed"
+    names = {r[0] for r in _I54_ROWS + _I54_FAKE_ROWS}
+    assert all(rows and rows <= names for rows in _I54_CATCHERS.values()), (
+        "every mutant names at least one row, and only rows that exist")
+
+
+def test_i54_each_printed_state_has_a_bullet() -> None:
+    """The states the parser prints are the bullets that follow it, one each."""
+    code = _reentry_parser()
+    states = ("main", "linked", "unresolved", "prunable", "missing", "detached", "none")
+    assert all(f'"{s}"' in code for s in states), "the parser no longer prints one of the states"
+    region = _region(_iterate_skill(), "- 브랜치/워크트리는 있는데 `plan-<id>.md` 가 없으면", "## Instructions")
+    bullets = {m.group(1): l for l in region if (m := re.match(r"- `(\w+)`: ", l))}
+    assert set(bullets) == set(states), f"state bullets {sorted(bullets)} differ from {sorted(states)}"
+    assert "멈추고 보고" in bullets["unresolved"]
+    assert all("출력된" in bullets[s] and "CWD" in bullets[s] for s in ("main", "linked")), (
+        "main and linked no longer say Phase 4 runs in the printed work tree")
+
+
+def test_i54_parser_answers_every_row(_i50_matrix) -> None:
+    tmp, env = _i50_matrix
+    failures = _i54_failures(_reentry_parser(), tmp, env)
+    assert not failures, "the Start location parser got rows wrong:\n" + "\n".join(
+        f"{row}: {why}" for row, why in failures.items())
+
+
+def test_i54_whole_fence_hands_the_submodule_work_tree(_i50_matrix) -> None:
+    """The fence as a shell runs it: quoting and the pipe included."""
+    tmp, env = _i50_matrix
+    fence = _i54_fence().replace("'<branch>'", "'main'").replace("<project>-issue-<id>", "p-issue-54")
+    shells = [s for s in (["sh"], ["bash"]) if shutil.which(s[0])]
+    assert shells, "neither sh nor bash is on PATH"
+    for shell in shells:
+        result = subprocess.run([*shell, "-c", fence], cwd=tmp / "super" / "sub", env=env,
+                                capture_output=True, text=True)
+        assert result.returncode == 0, f"{shell[0]}: {result.stderr[-300:]}"
+        assert _i54_matches(result.stdout.strip(), "main", "super/sub", tmp), (
+            f"{shell[0]} printed {result.stdout!r} from the submodule")
+
+
+def test_i54_whole_fence_rejects_a_single_quote_in_the_python(_i50_matrix) -> None:
+    tmp, env = _i50_matrix
+    fence = _i54_fence().replace("'<branch>'", "'main'").replace("<project>-issue-<id>", "p-issue-54")
+    quoted = fence.replace('"--show-toplevel"', "'--show-toplevel'")
+    assert quoted != fence, "the mutant did not change the fence"
+    result = subprocess.run(["sh", "-c", quoted], cwd=tmp / "super" / "sub", env=env,
+                            capture_output=True, text=True)
+    assert not _i54_matches(result.stdout.strip(), "main", "super/sub", tmp), (
+        "a single quote inside the python went unnoticed")
+    # The quote broke the python itself: `--show-toplevel` became a name.
+    assert result.returncode != 0 and "NameError" in result.stderr, result.stderr[-300:]
+
+
+@pytest.mark.parametrize("mutant", sorted(_I54_MUTANTS))
+def test_i54_each_mutant_fails_the_rows_meant_for_it(mutant: str, _i50_matrix) -> None:
+    assert set(_I54_MUTANTS) == set(_I54_CATCHERS)
+    tmp, env = _i50_matrix
+    code = _reentry_parser()
+    old, new = _I54_MUTANTS[mutant]
+    assert code.count(old) == 1, f"mutant {mutant!r} no longer matches the parser once"
+    failures = _i54_failures(code.replace(old, new), tmp, env)
+    missed = _I54_CATCHERS[mutant] - set(failures)
+    assert not missed, f"mutant {mutant!r} passed rows {sorted(missed)}; failed {sorted(failures)}"
