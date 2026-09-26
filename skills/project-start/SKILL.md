@@ -80,7 +80,7 @@ Branch naming rule: `feat/issue-<id>-<slug>` for GitHub, or `feat/<ticket-id>-<s
 
 ```bash
 <harness_cli> plan-file <issue-id>
-# fallback, and always for a Jira key (plan-file parses an integer):
+# fallback, for a project without a harness_cli:
 # rooted at the main worktree — .task/plan/ is gitignored and exists only there
 python -c '
 import re, sys

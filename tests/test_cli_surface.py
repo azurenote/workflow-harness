@@ -224,6 +224,67 @@ def test_rename_plan_reroots_relative_path_under_main_worktree(tmp_path, monkeyp
     assert not draft.exists()
 
 
+@pytest.fixture
+def main_root(tmp_path, monkeypatch):
+    """A fake main worktree with an empty plan dir; CWD is outside it."""
+    from harness_core import cli
+
+    root = tmp_path / "main"
+    (root / ".task" / "plan").mkdir(parents=True)
+    monkeypatch.setattr(cli, "main_worktree_root", lambda: root)
+    monkeypatch.chdir(tmp_path)
+    return root
+
+
+def test_rename_plan_empty_path_leaves_main_worktree_alone(main_root, tmp_path, capsys):
+    # #32: "" re-rooted to the main worktree root, which was then renamed to
+    # ../plan-25.md with rc 0.
+    from harness_core.local import InvalidPlanFileError
+
+    with pytest.raises(InvalidPlanFileError, match=r"reject \(exists\)"):
+        dispatch(build_core_parser(), ["rename-plan", "", "25"])
+    assert main_root.is_dir()
+    assert not (tmp_path / "plan-25.md").exists()
+    assert capsys.readouterr().out == ""
+
+
+def test_rename_plan_accepts_ticket_key(main_root, capsys):
+    draft = main_root / ".task" / "plan" / "plan-draft-x.md"
+    draft.write_text("# Plan: x")
+
+    assert dispatch(build_core_parser(), ["rename-plan", str(draft), "SYN-42"]) == 0
+    target = main_root / ".task" / "plan" / "plan-SYN-42.md"
+    assert capsys.readouterr().out.strip() == str(target)
+    assert target.exists() and not draft.exists()
+
+
+@pytest.mark.parametrize("command", [["rename-plan", ".task/plan/plan-draft-x.md"], ["plan-file"]])
+@pytest.mark.parametrize("issue_id", ["../x", "", "SYN-0", "042"])
+def test_bad_issue_id_is_a_usage_error(main_root, command, issue_id, capsys):
+    draft = main_root / ".task" / "plan" / "plan-draft-x.md"
+    draft.write_text("# Plan: x")
+
+    with pytest.raises(SystemExit) as exc:
+        dispatch(build_core_parser(), [*command, issue_id])
+    assert exc.value.code == 2
+    assert "not an issue number or ticket key" in capsys.readouterr().err
+    assert sorted(p.name for p in draft.parent.iterdir()) == ["plan-draft-x.md"]
+
+
+def test_plan_file_accepts_ticket_key(main_root, capsys):
+    plan = main_root / ".task" / "plan" / "plan-SYN-42.md"
+    plan.write_text("# Plan: x")
+
+    assert dispatch(build_core_parser(), ["plan-file", "SYN-42"]) == 0
+    assert capsys.readouterr().out.strip() == str(plan)
+
+
+def test_plan_file_missing_is_not_a_usage_error(main_root):
+    # rc 1 (an exception), distinct from the rc 2 a bad id gets.
+    with pytest.raises(FileNotFoundError):
+        dispatch(build_core_parser(), ["plan-file", "999"])
+
+
 class TestCleanUpBaseInjection:
     """`clean-up` must measure staleness against the *project's* base branch.
 

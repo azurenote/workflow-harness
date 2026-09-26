@@ -2801,6 +2801,29 @@ def test_link_mode_has_no_rename_of_its_own() -> None:
     ))
 
 
+def test_doc_id_pattern_is_the_code_definition() -> None:
+    """The docs' inline id regex is a copy of `config.ISSUE_ID_PATTERN` (#32).
+
+    `rename_plan_to_issue` and `plan-file` validate with the code definition;
+    the skill commands validate with the inline copy before they get there. Two
+    definitions that drift apart let one layer accept what the other refuses.
+    """
+    from harness_core.config import ISSUE_ID_PATTERN
+
+    inline = re.search(r're\.fullmatch\(r"([^"]+)", $', _ID_PATTERN)
+    assert inline, "_ID_PATTERN no longer has the shape this test reads"
+    assert inline.group(1) == ISSUE_ID_PATTERN.pattern
+
+    copies = [
+        (str(md.relative_to(ROOT)), m.group(1))
+        for md in sorted((ROOT / "skills").rglob("SKILL.md"))
+        for m in re.finditer(r're\.fullmatch\(r"([^"]+)", ', md.read_text(encoding="utf-8"))
+    ]
+    assert len(copies) >= 3, f"the inline copies moved: {copies}"
+    drifted = [c for c in copies if c[1] != ISSUE_ID_PATTERN.pattern]
+    assert not drifted, f"an inline id regex differs from config.ISSUE_ID_PATTERN: {drifted}"
+
+
 def test_step_8_revalidates_and_refuses_to_overwrite() -> None:
     text = _issue_skill()
     step8 = _step8()
@@ -2809,7 +2832,7 @@ def test_step_8_revalidates_and_refuses_to_overwrite() -> None:
     assert "mv " not in fenced, "Step 8 renames with mv again"
     mentions = [l.strip() for l in step8.splitlines() if "rename-plan" in l]
     assert len(mentions) == 1 and mentions[0].startswith("- `<harness_cli> rename-plan` is not used here"), (
-        f"Step 8 offers rename-plan, which checks neither path nor id: {mentions}"
+        f"Step 8 offers rename-plan, which a project without a harness_cli cannot run: {mentions}"
     )
     assert "skip the rename" not in text, "an existing destination is skipped again, not refused"
     assert "abs_under_main(Path(sys.argv[1]))" in fenced, "the draft path is not main-rooted"
@@ -2824,9 +2847,10 @@ def test_step_8_revalidates_and_refuses_to_overwrite() -> None:
     assert "' '<draft-plan-path>' '<ISSUE_ID>'" in fenced, "Step 8 does not take literals"
 
     assert_whole_line(step8, (
-        "- `<harness_cli> rename-plan` is not used here: it checks neither that its source is a "
-        "draft file nor its id, so an empty path renames the main worktree itself, and it parses "
-        "its number as an integer, so a Jira key is an argument error."
+        "- `<harness_cli> rename-plan` is not used here: this step has to run in projects that "
+        "have no harness_cli, and the command above reaches the same `rename_plan_to_issue`, which "
+        "itself refuses a source that is not a draft in the plan directory and an id that is not "
+        "an issue number or ticket key."
     ))
     assert_whole_line(step8, (
         "- If `plan-<id>.md` already exists, the command stops with a non-zero exit and leaves the "

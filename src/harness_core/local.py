@@ -1,6 +1,8 @@
 """Local file system operations for harness workflow.
 
-All path-dependent functions require explicit plan_dir parameter.
+All path-dependent functions require explicit plan_dir parameter, except
+rename_plan_to_issue, whose plan_dir defaults to the main worktree's
+.task/plan so the skill docs' two-argument call gets its checks too.
 Project-level harness provides defaults via its own config.
 """
 
@@ -8,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import is_draft_plan
+from .config import is_draft_plan, is_issue_id
 from .git import main_worktree_root
 
 
@@ -30,6 +32,24 @@ class MultiplePlanFilesError(Exception):
 
 class InvalidPlanFileError(Exception):
     """File does not follow naming convention."""
+
+
+class InvalidIssueIdError(ValueError):
+    """Issue id is neither an issue number nor a ticket key."""
+
+
+def _checked_issue_id(issue_id: int | str) -> str:
+    """Return issue_id as the string that goes into a plan file name.
+
+    Always through str(): an isinstance(int) shortcut would let True through
+    as "True" — bool is an int.
+    """
+    text = str(issue_id)
+    if not is_issue_id(text):
+        raise InvalidIssueIdError(
+            f"reject (id): not an issue number or ticket key: {text!r}"
+        )
+    return text
 
 
 def abs_under_main(
@@ -90,29 +110,73 @@ def find_draft_plan_file(plan_dir: Path) -> Path:
 
 
 def rename_plan_to_issue(
-    plan_path: Path, issue_number: int
+    plan_path: Path, issue_id: int | str, *, plan_dir: Path | None = None
 ) -> Path:
-    """Rename a draft plan file to plan-{issue_number}.md.
+    """Rename a draft plan file to plan-{issue_id}.md.
+
+    Every check runs before anything moves. Without them an empty path — which
+    is ``.``, and the main worktree root once re-rooted — renamed the worktree
+    directory itself (#32).
+
+    A relative ``plan_path`` is resolved against CWD, not re-rooted at the main
+    worktree; re-rooting is the caller's job (:func:`abs_under_main`). From a
+    linked worktree such a path fails the plan-directory check, which is the
+    safe way to fail.
+
+    Args:
+        plan_path: The draft to rename.
+        issue_id: Issue number or ticket key.
+        plan_dir: Directory the draft must sit directly in. Defaults to the main
+            worktree's ``.task/plan``.
 
     Returns:
-        New path after rename.
+        New path after rename, resolved.
 
     Raises:
+        InvalidIssueIdError: issue_id is not an issue number or ticket key.
+        InvalidPlanFileError: plan_path is a symlink, is not an existing file,
+            is not a draft plan name, or is not directly in plan_dir.
         FileExistsError: Target file already exists.
     """
-    target = plan_path.parent / f"plan-{issue_number}.md"
+    issue_id = _checked_issue_id(issue_id)
+    if plan_dir is None:
+        plan_dir = main_worktree_root() / ".task" / "plan"
+    plan_dir = plan_dir.resolve()
+
+    # A link would split the file judged from the file moved: a link to another
+    # draft in the same directory moves that draft and leaves a dangling link.
+    if plan_path.is_symlink():
+        raise InvalidPlanFileError(f"reject (symlink): {plan_path}")
+    source = plan_path.resolve()
+    if not source.is_file():
+        raise InvalidPlanFileError(f"reject (exists): not an existing file: {source}")
+    if not is_draft_plan(source.name):
+        raise InvalidPlanFileError(
+            f"reject (is_draft_plan): not a draft plan name: {source.name}"
+        )
+    if source.parent != plan_dir:
+        raise InvalidPlanFileError(
+            f"reject (plan dir): {source.parent} is not {plan_dir}"
+        )
+
+    target = plan_dir / f"plan-{issue_id}.md"
     if target.exists():
         raise FileExistsError(
             f"Target already exists: {target}\n"
-            f"Issue #{issue_number} may already have a plan file."
+            f"Issue #{issue_id} may already have a plan file."
         )
-    plan_path.rename(target)
+    source.rename(target)
     return target
 
 
-def plan_file_for_issue(issue_number: int, plan_dir: Path) -> Path:
-    """Return path to plan-{issue_number}.md, raising if not found."""
-    path = plan_dir / f"plan-{issue_number}.md"
+def plan_file_for_issue(issue_id: int | str, plan_dir: Path) -> Path:
+    """Return path to plan-{issue_id}.md, raising if not found.
+
+    Raises:
+        InvalidIssueIdError: issue_id is not an issue number or ticket key.
+        FileNotFoundError: The plan file does not exist.
+    """
+    path = plan_dir / f"plan-{_checked_issue_id(issue_id)}.md"
     if not path.exists():
         raise FileNotFoundError(
             f"Plan file not found: {path}\n"

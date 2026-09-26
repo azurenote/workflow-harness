@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .config import is_issue_id
 from .git import (
     clean_up_stale_branches,
     create_branch,
@@ -77,6 +78,19 @@ class _GuardedSubparsers:
         return self._action.choices
 
 
+def _issue_id(value: str) -> str:
+    """argparse ``type=`` for an id that becomes part of a plan file name.
+
+    An issue number or a ticket key. A bad id is a usage error (rc 2), which a
+    caller can tell apart from a missing plan (FileNotFoundError, rc 1).
+    """
+    if not is_issue_id(value):
+        raise argparse.ArgumentTypeError(
+            f"not an issue number or ticket key: {value!r}"
+        )
+    return value
+
+
 # ── Core command handlers ────────────────────────────────────────────────────
 
 
@@ -87,12 +101,12 @@ def _find_draft_plan(_args: argparse.Namespace) -> int:
 
 def _rename_plan(args: argparse.Namespace) -> int:
     plan_path = abs_under_main(args.plan_path, root=main_worktree_root())
-    print(rename_plan_to_issue(plan_path, args.issue_number))
+    print(rename_plan_to_issue(plan_path, args.issue_id, plan_dir=_plan_dir()))
     return 0
 
 
 def _plan_file(args: argparse.Namespace) -> int:
-    print(plan_file_for_issue(args.issue_number, _plan_dir()))
+    print(plan_file_for_issue(args.issue_id, _plan_dir()))
     return 0
 
 
@@ -153,11 +167,11 @@ def register_core(
 
     rename = sub.add_parser("rename-plan", help="Rename a draft plan to plan-<issue>.md")
     rename.add_argument("plan_path", type=Path)
-    rename.add_argument("issue_number", type=int)
+    rename.add_argument("issue_id", type=_issue_id)
     rename.set_defaults(func=_rename_plan)
 
     plan_file = sub.add_parser("plan-file", help="Print the path to plan-<issue>.md")
-    plan_file.add_argument("issue_number", type=int)
+    plan_file.add_argument("issue_id", type=_issue_id)
     plan_file.set_defaults(func=_plan_file)
 
     get_base = sub.add_parser(

@@ -16,7 +16,10 @@ from harness_core.local import (
     read_plan_preview,
     NoPlanFileError,
     MultiplePlanFilesError,
+    InvalidIssueIdError,
+    InvalidPlanFileError,
 )
+from harness_core.config import is_draft_plan
 
 
 class TestFindDraftPlanFile:
@@ -87,31 +90,219 @@ class TestFindDraftPlanFile:
 
 
 class TestRenamePlanToIssue:
-    def test_rename_success(self, tmp_path):
-        src = tmp_path / "plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.md"
+    """rename_plan_to_issue refuses anything but a draft in the plan dir (#32).
+
+    Every refusal asserts which guard fired (several guards can refuse the same
+    input, and one masking another is how a removed guard stays green) and that
+    nothing moved.
+    """
+
+    DRAFT = "plan-draft-readable-contract.md"
+
+    @pytest.fixture
+    def plan_dir(self, tmp_path):
+        plan_dir = tmp_path / "plan"
+        plan_dir.mkdir()
+        return plan_dir
+
+    @staticmethod
+    def _assert_untouched(root: Path, *kept: Path) -> None:
+        for path in kept:
+            assert path.exists() or path.is_symlink(), f"{path} moved"
+        # Anything plan-*.md that is not a draft is a rename result, whatever
+        # the id form (plan-25.md, plan-SYN-42.md).
+        created = [p for p in root.rglob("plan-*.md") if not is_draft_plan(p.name)]
+        assert not created, f"a rename happened: {created}"
+
+    def test_rename_success(self, plan_dir):
+        src = plan_dir / "plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.md"
         src.write_text("# Plan: Test")
 
-        result = rename_plan_to_issue(src, 153)
-        assert result == tmp_path / "plan-153.md"
+        result = rename_plan_to_issue(src, 153, plan_dir=plan_dir)
+        assert result == plan_dir / "plan-153.md"
         assert result.exists()
         assert not src.exists()
 
-    def test_rename_slug_draft_success(self, tmp_path):
-        src = tmp_path / "plan-draft-readable-contract.md"
+    def test_rename_slug_draft_success(self, plan_dir):
+        src = plan_dir / self.DRAFT
         src.write_text("# Plan: Test")
 
-        result = rename_plan_to_issue(src, 153)
-        assert result == tmp_path / "plan-153.md"
+        result = rename_plan_to_issue(src, 153, plan_dir=plan_dir)
+        assert result == plan_dir / "plan-153.md"
         assert result.exists()
         assert not src.exists()
 
-    def test_rename_target_exists_raises(self, tmp_path):
-        src = tmp_path / "plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.md"
+    def test_rename_target_exists_raises(self, plan_dir):
+        src = plan_dir / "plan-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.md"
         src.write_text("# Plan: Test")
-        (tmp_path / "plan-153.md").write_text("existing")
+        (plan_dir / "plan-153.md").write_text("existing")
 
         with pytest.raises(FileExistsError):
-            rename_plan_to_issue(src, 153)
+            rename_plan_to_issue(src, 153, plan_dir=plan_dir)
+        assert src.exists()
+        assert (plan_dir / "plan-153.md").read_text() == "existing"
+
+    def test_returns_resolved_absolute_path(self, tmp_path, plan_dir, monkeypatch):
+        (plan_dir / self.DRAFT).write_text("# Plan: x")
+        monkeypatch.chdir(tmp_path)
+
+        result = rename_plan_to_issue(Path("plan") / self.DRAFT, 7, plan_dir=plan_dir)
+        assert result.is_absolute()
+        assert result == (plan_dir / "plan-7.md").resolve()
+
+    def test_empty_path_does_not_rename_cwd(self, tmp_path, plan_dir, monkeypatch):
+        # The defect itself: Path("") is ".", and "." was renamed to
+        # ../plan-25.md — the whole directory, rc 0.
+        root = tmp_path / "root"
+        root.mkdir()
+        monkeypatch.chdir(root)
+
+        with pytest.raises(InvalidPlanFileError, match=r"reject \(exists\)"):
+            rename_plan_to_issue(Path(""), 25, plan_dir=plan_dir)
+        assert root.is_dir()
+        assert not (tmp_path / "plan-25.md").exists()
+        self._assert_untouched(tmp_path, root)
+
+    def test_missing_file_rejected(self, tmp_path, plan_dir):
+        with pytest.raises(InvalidPlanFileError, match=r"reject \(exists\)"):
+            rename_plan_to_issue(plan_dir / self.DRAFT, 25, plan_dir=plan_dir)
+        self._assert_untouched(tmp_path)
+
+    def test_directory_with_draft_name_rejected(self, tmp_path, plan_dir):
+        src = plan_dir / self.DRAFT
+        src.mkdir()
+
+        with pytest.raises(InvalidPlanFileError, match=r"reject \(exists\)"):
+            rename_plan_to_issue(src, 25, plan_dir=plan_dir)
+        assert src.is_dir()
+        self._assert_untouched(tmp_path, src)
+
+    @pytest.mark.parametrize("name", ["plan-100.md", "notes.md", "plan-draft-.md"])
+    def test_non_draft_name_rejected(self, tmp_path, plan_dir, name):
+        src = plan_dir / name
+        src.write_text("x")
+
+        with pytest.raises(InvalidPlanFileError, match=r"reject \(is_draft_plan\)"):
+            rename_plan_to_issue(src, 25, plan_dir=plan_dir)
+        assert src.read_text() == "x"
+        assert not (plan_dir / "plan-25.md").exists()
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "plan-x",  # sibling sharing the plan dir's name as a prefix
+            "plan/sub",  # below the plan dir, not directly in it
+            "plan/../out",  # climbs out
+        ],
+    )
+    def test_draft_outside_plan_dir_rejected(self, tmp_path, plan_dir, where):
+        (tmp_path / where).mkdir(parents=True, exist_ok=True)
+        src = tmp_path / where / self.DRAFT
+        src.write_text("x")
+
+        with pytest.raises(InvalidPlanFileError, match=r"reject \(plan dir\)"):
+            rename_plan_to_issue(src, 25, plan_dir=plan_dir)
+        self._assert_untouched(tmp_path, src)
+
+    def test_symlink_to_draft_in_same_dir_rejected(self, tmp_path, plan_dir):
+        # Following the link would move plan-draft-b.md and leave a dangling a.
+        real = plan_dir / "plan-draft-b.md"
+        real.write_text("b")
+        link = plan_dir / "plan-draft-a.md"
+        link.symlink_to(real)
+
+        with pytest.raises(InvalidPlanFileError, match=r"reject \(symlink\)"):
+            rename_plan_to_issue(link, 25, plan_dir=plan_dir)
+        assert link.is_symlink() and real.read_text() == "b"
+        self._assert_untouched(tmp_path, link, real)
+
+    def test_symlink_to_draft_outside_rejected(self, tmp_path, plan_dir):
+        out = tmp_path / "out"
+        out.mkdir()
+        real = out / "plan-draft-b.md"
+        real.write_text("b")
+        link = plan_dir / self.DRAFT
+        link.symlink_to(real)
+
+        with pytest.raises(InvalidPlanFileError, match=r"reject \(symlink\)"):
+            rename_plan_to_issue(link, 25, plan_dir=plan_dir)
+        self._assert_untouched(tmp_path, link, real)
+
+    def test_plan_dir_given_through_symlink_is_resolved(self, tmp_path, plan_dir):
+        # macOS /tmp -> /private/tmp, or a linked .task/plan: the draft resolves
+        # to the physical directory, so an unresolved plan_dir refuses it.
+        alias = tmp_path / "alias"
+        alias.symlink_to(plan_dir)
+        (plan_dir / self.DRAFT).write_text("x")
+
+        result = rename_plan_to_issue(alias / self.DRAFT, 25, plan_dir=alias)
+        assert result == plan_dir / "plan-25.md"
+        assert result.exists()
+
+    def test_default_plan_dir_is_main_worktree(self, tmp_path, monkeypatch):
+        # local imports main_worktree_root by name (and git caches it), so the
+        # patch must land on harness_core.local — patching cli or git would
+        # silently test the real repository root.
+        from harness_core import local
+
+        root = tmp_path / "main"
+        plan_dir = root / ".task" / "plan"
+        plan_dir.mkdir(parents=True)
+        monkeypatch.setattr(local, "main_worktree_root", lambda: root)
+        elsewhere = tmp_path / "cwd"
+        (elsewhere / ".task" / "plan").mkdir(parents=True)
+        monkeypatch.chdir(elsewhere)  # a CWD-relative default would look here
+
+        inside = plan_dir / self.DRAFT
+        inside.write_text("x")
+        assert rename_plan_to_issue(inside, 25) == plan_dir / "plan-25.md"
+
+        outside = elsewhere / ".task" / "plan" / self.DRAFT
+        outside.write_text("x")
+        with pytest.raises(InvalidPlanFileError, match=r"reject \(plan dir\)"):
+            rename_plan_to_issue(outside, 26)
+        assert outside.exists()
+
+    def test_default_plan_dir_through_symlinked_root(self, tmp_path, monkeypatch):
+        from harness_core import local
+
+        real_root = tmp_path / "main"
+        (real_root / ".task" / "plan").mkdir(parents=True)
+        alias = tmp_path / "alias"
+        alias.symlink_to(real_root)
+        monkeypatch.setattr(local, "main_worktree_root", lambda: alias)
+
+        draft = real_root / ".task" / "plan" / self.DRAFT
+        draft.write_text("x")
+        assert rename_plan_to_issue(draft, 25).exists()
+
+    @pytest.mark.parametrize(
+        "issue_id",
+        ["", "../x", "#25", "0", "025", "-1", "25\n", "syn-42", "SYN-0", 0, -1, True],
+    )
+    def test_bad_issue_id_rejected(self, tmp_path, plan_dir, issue_id):
+        src = plan_dir / self.DRAFT
+        src.write_text("x")
+
+        with pytest.raises(InvalidIssueIdError):
+            rename_plan_to_issue(src, issue_id, plan_dir=plan_dir)
+        assert sorted(p.name for p in plan_dir.iterdir()) == [self.DRAFT]
+        self._assert_untouched(tmp_path, src)
+
+    @pytest.mark.parametrize(
+        ("issue_id", "name"),
+        [(25, "plan-25.md"), ("25", "plan-25.md"), ("SYN-42", "plan-SYN-42.md")],
+    )
+    def test_issue_id_forms_accepted(self, plan_dir, issue_id, name):
+        src = plan_dir / self.DRAFT
+        src.write_text("x")
+
+        assert rename_plan_to_issue(src, issue_id, plan_dir=plan_dir) == plan_dir / name
+
+    def test_id_checked_before_source(self, tmp_path, plan_dir, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(InvalidIssueIdError):
+            rename_plan_to_issue(Path(""), "../x", plan_dir=plan_dir)
 
 
 class TestPlanFileForIssue:
@@ -120,9 +311,21 @@ class TestPlanFileForIssue:
         result = plan_file_for_issue(42, tmp_path)
         assert result == tmp_path / "plan-42.md"
 
+    def test_ticket_key(self, tmp_path):
+        (tmp_path / "plan-SYN-42.md").write_text("# Plan: Test")
+        assert plan_file_for_issue("SYN-42", tmp_path) == tmp_path / "plan-SYN-42.md"
+
     def test_missing_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             plan_file_for_issue(999, tmp_path)
+
+    @pytest.mark.parametrize("issue_id", ["../x", "", "25\n"])
+    def test_bad_issue_id_rejected(self, tmp_path, issue_id):
+        # ../x must not reach the path: a plan-../x.md one level up would be found.
+        (tmp_path / "plan-..").mkdir()
+        (tmp_path / "plan-.." / "x.md").write_text("")
+        with pytest.raises(InvalidIssueIdError):
+            plan_file_for_issue(issue_id, tmp_path)
 
 
 class TestExtractPlanTitle:
