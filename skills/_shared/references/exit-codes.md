@@ -30,10 +30,10 @@ harness 의 모든 명령은 아래 열거형의 값으로 끝난다. 이 표가
 | `rename-plan` | `OK` · `REFUSED` | `REFUSED`: 초안 검증 실패, `plan-<id>.md` 가 이미 있음, main checkout 해석 불가. 파일은 그대로다 |
 | `plan-file` | `OK` · `REFUSED` | `REFUSED`: `plan-<id>.md` 가 없거나 main checkout 을 해석하지 못했다 |
 | `get-base` | `OK` · `REFUSED` | 플랜이 없으면 `OK` 에 두 값 `null`. `REFUSED`: main checkout 해석 불가 |
-| `create-branch` | `OK` | git 실패는 처리하지 않은 예외로 올라간다(`CRASH`) |
-| `create-worktree` | `OK` · `REFUSED` | `REFUSED`: main checkout 해석 불가. git 실패는 `CRASH` |
-| `push-branch` | `OK` | git 실패는 `CRASH` |
-| `clean-up` | `OK` · `REFUSED` | `REFUSED`: main checkout 해석 불가 |
+| `create-branch` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 브랜치가 이미 있다, base ref 를 가져오거나 해석하지 못했다, checkout 이 실패했고 브랜치가 생기지 않았다 — stderr 한 줄, stdout 은 비었다. `INCOMPLETE`: checkout 이 실패했는데 브랜치가 생겼다 — stdout JSON(`branch`·`branch_created`·`checked_out`·`error`)이 남은 것과 HEAD 위치를 말한다. 치우거나 다시 실행하기 전에 사람이 확인한다 |
+| `create-worktree` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 브랜치가 이미 있다, 경로에 무엇이 있거나(빈 디렉터리·끊어진 링크도) worktree 로 등록돼 있다, base ref 를 가져오거나 해석하지 못했다, `worktree add` 가 실패했고 아무것도 남지 않았다, main checkout 해석 불가 — stderr 한 줄, stdout 은 비었다. `INCOMPLETE`: `worktree add` 가 실패했는데 브랜치나 worktree 가 남았다 — stdout JSON(`branch`·`worktree`·`branch_created`·`worktree_created`·`error`)이 무엇이 남았는지 말한다. 치우거나 다시 실행하기 전에 사람이 확인한다 |
+| `push-branch` | `OK` · `REFUSED` · `UNKNOWN` | git 은 `LC_ALL=C` 로 돈다. `OK`: push 가 됐다 — push 가 실패를 보고했어도 되읽은 origin 이 로컬 커밋을 갖고 있으면 `OK` 이고 stderr 에 한 줄 알린다. `REFUSED`: 로컬 브랜치가 없다, origin 이 거부했다(`! [rejected]`·`! [remote rejected]`), 또는 실패 뒤 되읽은 origin 에 로컬 커밋이 없다(브랜치가 없거나 다른 커밋) — stderr 한 줄, stdout 은 비었다. `UNKNOWN`: push 가 실패했고 origin 을 되읽지도 못했다 — stdout JSON `{"branch", "remote_head": null, "error"}`. **push 는 멱등이라 열거형 행과 달리 한 번 더 push 해도 된다.** 두 번째도 `UNKNOWN` 이면 멈춘다 |
+| `clean-up` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 시작의 `fetch --prune` 이 실패했다(아무것도 지우지 않았다), main checkout 해석 불가. `INCOMPLETE`: `warnings` 가 비어 있지 않다 — worktree 제거·브랜치 삭제가 실패했거나 status 검사를 하지 못해 건너뛴 것이 있다. stdout 에 전체 JSON 이 있고, 원인을 고친 뒤 다시 실행해도 안전하다. 변경 내용 때문에 `skipped_dirty` 에만 오른 것은 `OK` 다 |
 | `create-issue` | `OK` · `REFUSED` · `INCOMPLETE` · `UNKNOWN` | `REFUSED`: 만들기 전에 거부했고 stdout 이 비었다(`--parent`·`--blocked-by` 대상이 없거나 풀 리퀘스트거나 읽을 수 없을 때, 부모가 GitHub 의 하위 이슈 상한에 이미 찼을 때 포함). `INCOMPLETE`: 이슈는 생겼고 메타데이터나 링크가 불완전하다 — 모든 조각을 시도한 뒤다. stderr 의 복구 줄(실패한 조각만 담은 `set-fields`)을 실행하고, `set-fields` 로 고칠 수 없다고 적힌 조각은 그 줄대로 처리한다. `UNKNOWN`: 생성 요청이 이슈가 생겼는지 말하지 않고 실패했다 — 제목으로 검색하기 전에는 다시 만들지 않는다 |
 | `get-issue` | `OK` · `REFUSED` | `REFUSED`: 이슈나 그 메타데이터를 읽지 못했다 — 입력이 아니라 읽기가 실패한 것이라, 원인(권한·네트워크)을 확인하고 다시 실행한다. 아무것도 쓰지 않았으므로 다시 실행해도 안전하다 |
 | `set-fields` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 첫 쓰기 전에 거부했다(링크 대상이 없거나 풀 리퀘스트거나 읽을 수 없음, 다른 부모가 이미 있음, 새로 붙일 부모가 하위 이슈 상한에 참 포함). `INCOMPLETE`: 첫 쓰기 뒤에 실패했다 — 모든 조각을 시도한 뒤이고, stdout 에 적용된 것, stderr 에 복구 줄이 있다. 요청한 링크가 이미 되어 있으면 `OK` 다(`NOOP` 아님 — 복구 호출자는 성공을 성공으로 읽는다) |

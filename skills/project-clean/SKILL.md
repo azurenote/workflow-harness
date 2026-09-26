@@ -19,6 +19,7 @@ That document holds the common contract only. This skill additionally reads:
 
 - `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
 - `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
+- `~/.claude/skills/_shared/references/exit-codes.md` — what `clean-up` means by each exit code
 
 Read nothing else from the reference set; the rest does not apply here.
 
@@ -37,6 +38,12 @@ Script behavior:
 5. Remove worktrees linked to *clean* stale branches with `git worktree remove --force`.
 6. Delete branches: use `-d` for branches confirmed merged, and `-D` for branches that are gone only. Branches skipped as dirty are not deleted.
 7. JSON result: `removed_worktrees`, `deleted_branches`, **`skipped_dirty`** (stale branches preserved because their worktree had uncommitted work), **`protected_branches`** (declared base branches that were protected), and `warnings`. Report both `skipped_dirty` and `protected_branches` to the user so they see which branches were preserved and why.
+
+`clean-up` exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`):
+- `OK`: report the JSON as above.
+- `REFUSED`: nothing was deleted; the one stderr line says why. Fix the cause and run it again.
+- `INCOMPLETE`: something could not be cleaned up; `warnings` names each item, a status check that could not run included. Report the JSON with every warning; running it again once the cause is fixed is safe.
+- `CRASH`: stop and report it as a bug.
 
 When `harness_enabled: false`:
 > Warning: the fallback path does **not** apply declared base protection. If you run the commands below as-is, you may delete an integration branch that another sub-issue uses as its base. Collect the protected set with the fence below, and exclude it from every branch you delete by hand.

@@ -18,18 +18,68 @@ class GitError(Exception):
         super().__init__(f"git {command} failed: {stderr}")
 
 
-def _run_git(*args: str) -> subprocess.CompletedProcess:
+# What a command-level git failure left behind, as three siblings of GitError.
+# None subclasses another, so a handler that refuses one never swallows the
+# other two; a plain GitError is none of them and still reads as a bug.
+
+
+class GitRefusedError(GitError):
+    """Nothing was changed: a precondition failed, or a failed write left nothing.
+
+    The message is one line saying what stood in the way; no git command need
+    have run (a branch or path that already exists).
+    """
+
+    def __init__(self, message: str):
+        self.command = ""
+        self.stderr = message
+        Exception.__init__(self, message)
+
+
+class GitIncompleteError(GitError):
+    """A write failed after changing something; ``done`` says what is left."""
+
+    def __init__(self, message: str, done: dict):
+        self.command = ""
+        self.stderr = message
+        self.done = done
+        Exception.__init__(self, message)
+
+
+class GitUnknownError(GitError):
+    """A write failed and whether it took effect could not be read back."""
+
+    def __init__(self, message: str, state: dict):
+        self.command = ""
+        self.stderr = message
+        self.state = state
+        Exception.__init__(self, message)
+
+
+def _run_git(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Run a git command and return the result.
+
+    ``env`` is laid over the inherited environment, never in place of it: PATH,
+    HOME and the ssh settings a push needs stay.
 
     Raises:
         GitError: If git exits non-zero.
     """
     result = subprocess.run(
-        ["git", *args], capture_output=True, text=True
+        ["git", *args], capture_output=True, text=True, errors="replace",
+        env=None if env is None else {**os.environ, **env},
     )
     if result.returncode != 0:
         raise GitError(" ".join(args), result.stderr.strip())
     return result
+
+
+def _one_line(stderr: str) -> str:
+    """git's error text as one line: the ``error:``/``fatal:`` lines, no hints."""
+    lines = [l.strip() for l in stderr.splitlines()
+             if l.strip() and not l.lstrip().startswith("hint:")]
+    errors = [l for l in lines if l.startswith(("error:", "fatal:"))]
+    return "; ".join(errors or lines) or "(no message)"
 
 
 def derive_branch_name(issue_number: int, title: str) -> str:
@@ -46,12 +96,55 @@ def derive_branch_name(issue_number: int, title: str) -> str:
 
 
 def branch_exists(branch_name: str) -> bool:
-    """Check if a local branch exists."""
+    """Check if a ref resolves: a local branch, but also a tag, a sha or ``origin/*``."""
     result = subprocess.run(
         ["git", "rev-parse", "--verify", branch_name],
         capture_output=True, text=True,
     )
     return result.returncode == 0
+
+
+def _local_branch_exists(branch_name: str) -> bool:
+    """``refs/heads/<name>`` exists — exactly, so a tag of that name is not a branch.
+
+    The pre-check and the read-back of :func:`create_branch` and
+    :func:`create_worktree` ask this; :func:`branch_exists` would refuse a
+    ``checkout -b`` git accepts. A check that cannot run reads as "absent", so
+    a repository git cannot read reports REFUSED where INCOMPLETE was due; a
+    second run stops on the pre-check before writing anything.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch_name}"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0
+
+
+def _checked_out() -> str | None:
+    """The branch HEAD is on in the CWD, or None when detached or unreadable."""
+    result = subprocess.run(
+        ["git", "branch", "--show-current"], capture_output=True, text=True,
+    )
+    return (result.stdout.strip() or None) if result.returncode == 0 else None
+
+
+def _worktree_path_taken(path: str, root: Path) -> bool:
+    """Something is at ``path`` (a dangling link too), or git has it registered.
+
+    A registered worktree whose directory is gone makes ``worktree add`` create
+    the branch and then fail, so the registration counts as much as the disk.
+    """
+    if os.path.lexists(path):
+        return True
+    listing = subprocess.run(
+        ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+        capture_output=True, text=True,
+    )
+    want = os.path.realpath(path)
+    return any(
+        line.startswith("worktree ") and os.path.realpath(line[len("worktree "):]) == want
+        for line in listing.stdout.splitlines()
+    )
 
 
 def _resolve_base_ref(base_ref: str) -> str:
@@ -64,8 +157,9 @@ def _resolve_base_ref(base_ref: str) -> str:
       3. Otherwise fetch the branch from origin and use ``origin/<base_ref>``.
 
     Raises:
-        GitError: the ref cannot be resolved even after fetching. Raised before
-            any branch/worktree is created, so callers never leave partial state.
+        GitRefusedError: the ref cannot be resolved even after fetching. Raised
+            before any branch/worktree is created, so callers never leave
+            partial state; the fetch itself changes no work.
     """
     if branch_exists(base_ref):
         return base_ref
@@ -78,15 +172,14 @@ def _resolve_base_ref(base_ref: str) -> str:
     try:
         _run_git("fetch", "origin", fetch_target)
     except GitError as exc:
-        raise GitError(
-            f"fetch origin {fetch_target}",
-            f"base ref '{base_ref}' not found locally and could not be fetched: {exc.stderr}",
-        )
+        raise GitRefusedError(
+            f"base ref '{base_ref}' not found locally and could not be fetched: "
+            f"{_one_line(exc.stderr)}"
+        ) from exc
     if branch_exists(remote_tracking):
         return remote_tracking
-    raise GitError(
-        f"rev-parse {base_ref}",
-        f"base ref '{base_ref}' could not be resolved locally or as {remote_tracking}",
+    raise GitRefusedError(
+        f"base ref '{base_ref}' could not be resolved locally or as {remote_tracking}"
     )
 
 
@@ -98,12 +191,32 @@ def create_branch(branch_name: str, base_ref: str | None = None) -> str:
     None, the branch is cut from the current HEAD (legacy behavior). ``--no-track``
     keeps a remote base from being adopted as the new branch's upstream, which
     would otherwise pollute ``git branch -vv`` and trip false "gone" cleanups.
+
+    Raises:
+        GitRefusedError: the branch already exists, the base cannot be
+            resolved, or ``checkout`` failed and left no branch.
+        GitIncompleteError: ``checkout`` failed after creating the branch (a
+            failing post-checkout hook does this, with HEAD already moved).
     """
+    if _local_branch_exists(branch_name):
+        raise GitRefusedError(f"branch '{branch_name}' already exists")
     if base_ref is None:
-        _run_git("checkout", "-b", branch_name)
+        args: tuple[str, ...] = ("checkout", "-b", branch_name)
     else:
-        resolved = _resolve_base_ref(base_ref)
-        _run_git("checkout", "--no-track", "-b", branch_name, resolved)
+        args = ("checkout", "--no-track", "-b", branch_name, _resolve_base_ref(base_ref))
+    try:
+        _run_git(*args)
+    except GitError as exc:
+        # The pre-check saw no branch, so one there now is this call's.
+        if not _local_branch_exists(branch_name):
+            raise GitRefusedError(
+                f"git {' '.join(args)} failed and created nothing: {_one_line(exc.stderr)}"
+            ) from exc
+        raise GitIncompleteError(
+            f"git {' '.join(args)} failed after creating branch '{branch_name}'",
+            {"branch": branch_name, "branch_created": True,
+             "checked_out": _checked_out(), "error": exc.stderr},
+        ) from exc
     return branch_name
 
 
@@ -130,32 +243,70 @@ def create_worktree(
     the default base the new branch's upstream too. On a git too old to accept
     it on ``worktree add`` (rejected before any worktree is created), we fall
     back to creating the worktree and then unsetting the upstream.
+
+    Before anything is fetched or created, a branch that already exists and a
+    path that is taken are refused. The path check is stricter than git, which
+    takes an existing empty directory: with nothing at the path beforehand,
+    whatever is there after a failure is this call's.
+
+    Raises:
+        GitRefusedError: the branch exists, the path is taken, the base cannot
+            be resolved, or ``worktree add`` failed and left nothing.
+        GitIncompleteError: ``worktree add`` failed after creating the branch,
+            the worktree, or both (an existing path or an unwritable parent
+            leaves the branch; a failing post-checkout hook leaves both).
     """
     root = main_worktree_root()
     # Like harness_core.local.abs_under_main (`~` expanded, an absolute path
     # kept), but normalized lexically; local imports this module.
     path = Path(worktree_path).expanduser()
     worktree_path = os.path.normpath(path if path.is_absolute() else root / path)
+    if _local_branch_exists(branch_name):
+        raise GitRefusedError(f"branch '{branch_name}' already exists")
+    if _worktree_path_taken(worktree_path, root):
+        raise GitRefusedError(f"worktree path '{worktree_path}' already exists")
     start = [] if base_ref is None else [_resolve_base_ref(base_ref)]
 
     try:
-        _run_git(
-            "-C", str(root),
-            "worktree", "add", "--no-track", "-b", branch_name, worktree_path, *start,
-        )
-    except GitError as exc:
-        # Only fall back when this git is too old to accept --no-track on
-        # `worktree add` (the option is rejected before any worktree is made).
-        # Any other failure (duplicate branch, dirty path) must propagate —
-        # retrying without --no-track would just fail again or mask the cause.
-        stderr = (exc.stderr or "").lower()
-        if not any(s in stderr for s in ("--no-track", "unknown option", "usage:")):
-            raise
-        _run_git("-C", str(root), "worktree", "add", "-b", branch_name, worktree_path, *start)
         try:
-            _run_git("-C", worktree_path, "branch", "--unset-upstream", branch_name)
-        except GitError:
-            pass  # no upstream was set — nothing to unset
+            _run_git(
+                "-C", str(root),
+                "worktree", "add", "--no-track", "-b", branch_name, worktree_path, *start,
+            )
+        except GitError as exc:
+            # Only fall back when this git is too old to accept --no-track on
+            # `worktree add` (the option is rejected before any worktree is made).
+            # Any other failure (duplicate branch, dirty path) goes to the
+            # read-back below — retrying without --no-track would just fail
+            # again or mask the cause.
+            stderr = (exc.stderr or "").lower()
+            if not any(s in stderr for s in ("--no-track", "unknown option", "usage:")):
+                raise
+            try:
+                _run_git("-C", str(root), "worktree", "add", "-b", branch_name, worktree_path, *start)
+            except GitError as retry:
+                # The first failure says why the fallback was taken; the
+                # retry's says why it did not help.
+                raise GitError(exc.command, f"{exc.stderr}\n{retry.stderr}") from retry
+            try:
+                _run_git("-C", worktree_path, "branch", "--unset-upstream", branch_name)
+            except GitError:
+                pass  # no upstream was set — nothing to unset
+    except GitError as exc:
+        branch_created = _local_branch_exists(branch_name)
+        worktree_created = _worktree_path_taken(worktree_path, root)
+        if not (branch_created or worktree_created):
+            raise GitRefusedError(
+                f"git worktree add failed and created nothing: {_one_line(exc.stderr)}"
+            ) from exc
+        raise GitIncompleteError(
+            f"git worktree add failed after creating "
+            + " and ".join(n for n, made in (("the branch", branch_created),
+                                            ("the worktree", worktree_created)) if made),
+            {"branch": branch_name, "worktree": worktree_path,
+             "branch_created": branch_created, "worktree_created": worktree_created,
+             "error": exc.stderr},
+        ) from exc
     return worktree_path
 
 
@@ -194,11 +345,23 @@ def clean_up_stale_branches(
     Returns:
         {"removed_worktrees": [...], "deleted_branches": [...],
          "skipped_dirty": [...], "protected_branches": [...], "warnings": [...]}
+        ``warnings`` names each removal or deletion that failed and each status
+        check that could not run; a non-empty list means the clean-up is
+        incomplete, and running it again once the cause is fixed is safe.
+
+    Raises:
+        GitRefusedError: ``fetch --prune`` failed, before anything was deleted.
     """
     if bases is None:
         bases = ["develop", "main"]
 
-    _run_git("fetch", "--prune")
+    try:
+        _run_git("fetch", "--prune")
+    except GitError as exc:
+        raise GitRefusedError(
+            f"git fetch --prune failed; no local branch or worktree was touched: "
+            f"{_one_line(exc.stderr)}"
+        ) from exc
 
     # Collect branches whose remote ref is gone
     result = subprocess.run(["git", "branch", "-vv"], capture_output=True, text=True)
@@ -226,6 +389,8 @@ def clean_up_stale_branches(
             stripped = line.strip().lstrip("*+ ")
             if stripped and stripped not in ("develop", "main"):
                 merged_branches.add(stripped)
+    # A base is merged into itself; like the gone set above, it is never stale.
+    merged_branches -= set(bases)
 
     stale = gone_branches | merged_branches
 
@@ -251,6 +416,7 @@ def clean_up_stale_branches(
         ["git", "worktree", "list", "--porcelain"], capture_output=True, text=True
     )
     worktree_map: dict[str, str] = {}
+    main_path = _first_worktree(worktree_result.stdout)
     current_path: str | None = None
     for line in worktree_result.stdout.splitlines():
         if line.startswith("worktree "):
@@ -267,6 +433,10 @@ def clean_up_stale_branches(
         if branch not in worktree_map:
             continue
         path = worktree_map[branch]
+        if path == main_path:
+            # The main worktree is never removed; its branch's deletion below
+            # fails with git's own reason, and that warning is the report.
+            continue
         status = subprocess.run(
             ["git", "-C", path, "status", "--porcelain"],
             capture_output=True, text=True,
@@ -321,9 +491,81 @@ def remove_worktree(worktree_path: str) -> None:
     _run_git("worktree", "remove", "--force", worktree_path)
 
 
-def push_branch(branch_name: str) -> None:
-    """Push branch to origin."""
-    _run_git("push", "origin", branch_name)
+# A ref line git prints on stderr when the remote turned the update down
+# (non-fast-forward, fetch first, a declining hook). Anything else a failed
+# push says — a lost connection above all — is left to the read-back.
+_PUSH_REJECTED = re.compile(r"^ ! \[(?:rejected|remote rejected)\] ")
+# Push and its read-back parse git's English; the locale must not translate it.
+_C_LOCALE = {"LC_ALL": "C"}
+
+
+def _remote_head(branch_name: str) -> str | None:
+    """The sha origin's push URL has for ``refs/heads/<branch>``, or None.
+
+    Read where the push went — ``pushurl`` when one is set, which ``ls-remote
+    origin`` would not read. An absent ref is an empty answer, not a failure.
+
+    Raises:
+        GitError: the URL or the remote could not be read.
+    """
+    urls = _run_git("remote", "get-url", "--push", "--all", "origin", env=_C_LOCALE).stdout.splitlines()
+    urls = [u for u in urls if u.strip()]  # one URL a line; a path may hold spaces
+    if len(urls) != 1:
+        # Several push URLs: one can take the update while another fails, and
+        # reading one of them back would call a partial push refused.
+        raise GitError("remote get-url --push --all origin", f"origin has {len(urls)} push URLs")
+    ref = f"refs/heads/{branch_name}"
+    # `--` keeps a URL that starts with `-` from being read as an option.
+    listing = _run_git("ls-remote", "--", urls[0], ref, env=_C_LOCALE).stdout
+    heads = [line.split("\t", 1)[0] for line in listing.splitlines()
+             if line.split("\t", 1)[1:] == [ref]]
+    return heads[0] if heads else None
+
+
+def push_branch(branch_name: str) -> str | None:
+    """Push branch to origin.
+
+    Returns None when the push succeeded, and the push's error text when it
+    reported a failure but origin holds the local commit anyway — a push whose
+    connection dropped after the update, or a failing pre-push hook on a branch
+    origin already had at this commit.
+
+    Raises:
+        GitRefusedError: there is no local branch to push, origin rejected the
+            update, or origin is read back without the local commit (absent,
+            or at another commit — a single-ref update is all or nothing).
+        GitUnknownError: the push failed and origin could not be read back,
+            or has more than one push URL to read.
+    """
+    local = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch_name}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    if local.returncode != 0:
+        raise GitRefusedError(f"no local branch '{branch_name}' to push")
+    commit = local.stdout.strip()
+    try:
+        _run_git("push", "origin", branch_name, env=_C_LOCALE)
+        return None
+    except GitError as exc:
+        error = exc.stderr
+    rejected = [line.strip() for line in error.splitlines() if _PUSH_REJECTED.match(line)]
+    if rejected:
+        raise GitRefusedError(f"origin rejected the push: {rejected[0]}")
+    try:
+        remote = _remote_head(branch_name)
+    except GitError as exc:
+        raise GitUnknownError(
+            f"push of '{branch_name}' failed and origin could not be read back: "
+            f"{_one_line(exc.stderr)}",
+            {"branch": branch_name, "remote_head": None, "error": error},
+        ) from exc
+    if remote == commit:
+        return error
+    where = "has no such branch" if remote is None else f"is at {remote[:12]}, not {commit[:12]}"
+    raise GitRefusedError(
+        f"push of '{branch_name}' failed and origin {where}: {_one_line(error)}"
+    )
 
 
 def current_branch() -> str:

@@ -1039,8 +1039,8 @@ REFERENCE_DIR = "skills/_shared/references"
 # What each skill actually consumes, asserted against what it declares.
 SKILL_REFERENCE_NEEDS = {
     "project-adr": {"worktree"},
-    "project-clean": {"base-branch", "worktree"},
-    "project-done": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields", "forgejo"},
+    "project-clean": {"base-branch", "worktree", "exit-codes"},
+    "project-done": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields", "forgejo", "exit-codes"},
     "project-harness-init": {"base-branch"},
     "project-harness-update": set(),
     "project-issue": {"base-branch", "github-issue-fields", "forgejo", "exit-codes"},
@@ -1048,7 +1048,7 @@ SKILL_REFERENCE_NEEDS = {
     "project-plan": {"review-guidelines", "base-branch"},
     "project-release": {"release", "base-branch"},
     "project-release-doc": {"release"},
-    "project-start": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields", "forgejo"},
+    "project-start": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields", "forgejo", "exit-codes"},
 }
 
 
@@ -5688,7 +5688,12 @@ _I43_START_2B = (
     '# When base is undeclared (default)',
     '<harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>"',
     '```',
-    "`create-worktree` takes the relative path under the main checkout and runs there, from any CWD, and prints the worktree's absolute path. It stops before creating anything when the layout has no main work tree.",
+    "`create-worktree` takes the relative path under the main checkout and runs there, from any CWD, and prints the worktree's absolute path when it ends `OK`.",
+    "`create-worktree` exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`):",
+    "- `OK`: stdout is the worktree's absolute path; read it as `$WORKTREE_PATH` only on this code.",
+    "- `REFUSED`: nothing was created; the one stderr line says why. Fix the cause and run it again.",
+    "- `INCOMPLETE`: the command failed after creating the branch, the worktree, or both. Stop and report the stdout JSON; do not clean up and do not run it again until a person has looked.",
+    "- `CRASH`: stop and report it as a bug.",
     "Without a harness_cli, use this fence — **run it as one shell invocation**; the four resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`. Fill `BASE` by Step 1-B's rule: empty when the plan declares no base or declares the project default base, so the worktree branches from the main checkout's HEAD; otherwise the declared base, which is resolved as a local branch first, then as `origin/<base>`, fetching that one branch when neither exists; a base written as `origin/<base>` skips the local branch. `--no-track` keeps either one from becoming the new branch's upstream.",
     '```bash',
     'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
@@ -9009,3 +9014,114 @@ def test_i20_step6_sends_exit_3_to_the_printed_recovery_line() -> None:
     table = read_skill("skills/_shared/references/exit-codes.md")
     assert_whole_line(table, _I20_ROW_CREATE)
     assert_whole_line(table, _I20_ROW_SET_FIELDS)
+
+
+# --------------------------------------------------------------------------
+# #74 — the git commands' exit codes, as the skills that call them read them
+#
+# create-branch, create-worktree, push-branch and clean-up now end REFUSED,
+# INCOMPLETE or UNKNOWN where they used to crash. Each calling section lists
+# exactly the codes exit-codes.md gives its command, plus CRASH, and says what
+# to do on each — the INCOMPLETE of a branch stops, clean-up's is safe to run
+# again, and push's UNKNOWN allows one more push.
+
+_I74_SECTIONS = {
+    # (skill, start marker, end marker, command)
+    "start 2-A": ("skills/project-start/SKILL.md", "**2-A.", "**2-B.", "create-branch"),
+    "start 2-B": ("skills/project-start/SKILL.md", "**2-B.", "**3.", "create-worktree"),
+    "done 6": ("skills/project-done/SKILL.md", "**6. Push branch**", "**7.", "push-branch"),
+    "clean": ("skills/project-clean/SKILL.md", "When `harness_enabled: true`:", "When `harness_enabled: false`:", "clean-up"),
+}
+
+# Words each code's line must carry, per section: what the caller does.
+_I74_BEHAVIOUR = {
+    "start 2-A": {"REFUSED": ["nothing was created", "run it again"],
+                  "INCOMPLETE": ["Stop", "do not clean up", "do not run it again"],
+                  "CRASH": ["bug"], "OK": ["go on"]},
+    "start 2-B": {"REFUSED": ["nothing was created", "run it again"],
+                  "INCOMPLETE": ["Stop", "do not clean up", "do not run it again"],
+                  "CRASH": ["bug"], "OK": ["`$WORKTREE_PATH` only on this code"]},
+    "done 6": {"REFUSED": ["origin does not have this commit", "stop"],
+               "UNKNOWN": ["Push once more", "ends `UNKNOWN` too, stop"],
+               "CRASH": ["bug"], "OK": ["go on to Step 7"]},
+    "clean": {"REFUSED": ["nothing was deleted", "run it again"],
+              "INCOMPLETE": ["`warnings`", "status check", "safe"],
+              "CRASH": ["bug"], "OK": ["report the JSON"]},
+}
+
+_I74_CODE_LINE = re.compile(r"^- `([A-Z]+)`: (.+)$")
+
+
+def _i74_section(root: Path, skill: str, start: str, end: str) -> str:
+    text = (root / skill).read_text(encoding="utf-8")
+    begin = text.index(start)
+    return text[begin:text.index(end, begin + len(start))]
+
+
+def _i74_code_lines(section: str) -> dict[str, list[str]]:
+    lines: dict[str, list[str]] = {}
+    inside = False
+    for line in section.splitlines():
+        if line.strip().startswith("```"):
+            inside = not inside
+            continue
+        match = None if inside else _I74_CODE_LINE.match(line)
+        if match:
+            lines.setdefault(match.group(1), []).append(match.group(2))
+    return lines
+
+
+def _i74_doc_codes(root: Path, command: str) -> set[str]:
+    text = (root / _I37_REFERENCE).read_text(encoding="utf-8")
+    row = next(l for l in text.splitlines() if l.startswith(f"| `{command}` |"))
+    return set(re.findall(r"`([A-Z]+)`", row.split(" | ")[1]))
+
+
+def _i74_failures(root: Path) -> list[str]:
+    failures = []
+    for name, (skill, start, end, command) in _I74_SECTIONS.items():
+        lines = _i74_code_lines(_i74_section(root, skill, start, end))
+        want = _i74_doc_codes(root, command) | {"CRASH"}
+        if set(lines) != want:
+            failures.append(f"{name}: codes {sorted(lines)}, exit-codes.md gives {sorted(want)}")
+        for code, words in _I74_BEHAVIOUR[name].items():
+            text = " ".join(lines.get(code, []))
+            failures += [f"{name}: `{code}` does not say {w!r}" for w in words if w not in text]
+        for text in lines.get("INCOMPLETE", []):
+            failures += [f"{name}: INCOMPLETE names a clean-up command ({bad})"
+                         for bad in ("branch -D", "worktree remove") if bad in text]
+    return failures
+
+
+def test_i74_each_caller_reads_every_code_its_command_returns() -> None:
+    assert _i74_failures(ROOT) == []
+
+
+@pytest.mark.parametrize("drop", ["- `UNKNOWN`: the push failed", "- `INCOMPLETE`: the branch was created"])
+def test_i74_dropping_a_code_line_is_caught(tmp_path: Path, drop: str) -> None:
+    shutil.copytree(ROOT / "skills", tmp_path / "skills")
+    for md in (tmp_path / "skills").rglob("SKILL.md"):
+        lines = md.read_text(encoding="utf-8").splitlines()
+        kept = [l for l in lines if not l.startswith(drop)]
+        if len(kept) < len(lines):
+            md.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            break
+    else:
+        pytest.fail(f"no skill line starts with {drop!r}")
+    assert _i74_failures(tmp_path), f"dropping {drop!r} went unnoticed"
+
+
+def test_i74_exit_code_rows_name_the_new_outcomes() -> None:
+    text = read_skill(_I37_REFERENCE)
+    assert "git 실패는 `CRASH`" not in text and "git 실패는 처리하지 않은" not in text
+    assert {c: _i74_doc_codes(ROOT, c) for c in ("create-branch", "create-worktree", "push-branch", "clean-up")} == {
+        "create-branch": {"OK", "REFUSED", "INCOMPLETE"},
+        "create-worktree": {"OK", "REFUSED", "INCOMPLETE"},
+        "push-branch": {"OK", "REFUSED", "UNKNOWN"},
+        "clean-up": {"OK", "REFUSED", "INCOMPLETE"},
+    }
+    push = rule_line(text, "| `push-branch` |")
+    assert "한 번 더 push 해도 된다" in push and "두 번째도 `UNKNOWN` 이면 멈춘다" in push
+    assert "`LC_ALL=C`" in push
+    clean = rule_line(text, "| `clean-up` |")
+    assert "다시 실행해도 안전하다" in clean
