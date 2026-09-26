@@ -76,17 +76,22 @@ git branch -a --list "*issue-<id>-*" "*/<id>-*"
 The plan check is rooted at the main worktree: `.task/plan/` is gitignored and exists only there, so a
 check relative to the CWD reports every plan as missing from a linked worktree. `<harness_cli> plan-file
 <id>` does the same for either id form, but only in a project that has a harness_cli; this form needs
-only `harness_core`:
+only git, and runs as one shell call (the resolving lines are the canonical main-checkout block kept in
+the shared worktree reference):
 
 ```bash
-python -c '
-import re, sys
-from harness_core.git import main_worktree_root
-if not re.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", sys.argv[1]):
-    sys.exit("reject (id): not an issue number or ticket key: %r" % sys.argv[1])
-plan = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])
-sys.exit(0 if plan.is_file() else "no plan: %s" % plan)
-' '<id>'
+case '<id>' in
+  ''|*[!A-Za-z0-9_-]*) echo "reject (id): not an issue number or ticket key" >&2; exit 1 ;;
+esac
+printf '%s\n' '<id>' | LC_ALL=C grep -Eqx '[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*' || {
+  echo "reject (id): not an issue number or ticket key" >&2; exit 1; }
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+PLAN="$MAIN_CHECKOUT/.task/plan/plan-<id>.md"
+[ -f "$PLAN" ] || { echo "no plan at $PLAN"; exit 1; }
+printf 'PLAN=%s\n' "$PLAN"
 ```
 
 - `<id>` 가 주어졌을 때 `plan-<id>.md` 가 없으면 초안이 있어도 Plan 완료로 판정하지 않는다 — 초안에는 이슈 번호가 없어서, 거기 있는 초안은 다른 어떤 작업의 것이어도 된다.
@@ -155,10 +160,11 @@ For each phase's detailed procedure, follow that skill document (`~/.claude/skil
 Once the re-entry state is known, check the CWD before any phase runs.
 Phases 1, 2 and 3 run from the main checkout — a new run, and re-entry in the "Issue" or "Issue only" state; from any other CWD, stop and print the main checkout path.
 Re-entry in the "Start" state is exempt: Phase 4 runs where the branch is already checked out (`## Re-entry After Interruption`).
-The main checkout is the first entry of `git worktree list --porcelain`. Run this fence as one shell call — shell variables do not survive to the next call:
+The main checkout is the work tree git reports for the first entry of `git worktree list --porcelain` — the canonical main-checkout block kept in the shared worktree reference. Run this fence as one shell call — shell variables do not survive to the next call:
 
 ```bash
-MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
 [ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
   echo "could not resolve the main checkout"; exit 1; }
 [ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {
@@ -210,7 +216,8 @@ MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
    - A declared base other than the project default base skips this base check only; `project-start` then branches from that base. Fill `<project default base>` below with the `base_branch` that Read Settings found in `skill-config.yaml`.
 
 ```bash
-MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
 [ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
   echo "could not resolve the main checkout"; exit 1; }
 CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"
@@ -225,7 +232,8 @@ CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"
    - This check writes to no file and is not a gate.
 
 ```bash
-MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
 [ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
   echo "could not resolve the main checkout"; exit 1; }
 git -C "$MAIN_CHECKOUT" check-ignore -q .claude/worktrees/

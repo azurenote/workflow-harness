@@ -80,19 +80,27 @@ Branch naming rule: `feat/issue-<id>-<slug>` for GitHub, or `feat/<ticket-id>-<s
 
 ```bash
 <harness_cli> plan-file <issue-id>
-# fallback, for a project without a harness_cli:
-# rooted at the main worktree — .task/plan/ is gitignored and exists only there
-python -c '
-import re, sys
-from harness_core.git import main_worktree_root
-if not re.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", sys.argv[1]):
-    sys.exit("reject (id): not an issue number or ticket key: %r" % sys.argv[1])
-plan = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])
-sys.exit(0 if plan.is_file() else "no plan: %s" % plan)
-' '<issue-id>'
+```
+
+Without a harness_cli, use this fence — **run it as one shell invocation**. It is rooted at the main checkout, because `.task/plan/` is gitignored and exists only there; the four resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`, and the id checks are the same as `project-done` Step 1's:
+
+```bash
+case '<issue-id>' in
+  ''|*[!A-Za-z0-9_-]*) echo "reject (id): not an issue number or ticket key" >&2; exit 1 ;;
+esac
+printf '%s\n' '<issue-id>' | LC_ALL=C grep -Eqx '[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*' || {
+  echo "reject (id): not an issue number or ticket key" >&2; exit 1; }
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+PLAN="$MAIN_CHECKOUT/.task/plan/plan-<issue-id>.md"
+[ -f "$PLAN" ] || { echo "no plan at $PLAN"; exit 1; }
+printf 'PLAN=%s\n' "$PLAN"
 ```
 
 - If `plan-<issue-id>.md` does not exist, stop here — before any branch, worktree, status change or ADR — and point the user to `project-iterate <issue-id>`, or to writing a draft and running `project-issue <plan-path> --issue <issue-id>`.
+- **Pass the path on as a literal.** Either form prints the plan's absolute path in the main checkout — `plan-file` bare, the fallback as `PLAN=<path>`. That is `<plan-path>` for Steps 1-B and 5; after 2-B moves the work into a worktree a shell variable is gone and a rebuilt relative path finds nothing.
 
 `project-done` stops on the same missing file (its Step 1), so going on without it only moves the
 failure past the side effects of Steps 2–4. Worse, those side effects hide the cause: once the branch
@@ -111,7 +119,7 @@ Here, **"project default base"** means whatever `base_branch` the project's `ski
 
 - If `base_branch` is **non-null and different from the project default base**, that branch is both the PR review/merge target and the branch base. Pass `--base-ref "<base_branch>"` in 2-A/2-B below.
 - If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use **existing behavior** (branch from current HEAD, assuming the task starts on the default base). Do not add a new prompt.
-- Fallback without harness: inspect the leading `base_branch:` line in the frontmatter of the plan Step 1-A found in the main worktree. If absent, use the project default base.
+- Fallback without harness: inspect the leading `base_branch:` line in the frontmatter of `<plan-path>`. If absent, use the project default base.
 
 **2-A. Normal Branch (default)**
 
@@ -178,7 +186,7 @@ Start implementation only after the ADR commit is complete.
 
 **5. Load plan**
 
-Read the `plan-<issue-id>.md` that Step 1-A found in the main worktree's plan directory.
+Read `<plan-path>`, the absolute path Step 1-A printed in the main worktree's plan directory.
 
 Before implementation, read in this order:
 

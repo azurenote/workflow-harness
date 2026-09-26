@@ -18,6 +18,7 @@ from harness_core.git import (
     current_branch,
     clean_up_stale_branches,
     GitError,
+    MainWorktreeUnresolvedError,
 )
 
 
@@ -445,15 +446,118 @@ class TestMainWorktreeRoot:
         assert main_worktree_root() == outside.resolve()
 
     def test_main_worktree_root_bare_repo(self, tmp_path, chdir, _no_cache):
-        # Bare repos have no working tree, so `--git-common-dir` returns `.`
-        # and `--is-bare-repository` returns "true". The helper must short-
-        # circuit on the bare check and return CWD; otherwise it would call
-        # `Path(".").resolve().parent` and climb one directory above the repo.
+        # A bare repo has no main work tree. The old rule returned CWD here,
+        # and the `--git-common-dir` parent would climb above the repo; both
+        # are directories that exist and are wrong, so the helper stops (#50).
         bare = tmp_path / "bare.git"
         bare.mkdir()
         _git("init", "--bare", cwd=bare)
         chdir(bare)
-        assert main_worktree_root() == bare.resolve()
+        with pytest.raises(MainWorktreeUnresolvedError, match="bare"):
+            main_worktree_root()
+
+
+class TestMainWorktreeRootLayouts:
+    """The canonical rule per layout (#50): first worktree entry, then its toplevel.
+
+    The shell block in skills/_shared/references/worktree.md follows the same
+    rule; tests/test_skill_docs.py runs both against one matrix.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_git_env(self, monkeypatch):
+        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+            monkeypatch.delenv(var, raising=False)
+
+    def _commit(self, repo: Path) -> None:
+        _git("commit", "--allow-empty", "-m", "init", cwd=repo)
+
+    def test_submodule_and_its_linked_worktree_answer_the_submodule(self, tmp_path, chdir, _no_cache):
+        tmp_path = tmp_path.resolve()
+        src = tmp_path / "src"
+        src.mkdir()
+        _git("init", "-b", "main", cwd=src)
+        self._commit(src)
+        sup = tmp_path / "super"
+        sup.mkdir()
+        _git("init", "-b", "main", cwd=sup)
+        self._commit(sup)
+        _git("-c", "protocol.file.allow=always", "submodule", "add", str(src), "sub", cwd=sup)
+        _git("worktree", "add", "-b", "feature", str(tmp_path / "sub-wt"), cwd=sup / "sub")
+        for where in (sup / "sub", tmp_path / "sub-wt"):
+            chdir(where)
+            assert main_worktree_root() == (sup / "sub").resolve()
+        chdir(sup)
+        assert main_worktree_root() == sup.resolve()
+
+    def test_separate_git_dir_stops_from_main_and_linked(self, tmp_path, chdir, _no_cache):
+        tmp_path = tmp_path.resolve()
+        main = tmp_path / "main"
+        _git("init", "-b", "main", f"--separate-git-dir={tmp_path / 'main.git'}", str(main), cwd=tmp_path)
+        self._commit(main)
+        _git("worktree", "add", "-b", "feature", str(tmp_path / "wt"), cwd=main)
+        for where in (main, tmp_path / "wt"):
+            chdir(where)
+            try:
+                root = main_worktree_root()
+            except MainWorktreeUnresolvedError as error:
+                assert "separate-git-dir" in str(error)
+            else:
+                # A git that lists the work tree first would answer it; any
+                # other directory is the wrong-but-existing answer this guards.
+                assert root == main.resolve()
+
+    def test_bare_with_linked_worktree_stops(self, tmp_path, chdir, _no_cache):
+        tmp_path = tmp_path.resolve()
+        seed = tmp_path / "seed"
+        seed.mkdir()
+        _git("init", "-b", "main", cwd=seed)
+        self._commit(seed)
+        _git("clone", "--bare", str(seed), str(tmp_path / "bare.git"), cwd=tmp_path)
+        _git("worktree", "add", str(tmp_path / "wt"), "main", cwd=tmp_path / "bare.git")
+        chdir(tmp_path / "wt")
+        with pytest.raises(MainWorktreeUnresolvedError):
+            main_worktree_root()
+
+    def test_failed_listing_inside_a_repo_stops(self, tmp_path, chdir, _no_cache, monkeypatch):
+        """Only a CWD outside any repository falls back to CWD."""
+        tmp_path = tmp_path.resolve()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git("init", "-b", "main", cwd=repo)
+        self._commit(repo)
+        real = subprocess.run
+
+        def fake(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "boom")
+            return real(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", fake)
+        chdir(repo)
+        with pytest.raises(MainWorktreeUnresolvedError, match="boom"):
+            main_worktree_root()
+
+    def test_untrusted_repository_stops_instead_of_answering_cwd(self, tmp_path, chdir, _no_cache, monkeypatch):
+        """safe.directory refusal fails like 'not a repo' but must not fall back to CWD."""
+        tmp_path = tmp_path.resolve()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git("init", "-b", "main", cwd=repo)
+        self._commit(repo)
+        _git("worktree", "add", "-b", "feature", str(tmp_path / "wt"), cwd=repo)
+        real = subprocess.run
+        refused = "fatal: detected dubious ownership in repository at '%s'\n" % repo
+
+        def fake(cmd, *args, **kwargs):
+            if cmd[:3] in (["git", "worktree", "list"], ["git", "rev-parse", "--git-dir"]):
+                return subprocess.CompletedProcess(cmd, 128, "", refused)
+            return real(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", fake)
+        chdir(tmp_path / "wt")
+        with pytest.raises(MainWorktreeUnresolvedError):
+            main_worktree_root()
 
 
 class TestWorktreeRoot:

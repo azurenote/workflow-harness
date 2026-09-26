@@ -150,7 +150,7 @@ harness 를 못 쓰고 gh 로 내려가도 type·priority·size·status 가 적�
 | `_shared/references/base-branch.md` | 작업별 base branch 우선순위 | project-start · project-done · project-plan · project-issue · project-clean · project-harness-init |
 | `_shared/references/release.md` | `release` 블록 전체 | project-release · project-release-doc |
 | `_shared/references/hooks.md` | lifecycle 훅 포인트와 실패 정책 | project-start · project-done |
-| `_shared/references/worktree.md` | 워크트리 CWD 주의사항 | project-start · project-done · project-clean |
+| `_shared/references/worktree.md` | 워크트리 CWD 주의사항, main checkout 해석 정본 | project-start · project-done · project-clean · project-adr |
 | `_shared/references/github-issue-fields.md` | GitHub 이슈 메타데이터 계약과 `github_project` 스키마 | project-issue · project-start · project-done |
 | `_shared/references/codex.md` | Codex 호스트 메커니즘 | Codex 에서 실행할 때만 |
 
