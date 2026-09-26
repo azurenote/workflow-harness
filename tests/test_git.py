@@ -228,6 +228,180 @@ class TestCreateWorktreeBaseRef:
         assert not branch_exists("feat/sub")
 
 
+def _linked_feature(tmp_path: Path) -> tuple[Path, Path]:
+    """Main checkout on develop, plus a linked worktree on feat/x one commit ahead.
+
+    The extra commit is what makes "branched from the main checkout's HEAD" a
+    claim that can fail: without it, feat/x and develop are the same commit.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    linked = tmp_path / "linked"
+    _git("worktree", "add", "-b", "feat/x", str(linked), cwd=repo)
+    (linked / "x").write_text("x")
+    _git("add", ".", cwd=linked)
+    _git("commit", "-m", "on feat/x", cwd=linked)
+    return repo, linked
+
+
+def _main_rooted_failures(tmp_path: Path, chdir) -> list[str]:
+    """Call create_worktree with a relative path from a linked worktree; list what is wrong."""
+    repo, linked = _linked_feature(tmp_path)
+    chdir(linked)
+    got = create_worktree(".claude/worktrees/p-issue-1", "feat/issue-1-y")
+    want = os.path.realpath(repo / ".claude" / "worktrees" / "p-issue-1")
+    failures = []
+    if os.path.realpath(got) != want:
+        failures.append(f"created at {got}, expected {want}")
+    if not os.path.isabs(got):
+        failures.append(f"returned a relative path: {got}")
+    if (linked / ".claude").exists():
+        failures.append("nested under the linked worktree")
+    head = _rev("feat/issue-1-y", repo)
+    if head != _rev("develop", repo) or head == _rev("feat/x", repo):
+        failures.append("did not branch from the main checkout's HEAD")
+    return failures
+
+
+class TestCreateWorktreeMainRooted:
+    """#43: the worktree is placed and cut from the main checkout, whatever the CWD."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_git_config(self, tmp_path, monkeypatch):
+        # The host's config (commit.gpgsign, branch.autoSetupMerge, ...) must
+        # not decide these rows; create_worktree's own git calls read it too.
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "home"))
+
+    def test_relative_path_from_a_linked_worktree(self, tmp_path, chdir):
+        assert _main_rooted_failures(tmp_path, chdir) == []
+
+    def test_without_the_main_root_the_scenario_fails(self, tmp_path, chdir, monkeypatch):
+        # Mutation: drop `-C <root>` and let git run in the CWD, as before #43.
+        import harness_core.git as hgit
+        real = hgit._run_git
+
+        def cwd_rooted(*args: str):
+            if args[:1] == ("-C",) and "worktree" in args:
+                args = args[2:]
+            return real(*args)
+
+        monkeypatch.setattr(hgit, "_run_git", cwd_rooted)
+        # The path is already absolute under the root, so only the branch point
+        # can tell — which is why the scenario gives feat/x a commit of its own.
+        assert "did not branch from the main checkout's HEAD" in _main_rooted_failures(tmp_path, chdir)
+
+    def test_relative_path_from_a_subdirectory_of_main(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        (repo / "sub" / "dir").mkdir(parents=True)
+        chdir(repo / "sub" / "dir")
+        got = create_worktree(".claude/worktrees/p-issue-2", "feat/issue-2-y")
+        assert os.path.realpath(got) == os.path.realpath(repo / ".claude" / "worktrees" / "p-issue-2")
+        assert not (repo / "sub" / "dir" / ".claude").exists()
+
+    def test_home_is_expanded(self, tmp_path, chdir, monkeypatch):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        chdir(repo)
+        got = create_worktree("~/wt", "feat/home")
+        assert os.path.realpath(got) == os.path.realpath(home / "wt")
+
+    def test_dot_dot_is_normalized(self, tmp_path, chdir):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        chdir(repo)
+        got = create_worktree("../beside", "feat/beside")
+        assert ".." not in Path(got).parts
+        assert os.path.realpath(got) == os.path.realpath(tmp_path / "beside")
+
+    def test_undeclared_base_sets_no_upstream(self, tmp_path, chdir, monkeypatch):
+        # branch.autoSetupMerge=always would make the main checkout's branch the
+        # new branch's upstream; --no-track on this path too keeps it off.
+        repo, linked = _linked_feature(tmp_path)
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "branch.autoSetupMerge")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "always")
+        chdir(linked)
+        create_worktree(".claude/worktrees/p-issue-7", "feat/untracked")
+        assert not _has_upstream("feat/untracked", repo)
+
+    def test_declared_base_from_a_linked_worktree(self, tmp_path, chdir, monkeypatch):
+        import harness_core.git as hgit
+        repo, linked = _linked_feature(tmp_path)
+        integ = _add_branch_with_commit(repo, "feat/integration")
+        chdir(linked)
+        real = hgit._run_git
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(hgit, "_run_git", lambda *a: (calls.append(a), real(*a))[1])
+        got = create_worktree(".claude/worktrees/p-issue-3", "feat/sub", base_ref="feat/integration")
+        # Unobservable from the result (absolute path, explicit start point),
+        # so pinned on the call: every `worktree add` runs at the main root.
+        adds = [c for c in calls if "worktree" in c]
+        assert adds and all(c[:2] == ("-C", str(main_worktree_root())) for c in adds), adds
+        assert os.path.realpath(got) == os.path.realpath(repo / ".claude" / "worktrees" / "p-issue-3")
+        assert _rev("feat/sub", repo) == integ
+        assert not _has_upstream("feat/sub", repo)
+
+    def test_old_git_retry_stays_main_rooted(self, tmp_path, chdir, monkeypatch):
+        # A git that rejects `--no-track` on `worktree add` takes the retry path:
+        # it must stay at the main root, and unset the upstream by absolute path.
+        import harness_core.git as hgit
+        repo, linked = _linked_feature(tmp_path)
+        _add_branch_with_commit(repo, "feat/integration")
+        chdir(linked)
+        real = hgit._run_git
+        calls: list[tuple[str, ...]] = []
+
+        def old_git(*args: str):
+            calls.append(args)
+            if "--no-track" in args:
+                raise GitError(" ".join(args), "error: unknown option `no-track'")
+            return real(*args)
+
+        monkeypatch.setattr(hgit, "_run_git", old_git)
+        got = create_worktree(".claude/worktrees/p-issue-4", "feat/sub", base_ref="feat/integration")
+        root = str(main_worktree_root())
+        retry = [c for c in calls if "worktree" in c and "--no-track" not in c]
+        assert retry and retry[0][:2] == ("-C", root), f"the retry left the main root: {retry}"
+        unset = [c for c in calls if "--unset-upstream" in c]
+        assert unset and os.path.isabs(unset[0][1]) and unset[0][1] == got, unset
+
+    def test_bare_linked_worktree_stops_before_any_fetch(self, tmp_path, chdir):
+        seed = tmp_path / "seed"
+        _init_repo(seed, default_branch="main")
+        bare = tmp_path / "bare.git"
+        _git("clone", "--bare", str(seed), str(bare), cwd=tmp_path)
+        # A bare clone has no fetch refspec; give it one, so a fetch that ran
+        # would leave origin/feat/remote-only behind for the check below.
+        _git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*", cwd=bare)
+        _add_branch_with_commit(seed, "feat/remote-only", from_branch="main")
+        wt = tmp_path / "wt"
+        _git("worktree", "add", str(wt), "main", cwd=bare)
+        chdir(wt)
+        with pytest.raises(MainWorktreeUnresolvedError):
+            create_worktree(".claude/worktrees/p-issue-5", "feat/sub", base_ref="feat/remote-only")
+        assert not branch_exists("feat/sub")
+        assert not branch_exists("origin/feat/remote-only")
+        # A fetch from a linked worktree writes FETCH_HEAD under its own git dir.
+        assert not list(bare.rglob("FETCH_HEAD")), list(bare.rglob("FETCH_HEAD"))
+        assert not (wt / ".claude").exists()
+
+    def test_cli_prints_the_absolute_path(self, tmp_path, chdir, capsys):
+        from harness_core.cli import build_core_parser, dispatch
+        repo, linked = _linked_feature(tmp_path)
+        chdir(linked)
+        assert dispatch(build_core_parser(), ["create-worktree", ".claude/worktrees/p-issue-6", "feat/cli"]) == 0
+        out = capsys.readouterr().out.strip()
+        assert os.path.isabs(out)
+        assert os.path.realpath(out) == os.path.realpath(repo / ".claude" / "worktrees" / "p-issue-6")
+
+
 def _repo_with_remote(tmp_path: Path) -> Path:
     """Repo with an 'origin' bare remote and develop pushed (clean_up needs fetch)."""
     remote = tmp_path / "remote.git"

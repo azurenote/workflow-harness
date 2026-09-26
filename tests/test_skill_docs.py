@@ -1001,7 +1001,7 @@ def test_codex_reference_still_carries_what_was_moved() -> None:
         "require_escalated",
         "multi_agent_v1.spawn_agent",
         "exec_command",
-        "$project-start <issue-id> [worktree] [adr]",
+        "$project-start <issue-id> [in-place] [adr]",
         "$project-release-doc <package> [<from>..<to>]",
     ):
         assert token in text, f"{token} was deleted rather than moved"
@@ -3861,8 +3861,9 @@ def test_repo_gitignore_has_no_redundant_plan_entry(tmp_path: Path) -> None:
 # re-entry continues where the branch is already checked out instead of
 # cutting a second checkout beside it.
 #
-# `project-start` keeps its in-place default (#43 owns that change); the
-# guard for it lives here because this is the change that could drift it.
+# `project-start` took the same default in #43, and with it the base and
+# ignore checks this block first wrote into Phase 3; their guards moved to the
+# #43 block at the end of this file.
 #
 # Two layers, as in the Forgejo block above. The golden tuples pin each
 # region this change wrote, fences included, line by line: a review showed
@@ -3882,9 +3883,9 @@ _G_USAGE = (
     '```',
     '- `<task description>`: task description (required for a new run)',
     '- `<id>`: an issue that already exists — re-entry, including an issue that has no plan yet (see below)',
-    '- `[in-place]`: branch in the main checkout itself; Phase 3 calls `project-start` without `worktree`',
+    '- `[in-place]`: branch in the main checkout itself; Phase 3 calls `project-start <id> in-place`',
     '- `[adr]`: include ADR writing, passed to both start and done',
-    'Branching defaults to a worktree: unless `in-place` is given, Phase 3 calls `project-start <id> worktree`.',
+    'Branching defaults to a worktree: unless `in-place` is given, Phase 3 calls `project-start <id>`, whose default is a worktree.',
     'The `worktree` token is accepted as an alias of that default and changes nothing; when it is given, say in one line that a worktree is already the default.',
     'Argument rules:',
     '- The first token decides the form: an issue number or a Jira key is the `<id>` form, and a flag (`in-place`, `worktree`, `adr`) as the first token is an error — stop and show the correct order.',
@@ -3962,37 +3963,12 @@ _G_INSTRUCTIONS_HEAD = (
 )
 
 _G_PHASE3 = (
-    '1. Before calling `project-start`, run these checks from the main checkout. Run each fence below as one shell call; `could not resolve the main checkout` from either fence means stop and report.',
+    '1. Before calling `project-start`:',
     '- If Phase 1 was skipped ("Issue" re-entry), show the parsed flags before any check or branch — branch mode `worktree` (default) or `in-place`, and whether `adr` is set.',
-    "- Read the plan's base the way `project-start` Step 1-B does: `<harness_cli> get-base <id>`, or without a harness_cli the leading `base_branch:` line of the plan's frontmatter in the main worktree.",
-    '- If the plan declares no base, or declares the project default base, the main checkout must be on the project default base; if it is not, stop and report.',
-    "- This base check holds in both modes: a branch cut while another session's in-place run has left the main checkout on a feature branch would stack on that feature. Stacking on purpose is what plan frontmatter `base_branch` is for.",
-    '- A declared base other than the project default base skips this base check only; `project-start` then branches from that base. Fill `<project default base>` below with the `base_branch` that Read Settings found in `skill-config.yaml`.',
-    '```bash',
-    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
-    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
-    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
-    'echo "could not resolve the main checkout"; exit 1; }',
-    'CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"',
-    '[ "$CURRENT" = "<project default base>" ] || {',
-    'echo "main checkout is on \'${CURRENT:-a detached HEAD}\', not <project default base>"; exit 1; }',
-    '```',
-    '- In worktree mode, check that the main checkout ignores `.claude/worktrees/`, whether or not the base check was skipped. The trailing slash is required: without it a directory-only pattern does not match.',
-    '- Read the printed `check-ignore rc=<n>` line. `rc=0`: nothing to say.',
-    '- `rc=1`: warn in one line and continue — an unignored worktree directory can be staged as a gitlink by `git add -A` in an in-place run; the line to add is `.claude/worktrees/` in `.gitignore` or `.git/info/exclude`.',
-    '- Any other `rc=`: warn that ignoring could not be decided, and continue.',
-    '- This check writes to no file and is not a gate.',
-    '```bash',
-    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
-    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
-    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
-    'echo "could not resolve the main checkout"; exit 1; }',
-    'git -C "$MAIN_CHECKOUT" check-ignore -q .claude/worktrees/',
-    'echo "check-ignore rc=$?"',
-    '```',
+    '- The Phase 3 checks are that flag display and `project-start` Step 1-C, which runs the base check and the ignore check from the main checkout; iterate does not run them a second time.',
     '2. Run the `start` skill procedure with the issue ID from Phase 2:',
-    '- by default, or with `worktree`: call `project-start <id> worktree [adr]`, and run Phase 4 with the new worktree as the CWD',
-    '- with `in-place`: call `project-start <id> [adr]`, which branches in the main checkout',
+    '- by default, or with `worktree`: call `project-start <id> [adr]`, and run Phase 4 with the new worktree as the CWD',
+    '- with `in-place`: call `project-start <id> in-place [adr]`, which branches in the main checkout',
     '- pass the `adr` argument when applicable, to write an ADR before implementation',
     '- read the Intent Summary and Drift Guards',
     '- print the Task Cards checklist and start implementation',
@@ -4006,20 +3982,8 @@ _G_PHASE3 = (
 _G_PRESERVED = (
     'To resume after interruption, call the relevant skill directly:',
     '- From Phase 2: `project-issue <plan-path>`, or `project-issue <plan-path> --issue <id>` when the issue already exists. Always name the path: discovery without it can pick up a draft that belongs to other work.',
-    '- From Phase 3: `project-start <id> worktree`, or `project-start <id>` for a run that was `in-place` — either one called from the main checkout. `project-iterate <id>` resumes the same point through the "Issue" state and also runs the Phase 3 checks.',
+    '- From Phase 3: `project-start <id>`, or `project-start <id> in-place` for a run that was `in-place` (from the main checkout — `project-start` Step 1-C refuses `in-place` anywhere else). `project-iterate <id>` resumes the same point through the "Issue" state.',
     '- From Phase 4: `project-done <id>`',
-)
-
-_G_START_2B = (
-    '**2-B. Worktree mode (when `worktree` argument is present)**',
-    '```bash',
-    '# When base is declared',
-    '<harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>" --base-ref "<base_branch>"',
-    '# When base is undeclared (default)',
-    '<harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>"',
-    '# fallback: git worktree add [--no-track] ".claude/worktrees/<project>-issue-<id>" -b "<branch-name>" ["<base_branch | origin/base_branch>"]',
-    '```',
-    'After this, perform all work inside `$WORKTREE_PATH`.',
 )
 
 _G_ADR_STEP1 = (
@@ -4183,31 +4147,17 @@ def test_iterate_phases_hold_their_own_lines() -> None:
 def test_iterate_main_checkout_fences_resolve_and_stop() -> None:
     text = _iterate_skill()
     fences = _golden_fences(list(_G_INSTRUCTIONS_HEAD)) + _golden_fences(list(_G_PHASE3))
-    assert len(fences) == 3, "expected the precondition, base and ignore fences"
-    for fence in fences:
-        assert tuple(fence[:3]) == _MAIN_RESOLVE, f"the main checkout is resolved another way: {fence[:3]}"
-        assert not any("exit 0" in l for l in fence), f"a fence can pass early: {fence}"
-    precondition, base, ignore = fences
+    assert len(fences) == 1, "expected the precondition fence only; the Phase 3 checks live in project-start 1-C"
+    (precondition,) = fences
+    assert tuple(precondition[:3]) == _MAIN_RESOLVE, f"the main checkout is resolved another way: {precondition[:3]}"
+    assert not any("exit 0" in l for l in precondition), f"a fence can pass early: {precondition}"
     assert [l for l in precondition if "--show-toplevel" in l] == [
         _MAIN_RESOLVE[1],
         '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {'
     ], "--show-toplevel may only ask about the first entry, or be the other side of the comparison"
-    assert precondition[-1].endswith("exit 1; }") and base[-1].endswith("exit 1; }"), "a gate no longer stops"
-    assert '[ "$CURRENT" = "<project default base>" ] || {' in base
+    assert precondition[-1].endswith("exit 1; }"), "the gate no longer stops"
     for banned in ("--git-common-dir", "$PWD"):
         assert banned not in text, f"the main checkout is derived from {banned}"
-
-
-def test_iterate_ignore_check_warns_from_the_main_checkout() -> None:
-    ignore = _golden_fences(list(_G_PHASE3))[-1]
-    calls = [shlex.split(l) for l in ignore if l.startswith("git") and "check-ignore" in l]
-    assert calls == [["git", "-C", "$MAIN_CHECKOUT", "check-ignore", "-q", ".claude/worktrees/"]], (
-        f"the ignore check lost its trailing slash or left the main checkout: {calls}"
-    )
-    for fence in _golden_fences(list(_G_PHASE3)):
-        body = "\n".join(fence)
-        for banned in (">>", "info/exclude", ".gitignore", "tee", "config"):
-            assert banned not in body, f"a Phase 3 check writes a file ({banned})"
 
 
 def test_iterate_reentry_record_parser_names_each_location(tmp_path: Path) -> None:
@@ -4248,20 +4198,6 @@ def test_iterate_reentry_lists_local_branches_only() -> None:
     assert fences[0] == ["git branch --list \"*issue-<id>-*\" \"*/<id>-*\" --format='%(refname:lstrip=2)'"]
     assert fences[1][0] == "git worktree list --porcelain | python3 -c '"
     assert "grep" not in "\n".join(sum(fences, [])), "the location fence matches id prefixes again"
-
-
-def test_project_start_keeps_its_in_place_default() -> None:
-    text = _start_skill()
-    assert_whole_line(text, "project-start <issue-id> [worktree] [adr]")
-    assert_whole_line(text, "- `[worktree]`: git worktree mode")
-    assert_whole_line(text, "**2-A. Normal Branch (default)**")
-    assert_whole_line(text, (
-        "- If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use "
-        "**existing behavior** (branch from current HEAD, assuming the task starts on the default base). "
-        "Do not add a new prompt."
-    ))
-    assert tuple(_region(text, "**2-B.", "**3.", inclusive=True)) == _G_START_2B, "project-start 2-B changed"
-    assert "in-place" not in text
 
 
 def test_project_adr_reads_the_plan_from_the_main_worktree() -> None:
@@ -4306,7 +4242,7 @@ def test_codex_reference_shows_the_iterate_default() -> None:
     for usage in _ITERATE_USAGE:
         assert lines.count("$" + usage) == 1, f"codex does not show {usage!r}"
     assert not [l for l in lines if l.startswith("$project-iterate") and "[worktree]" in l]
-    assert "$project-start <issue-id> [worktree] [adr]" in lines
+    assert "$project-start <issue-id> [in-place] [adr]" in lines
 
 
 def test_readme_iterate_row_names_the_worktree_default() -> None:
@@ -5061,8 +4997,8 @@ _I50_TABLE_ANSWERS = {"main checkout": "main", "submodule checkout": "super/sub"
 _I50_COPIES = {
     "skills/_shared/references/worktree.md": 1,
     "skills/project-done/SKILL.md": 3,
-    "skills/project-iterate/SKILL.md": 4,
-    "skills/project-start/SKILL.md": 1,
+    "skills/project-iterate/SKILL.md": 2,
+    "skills/project-start/SKILL.md": 5,
     "skills/project-adr/SKILL.md": 1,
     "skills/project-clean/SKILL.md": 1,
 }
@@ -5558,8 +5494,8 @@ _I50_RESOLUTION_LINES = (
     ('skills/project-issue/SKILL.md', 'plan_dir = (main_worktree_root() / ".task" / "plan").resolve()', 2),
     ('skills/project-issue/SKILL.md', 'python -c \'from harness_core.config import is_draft_plan; from harness_core.git import main_worktree_root; print("\\n".join(str(p) for p in sorted((main_worktree_root() / ".task" / "plan").glob("plan-*.md")) if is_draft_plan(p.name)))\'', 1),
     ('skills/project-issue/SKILL.md', 'target = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])', 1),
-    ('skills/project-iterate/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 4),
-    ('skills/project-iterate/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 4),
+    ('skills/project-iterate/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 2),
+    ('skills/project-iterate/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 2),
     ('skills/project-iterate/SKILL.md', 'PLAN="$MAIN_CHECKOUT/.task/plan/plan-<id>.md"', 1),
     ('skills/project-iterate/SKILL.md', '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {', 1),
     ('skills/project-iterate/SKILL.md', "git worktree list --porcelain | python3 -c '", 1),
@@ -5571,9 +5507,10 @@ _I50_RESOLUTION_LINES = (
     ('skills/project-plan/SKILL.md', 'mkdir -p .task/plan', 1),
     ('skills/project-release/SKILL.md', "REMOTE_TAG_SHA=$(git rev-parse 'FETCH_HEAD^{}')", 1),
     ('skills/project-release/SKILL.md', 'test "$(git rev-parse \'<tag>^{}\')" = "$RELEASE_SHA"', 1),
-    ('skills/project-start/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 1),
-    ('skills/project-start/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
+    ('skills/project-start/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 5),
+    ('skills/project-start/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 5),
     ('skills/project-start/SKILL.md', 'PLAN="$MAIN_CHECKOUT/.task/plan/plan-<issue-id>.md"', 1),
+    ('skills/project-start/SKILL.md', '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {', 1),
 )
 
 
@@ -5592,3 +5529,530 @@ def test_resolution_lines_in_skill_fences_are_pinned() -> None:
         "if the new line follows the canonical rule, pin it here:\n"
         + "\n".join(repr(e) for e in sorted(set(got) ^ set(_I50_RESOLUTION_LINES)))
     )
+
+
+# --------------------------------------------------------------------------
+# project-start defaults to a worktree too (#43, #42 D3 follow-up)
+#
+# #42 moved `project-iterate` to a worktree default and left `project-start`
+# alone, so the two entry points disagreed. #43 gives `project-start` the same
+# vocabulary (`in-place`, `worktree` as a lasting alias) and moves iterate's
+# Phase 3 checks — base on the default branch in both modes, the ignore
+# warning — into a new Step 1-C, so the one place both entry points pass
+# through holds the only copy. The worktree is placed and cut from the main
+# checkout from any CWD: by the harness (`create_worktree`, tested in
+# test_git.py) and by the 2-B fallback fence.
+#
+# Two layers again: goldens pin the regions line by line, and scenarios run
+# every fence in real repos. Each mutant below breaks one thing a fence
+# protects and must turn its scenario red — a green scenario proves nothing
+# unless a broken fence makes it fail. Linked-worktree scenarios give feat/x a
+# commit of its own; without it "branched from the main checkout" cannot fail.
+# --------------------------------------------------------------------------
+
+_I43_PLACEHOLDER = re.compile(r"<[A-Za-z][^<>\n]*>")
+
+_I43_START_1B = "- If `base_branch` is `null` or equals the project default base, omit `--base-ref` and branch from the main checkout's HEAD, which Step 1-C requires to be on the project default base. Do not add a new prompt."
+_I43_START_2A = '**2-A. In-place branch (with `in-place`)**'
+_I43_ITERATE_ANCHOR = '- The Phase 3 checks are that flag display and `project-start` Step 1-C, which runs the base check and the ignore check from the main checkout; iterate does not run them a second time.'
+_I43_README_ROW = '| `project-start` | 브랜치/워크트리 생성 + 이슈 In Progress + 구현 시작. 기본은 main checkout 아래에 워크트리를 만들고(어느 CWD 에서 불러도 같다), `in-place` 를 붙이면 main checkout 에서 제자리 분기한다. 로컬 `plan-<id>.md` 가 없으면 브랜치를 만들기 전에 멈춘다 |'
+
+_I43_START_USAGE = (
+    '## Usage',
+    '```',
+    'project-start <issue-id> [in-place] [adr]',
+    '```',
+    '- `<issue-id>`: GitHub issue number or Jira ticket ID (required)',
+    '- `[in-place]`: branch in the main checkout itself (Step 2-A) instead of in a worktree',
+    '- `[adr]`: write ADR before implementation (`project-adr` internal call)',
+    'Branching defaults to a worktree: unless `in-place` is given, Step 2-B creates one under the main checkout.',
+    'The `worktree` token is accepted as an alias of that default and changes nothing; when it is given, say in one line that a worktree is already the default.',
+    'Argument rules:',
+    '- The first token is the issue id — an issue number or a Jira key; a flag (`in-place`, `worktree`, `adr`) as the first token is an error — stop and show the correct order.',
+    '- The id is followed only by flags; if any other token follows it, stop and ask what was meant.',
+    '- A flag counts only as a standalone token after the id, in exact lowercase, in any order.',
+    '- A token that is a near spelling of a flag (`--in-place`, `inplace`, `In-place`, `--worktree`) is not guessed — ask the user which was meant.',
+    '- `in-place` and `worktree` together are a conflict — stop and have the user pick one.',
+)
+
+_I43_START_1C = (
+    '**1-C. Pre-branch checks**',
+    'These run before any branch, worktree, status change or ADR. Run each fence below as one shell call — shell variables do not survive to the next call; `could not resolve the main checkout` from any fence means stop and report. The resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`.',
+    '- With `in-place` only: the CWD must be the main checkout, because 2-A branches wherever it runs; from any other CWD, stop and print the main checkout path. A worktree needs no such check: 2-B creates it under the main checkout from any CWD.',
+    '```bash',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {',
+    'echo "not the main checkout — rerun from: $MAIN_CHECKOUT"; exit 1; }',
+    '```',
+    '- In both modes, read the base Step 1-B found. If the plan declares no base, or declares the project default base, the main checkout must be on the project default base; if it is not, stop and report.',
+    "- This base check holds in both modes: a branch cut while another session's in-place run has left the main checkout on a feature branch would stack on that feature. Stacking on purpose is what plan frontmatter `base_branch` is for.",
+    '- A declared base other than the project default base skips this base check only; 2-A or 2-B then branches from that base. Fill `<project default base>` below with the `base_branch` that Read Settings found in `skill-config.yaml`.',
+    '```bash',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    'CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"',
+    '[ "$CURRENT" = "<project default base>" ] || {',
+    'echo "main checkout is on \'${CURRENT:-a detached HEAD}\', not <project default base>"; exit 1; }',
+    '```',
+    '- In worktree mode, check that the main checkout ignores `.claude/worktrees/`, whether or not the base check was skipped. The trailing slash is required: without it a directory-only pattern does not match.',
+    '- Read the printed `check-ignore rc=<n>` line. `rc=0`: nothing to say.',
+    '- `rc=1`: warn in one line and continue — an unignored worktree directory can be staged as a gitlink by `git add -A` in an in-place run; the line to add is `.claude/worktrees/` in `.gitignore` or `.git/info/exclude`.',
+    '- Any other `rc=`: warn that ignoring could not be decided, and continue.',
+    '- This check writes to no file and is not a gate.',
+    '```bash',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    'git -C "$MAIN_CHECKOUT" check-ignore -q .claude/worktrees/',
+    'echo "check-ignore rc=$?"',
+    '```',
+)
+
+_I43_START_2B = (
+    '**2-B. Worktree (default)**',
+    '```bash',
+    '# When base is declared',
+    '<harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>" --base-ref "<base_branch>"',
+    '# When base is undeclared (default)',
+    '<harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>"',
+    '```',
+    "`create-worktree` takes the relative path under the main checkout and runs there, from any CWD, and prints the worktree's absolute path. It stops before creating anything when the layout has no main work tree.",
+    "Without a harness_cli, use this fence — **run it as one shell invocation**; the four resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`. Fill `BASE` by Step 1-B's rule: empty when the plan declares no base or declares the project default base, so the worktree branches from the main checkout's HEAD; otherwise the declared base, which is resolved as a local branch first, then as `origin/<base>`, fetching that one branch when neither exists; a base written as `origin/<base>` skips the local branch. `--no-track` keeps either one from becoming the new branch's upstream.",
+    '```bash',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    'WORKTREE_PATH="$MAIN_CHECKOUT/.claude/worktrees/<project>-issue-<id>"',
+    "BASE='<base_branch, or empty>'",
+    'if [ -z "$BASE" ]; then',
+    'git -C "$MAIN_CHECKOUT" worktree add --no-track "$WORKTREE_PATH" -b "<branch-name>" || exit 1',
+    'else',
+    'B="${BASE#origin/}"',
+    'if [ "$B" = "$BASE" ] && git -C "$MAIN_CHECKOUT" show-ref --verify -q "refs/heads/$B"; then',
+    'REF="refs/heads/$B"',
+    'else',
+    'REF="refs/remotes/origin/$B"',
+    'git -C "$MAIN_CHECKOUT" show-ref --verify -q "$REF" ||',
+    'git -C "$MAIN_CHECKOUT" fetch origin "+refs/heads/$B:$REF" || exit 1',
+    'fi',
+    'git -C "$MAIN_CHECKOUT" worktree add --no-track "$WORKTREE_PATH" -b "<branch-name>" "$REF" || exit 1',
+    'fi',
+    'printf \'WORKTREE_PATH=%s\\n\' "$WORKTREE_PATH"',
+    '```',
+    '`$WORKTREE_PATH` is the absolute path either form printed — `create-worktree` bare, the fallback as `WORKTREE_PATH=<path>`; substitute it as a literal from here on.',
+    'After this, perform all work inside `$WORKTREE_PATH`.',
+)
+
+
+
+def _i43_fill(fence: str, **subs: str) -> str:
+    """Substitute the placeholders a caller fills; none may survive."""
+    for key, value in subs.items():
+        assert key in fence, f"placeholder {key!r} is not in the fence"
+        fence = fence.replace(key, value)
+    left = _I43_PLACEHOLDER.findall(fence)
+    assert not left, f"placeholders left unfilled: {left}"
+    return fence
+
+
+def _i43_start_fences() -> dict:
+    """The four shell fences #43 wrote into project-start, by name, indentation intact."""
+    text = _start_skill()
+    checks = _fences_of(skill_section(text, "**1-C."))
+    assert len(checks) == 3, f"1-C should hold the in-place, base and ignore fences, found {len(checks)}"
+    fallback = [f for f in _fences_of(skill_section(text, "**2-B.")) if "FIRST_WORKTREE=" in f]
+    assert len(fallback) == 1, "2-B should hold exactly one fallback fence"
+    return {"in-place": checks[0], "base": checks[1], "ignore": checks[2], "fallback": fallback[0]}
+
+
+def _i43_git(env: dict, *args: str, cwd: Path) -> str:
+    return subprocess.run(["git", "-c", "init.defaultBranch=main", *args], cwd=cwd, env=env,
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _i43_commit(env: dict, cwd: Path, name: str) -> str:
+    (cwd / name).write_text(name)
+    _i43_git(env, "add", name, cwd=cwd)
+    _i43_git(env, "commit", "-q", "-m", name, cwd=cwd)
+    return _i43_git(env, "rev-parse", "HEAD", cwd=cwd)
+
+
+def _i43_repos(tmp: Path) -> tuple[Path, Path, dict]:
+    """A main checkout on `main` and a linked worktree on feat/x one commit ahead.
+
+    The extra commit on feat/x is what lets "branched from the main checkout's
+    HEAD" fail: without it the two HEADs are the same commit.
+    """
+    tmp.mkdir(parents=True, exist_ok=True)
+    tmp = tmp.resolve()
+    env = _i50_env(tmp)
+    main = tmp / "main"
+    _i43_git(env, "init", "-q", str(main), cwd=tmp)
+    _i43_commit(env, main, "init")
+    linked = tmp / "linked"
+    _i43_git(env, "worktree", "add", "-q", "-b", "feat/x", str(linked), cwd=main)
+    _i43_commit(env, linked, "x")
+    (main / "sub" / "dir").mkdir(parents=True)
+    (linked / "sub" / "dir").mkdir(parents=True)
+    return main, linked, env
+
+
+def _i43_sh(code: str, cwd: Path, env: dict, shell: tuple = ("sh",)) -> subprocess.CompletedProcess:
+    return subprocess.run([*shell, "-c", code], cwd=cwd, env=env, capture_output=True, text=True)
+
+
+def _i43_inplace_failures(fence: str, tmp: Path) -> list[str]:
+    main, linked, env = _i43_repos(tmp)
+    failures = []
+    for shell in (("sh",), ("sh", "-e")):
+        for cwd, ok in ((main, True), (main / "sub" / "dir", True), (linked, False), (linked / "sub" / "dir", False)):
+            r = _i43_sh(fence, cwd, env, shell)
+            if ok and r.returncode != 0:
+                failures.append(f"{shell} {cwd.name}: refused the main checkout: {r.stdout!r}")
+            if not ok and (r.returncode == 0 or str(main) not in r.stdout):
+                failures.append(f"{shell} {cwd}: let a linked worktree through or named no main path: {r.stdout!r}")
+    return failures
+
+
+def _i43_base_failures(fence: str, tmp: Path) -> list[str]:
+    code = _i43_fill(fence, **{"<project default base>": "main"})
+    main, linked, env = _i43_repos(tmp)
+    failures = []
+    for cwd in (main, linked):
+        r = _i43_sh(code, cwd, env)
+        if r.returncode != 0:
+            failures.append(f"from {cwd.name} with main on main: refused ({r.stdout!r})")
+    _i43_git(env, "checkout", "-q", "-b", "feat/other", cwd=main)
+    r = _i43_sh(code, linked, env)
+    if r.returncode == 0:
+        failures.append("main checkout on feat/other: passed")
+    _i43_git(env, "checkout", "-q", "--detach", cwd=main)
+    r = _i43_sh(code, linked, env)
+    if r.returncode == 0 or "a detached HEAD" not in r.stdout:
+        failures.append(f"detached main checkout: {r.returncode} {r.stdout!r}")
+    return failures
+
+
+def _i43_tree_digest(root: Path) -> dict:
+    """Every file's content under root, `.git/index` aside (git may refresh its stat cache)."""
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*"))
+            if p.is_file() and p.name != "index"}
+
+
+def _i43_ignore_failures(fence: str, tmp: Path) -> list[str]:
+    tmp.mkdir(parents=True, exist_ok=True)
+    failures = []
+    # Main's branch ignores the directory with a directory-only pattern; feat/x,
+    # cut before that commit, does not. The directory does not exist, so only
+    # the trailing slash matches, and only the main checkout's .gitignore says so.
+    main, linked, env = _i43_repos(tmp / "ignored")
+    (main / ".gitignore").write_text(".claude/worktrees/\n")
+    _i43_git(env, "add", ".gitignore", cwd=main)
+    _i43_git(env, "commit", "-q", "-m", "ignore", cwd=main)
+    unignored_main, unignored_linked, unignored_env = _i43_repos(tmp / "unignored")
+    shim = tmp / "shim"
+    shim.mkdir()
+    (shim / "git").write_text('#!/bin/sh\nfor a in "$@"; do [ "$a" = check-ignore ] && exit 128; done\n'
+                              'exec "%s" "$@"\n' % shutil.which("git"))
+    (shim / "git").chmod(0o755)
+    shim_env = {**env, "PATH": f"{shim}{os.pathsep}{env['PATH']}"}
+    cases = (
+        ("ignored, from main", main, env, "check-ignore rc=0"),
+        ("ignored, from linked", linked, env, "check-ignore rc=0"),
+        ("unignored", unignored_linked, unignored_env, "check-ignore rc=1"),
+        ("git cannot answer", linked, shim_env, "check-ignore rc=128"),
+    )
+    before = _i43_tree_digest(tmp)
+    for name, cwd, run_env, want in cases:
+        r = _i43_sh(fence, cwd, run_env)
+        if r.returncode != 0 or r.stdout.strip() != want:
+            failures.append(f"{name}: rc {r.returncode}, {r.stdout.strip()!r}, expected {want!r}")
+    if _i43_tree_digest(tmp) != before:
+        failures.append("the ignore check changed a file")
+    return failures
+
+
+def _i43_origin(tmp: Path, env: dict, main: Path) -> dict:
+    """An origin holding branches main has never fetched; returns their tips."""
+    seed = tmp / "seed"
+    _i43_git(env, "clone", "-q", str(main), str(seed), cwd=tmp)
+    tips = {}
+    for branch in ("feat/remote-only", "feat/prefixed", "feat/cached", "feat/narrow"):
+        _i43_git(env, "checkout", "-q", "-b", branch, "main", cwd=seed)
+        tips[branch] = _i43_commit(env, seed, branch.replace("/", "_"))
+    _i43_git(env, "remote", "add", "origin", str(seed), cwd=main)
+    return tips
+
+
+def _i43_fallback_failures(fence: str, tmp: Path) -> list[str]:
+    main, linked, env = _i43_repos(tmp)
+    # With autoSetupMerge=always, only --no-track keeps a base from becoming the upstream.
+    env = {**env, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "branch.autoSetupMerge",
+           "GIT_CONFIG_VALUE_0": "always"}
+    _i43_git(env, "branch", "feat/prefixed", cwd=main)  # a stale local namesake of origin/feat/prefixed
+    tips = _i43_origin(tmp.resolve(), env, main)
+    tips["feat/int"] = _i43_commit(env, main, "int-base")  # main moves on; feat/int is cut here
+    _i43_git(env, "branch", "feat/int", cwd=main)
+    _i43_git(env, "reset", "-q", "--hard", "HEAD~1", cwd=main)
+    main_head = _i43_git(env, "rev-parse", "HEAD", cwd=main)
+    feat_x = _i43_git(env, "rev-parse", "feat/x", cwd=main)
+    failures = []
+
+    def run(n: int, base: str) -> tuple[subprocess.CompletedProcess, str]:
+        code = _i43_fill(fence, **{"<project>": "p", "<id>": str(n), "<branch-name>": f"feat/issue-{n}-y",
+                                    "<base_branch, or empty>": base})
+        return _i43_sh(code, linked, env), f"feat/issue-{n}-y"
+
+    def created(n: int, r: subprocess.CompletedProcess, branch: str, want_tip: str) -> None:
+        want = main / ".claude" / "worktrees" / f"p-issue-{n}"
+        printed = [l[len("WORKTREE_PATH="):] for l in r.stdout.splitlines() if l.startswith("WORKTREE_PATH=")]
+        if r.returncode != 0 or len(printed) != 1:
+            failures.append(f"case {n}: rc {r.returncode}, {r.stdout!r}, {r.stderr!r}")
+            return
+        if not os.path.isabs(printed[0]) or os.path.realpath(printed[0]) != str(want):
+            failures.append(f"case {n}: printed {printed[0]!r}, expected {want}")
+        listed = _i43_git(env, "worktree", "list", "--porcelain", cwd=main)
+        if f"worktree {want}" not in listed.splitlines():
+            failures.append(f"case {n}: no worktree at {want}")
+        if (linked / ".claude").exists():
+            failures.append(f"case {n}: nested under the linked worktree")
+        tip = _i43_git(env, "rev-parse", branch, cwd=main)
+        if tip != want_tip:
+            failures.append(f"case {n}: branched from {tip[:7]}, expected {want_tip[:7]} (feat/x is {feat_x[:7]})")
+        upstream = subprocess.run(["git", "rev-parse", "--abbrev-ref", branch + "@{upstream}"], cwd=main,
+                                  env=env, capture_output=True)
+        if upstream.returncode == 0:
+            failures.append(f"case {n}: {branch} tracks an upstream")
+
+    r, b = run(1, "")
+    created(1, r, b, main_head)
+    r, b = run(2, "feat/int")
+    created(2, r, b, tips["feat/int"])
+    r, b = run(3, "feat/remote-only")
+    created(3, r, b, tips["feat/remote-only"])
+    r, b = run(4, "origin/feat/prefixed")
+    created(4, r, b, tips["feat/prefixed"])
+    _i43_git(env, "fetch", "-q", "origin", "+refs/heads/feat/cached:refs/remotes/origin/feat/cached", cwd=main)
+    _i43_git(env, "remote", "set-url", "origin", str(tmp / "gone"), cwd=main)
+    r, b = run(5, "feat/cached")
+    created(5, r, b, tips["feat/cached"])
+    _i43_git(env, "remote", "set-url", "origin", str(tmp.resolve() / "seed"), cwd=main)
+    _i43_git(env, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main", cwd=main)
+    r, b = run(6, "feat/narrow")
+    created(6, r, b, tips["feat/narrow"])
+    for n, base, why in ((7, "feat/no-such", "a missing base"), (1, "", "an existing branch and path")):
+        r, _ = run(n, base)
+        if r.returncode == 0 or "WORKTREE_PATH=" in r.stdout:
+            failures.append(f"{why}: rc {r.returncode}, {r.stdout!r}")
+    return failures
+
+
+_I43_SCENARIOS = {
+    "in-place": _i43_inplace_failures,
+    "base": _i43_base_failures,
+    "ignore": _i43_ignore_failures,
+    "fallback": _i43_fallback_failures,
+}
+
+
+def _i43_mutants(fences: dict) -> dict:
+    """name -> (fence name, mutated fence). Each one breaks what a scenario protects.
+
+    `-C "$MAIN_CHECKOUT"` is dropped only as a whole: on `show-ref` and `fetch`
+    alone, or on the declared-base `worktree add` alone, it changes nothing a
+    run can see — refs are shared by every worktree, the path is absolute and
+    the start point explicit. The `_I43_START_2B` golden pins those.
+    """
+    f = fences
+    mutants = {
+        "in-place compares against the CWD": ("in-place", f["in-place"].replace(
+            '= "$(cd "$MAIN_CHECKOUT" && pwd -P)"', '= "$(pwd -P)"')),
+        "in-place does not stop": ("in-place", f["in-place"].replace(
+            'rerun from: $MAIN_CHECKOUT"; exit 1; }', 'rerun from: $MAIN_CHECKOUT"; }')),
+        "base asks the CWD": ("base", f["base"].replace(
+            'git -C "$MAIN_CHECKOUT" branch --show-current', "git branch --show-current")),
+        "base does not stop": ("base", f["base"].replace(
+            'not <project default base>"; exit 1; }', 'not <project default base>"; }')),
+        "ignore without the slash": ("ignore", f["ignore"].replace(
+            "check-ignore -q .claude/worktrees/", "check-ignore -q .claude/worktrees")),
+        "ignore asks the CWD": ("ignore", f["ignore"].replace(
+            'git -C "$MAIN_CHECKOUT" check-ignore', "git check-ignore")),
+        "ignore writes .gitignore": ("ignore", f["ignore"].replace(
+            'echo "check-ignore rc=$?"', 'echo "check-ignore rc=$?"; echo ".claude/worktrees/" >> .gitignore')),
+        "fallback adds from the CWD": ("fallback", f["fallback"].replace(
+            'git -C "$MAIN_CHECKOUT" worktree add', "git worktree add")),
+        "fallback tracks the undeclared base": ("fallback", f["fallback"].replace(
+            'worktree add --no-track "$WORKTREE_PATH" -b "<branch-name>" || exit 1\nelse',
+            'worktree add "$WORKTREE_PATH" -b "<branch-name>" || exit 1\nelse')),
+        "fallback prefers a stale local branch": ("fallback", f["fallback"].replace(
+            'if [ "$B" = "$BASE" ] && git', "if git")),
+        "fallback keeps origin/": ("fallback", f["fallback"].replace('B="${BASE#origin/}"', 'B="$BASE"')),
+        "fallback fetches without a refspec": ("fallback", f["fallback"].replace(
+            'fetch origin "+refs/heads/$B:$REF"', 'fetch origin "$B"')),
+        "fallback fetches before the cached ref": ("fallback", f["fallback"].replace(
+            'git -C "$MAIN_CHECKOUT" show-ref --verify -q "$REF" ||', "false ||")),
+        "fallback prints a relative path": ("fallback", f["fallback"].replace(
+            'printf \'WORKTREE_PATH=%s\\n\' "$WORKTREE_PATH"',
+            'printf \'WORKTREE_PATH=%s\\n\' "${WORKTREE_PATH#"$MAIN_CHECKOUT"/}"')),
+        "fallback reports a failed add": ("fallback", f["fallback"].replace(
+            '-b "<branch-name>" || exit 1\nelse', '-b "<branch-name>"\nelse')),
+    }
+    for name, (kind, mutant) in mutants.items():
+        assert mutant != fences[kind], f"mutant {name!r} did not change the {kind} fence"
+    return mutants
+
+
+def test_i43_start_regions_are_pinned_whole() -> None:
+    text = _start_skill()
+    for name, got, expected in (
+        ("## Usage", _region(text, "## Usage", "## Instructions", inclusive=True), _I43_START_USAGE),
+        ("1-C", _region(text, "**1-C.", "**2-A.", inclusive=True), _I43_START_1C),
+        ("2-B", _region(text, "**2-B.", "**3.", inclusive=True), _I43_START_2B),
+    ):
+        assert tuple(got) == expected, f"project-start {name} changed"
+    assert_whole_line(text, _I43_START_1B)
+    assert_whole_line(text, _I43_START_2A)
+
+
+def test_i43_start_usage_defaults_to_a_worktree() -> None:
+    text = _start_skill()
+    assert _golden_fences(list(_I43_START_USAGE)) == [["project-start <issue-id> [in-place] [adr]"]]
+    assert "[worktree]" not in text, "project-start still advertises [worktree]"
+    for marker in RETRACTION_MARKERS:
+        for line in _I43_START_USAGE:
+            assert marker not in line.lower(), f"a Usage rule reads as retracted ({marker!r}): {line!r}"
+
+
+def test_i43_start_mode_words_live_only_in_pinned_lines() -> None:
+    """A contradicting line elsewhere — "with no flag, branch in place" — is caught by vocabulary.
+
+    `flag` is not in the pattern: the Jira transition lines use it for CLI flags.
+    """
+    text = _start_skill()
+    pinned = set(_I43_START_USAGE + _I43_START_1C + _I43_START_2B + (_I43_START_1B, _I43_START_2A))
+    stray = [l.strip() for l, in_fence in _outside_fences(text)
+             if not in_fence and re.search(r"in-place|in place|`worktree`|default is a worktree", l, re.I)
+             and l.strip() not in pinned]
+    assert not stray, "a branch-mode rule was stated outside the pinned lines:\n" + "\n".join(stray)
+
+
+def test_i43_start_checks_come_before_any_side_effect() -> None:
+    order = [h.split(".")[0] for h in _step_order(_start_skill())]
+    for earlier, later in (("**1-A", "**1-B"), ("**1-B", "**1-C"), ("**1-C", "**2-A"), ("**2-A", "**2-B"),
+                           ("**2-B", "**3")):
+        assert order.index(earlier) < order.index(later), f"{earlier} no longer precedes {later}: {order}"
+    checks = "\n".join(_I43_START_1C)
+    for effect in ("worktree add", "checkout -b", "add-progress", "create-branch", "create-worktree", "project-adr"):
+        assert effect not in checks, f"1-C performs a side effect: {effect}"
+
+
+def test_i43_start_fences_resolve_and_stop() -> None:
+    text = _start_skill()
+    fences = _i43_start_fences()
+    for banned in ("--git-common-dir", "$PWD"):
+        assert banned not in text, f"the main checkout is derived from {banned}"
+    for name, fence in fences.items():
+        lines = [l.strip() for l in fence.splitlines()]
+        assert tuple(lines[:3]) == _MAIN_RESOLVE, f"{name}: the main checkout is resolved another way"
+        for bad in ("exit 0", "|| true"):
+            assert bad not in fence, f"{name}: a fence can pass early ({bad})"
+    assert [l.strip() for l in fences["in-place"].splitlines() if "--show-toplevel" in l] == [
+        _MAIN_RESOLVE[1],
+        '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {',
+    ], "--show-toplevel may only ask about the first entry, or be the other side of the comparison"
+    for name in ("in-place", "base"):
+        assert fences[name].rstrip().endswith("exit 1; }"), f"the {name} gate no longer stops"
+    ignore = [shlex.split(l) for l in fences["ignore"].splitlines() if "check-ignore" in l and l.startswith("git")]
+    assert ignore == [["git", "-C", "$MAIN_CHECKOUT", "check-ignore", "-q", ".claude/worktrees/"]]
+    for banned in (">>", "info/exclude", ".gitignore", "tee", "config"):
+        assert banned not in fences["ignore"], f"the ignore check writes a file ({banned})"
+
+
+def test_i43_done_quotes_the_2b_sentence() -> None:
+    quote = "perform all work inside `$WORKTREE_PATH`"
+    assert quote in read_skill("skills/project-done/SKILL.md")
+    assert "After this, " + quote + "." in _I43_START_2B, "project-done quotes a sentence 2-B no longer says"
+
+
+@pytest.mark.parametrize("name", sorted(_I43_SCENARIOS))
+def test_i43_start_fences_behave(name: str, tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    failures = _I43_SCENARIOS[name](_i43_start_fences()[name], tmp_path)
+    assert not failures, f"the {name} fence:\n" + "\n".join(failures)
+
+
+_I43_MUTANT_CATCHERS = {
+    "in-place compares against the CWD": "in-place",
+    "in-place does not stop": "in-place",
+    "base asks the CWD": "base",
+    "base does not stop": "base",
+    "ignore without the slash": "ignore",
+    "ignore asks the CWD": "ignore",
+    "ignore writes .gitignore": "ignore",
+    "fallback adds from the CWD": "fallback",
+    "fallback tracks the undeclared base": "fallback",
+    "fallback prefers a stale local branch": "fallback",
+    "fallback keeps origin/": "fallback",
+    "fallback fetches without a refspec": "fallback",
+    "fallback fetches before the cached ref": "fallback",
+    "fallback prints a relative path": "fallback",
+    "fallback reports a failed add": "fallback",
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_I43_MUTANT_CATCHERS))
+def test_i43_scenarios_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    mutants = _i43_mutants(_i43_start_fences())
+    assert set(mutants) == set(_I43_MUTANT_CATCHERS)
+    kind, fence = mutants[mutant]
+    assert kind == _I43_MUTANT_CATCHERS[mutant]
+    assert _I43_SCENARIOS[kind](fence, tmp_path), f"no {kind} scenario notices the mutant {mutant!r}"
+
+
+def test_i43_fences_stop_where_the_main_checkout_is_unresolved(tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    tmp = tmp_path.resolve()
+    env = _i50_repos(tmp)
+    fences = _i43_start_fences()
+    fills = {
+        "base": {"<project default base>": "main"},
+        "fallback": {"<project>": "p", "<id>": "9", "<branch-name>": "feat/issue-9-y", "<base_branch, or empty>": ""},
+    }
+    for name, fence in fences.items():
+        r = _i43_sh(_i43_fill(fence, **fills.get(name, {})), tmp / "bare-wt", env)
+        assert r.returncode != 0 and r.stdout.strip() == "could not resolve the main checkout", (name, r.stdout)
+    assert not (tmp / "bare-wt" / ".claude").exists() and not (tmp / "bare.git" / ".claude").exists()
+
+    r = _i43_sh(_i43_fill(fences["fallback"], **fills["fallback"]), tmp / "super" / "sub", env)
+    assert r.returncode == 0, r.stderr
+    assert (tmp / "super" / "sub" / ".claude" / "worktrees" / "p-issue-9").is_dir(), "the submodule row moved"
+
+
+def test_i43_iterate_hands_the_checks_to_start() -> None:
+    text = _iterate_skill()
+    for gone in ("project-start <id> worktree", "check-ignore", "branch --show-current"):
+        assert gone not in text, f"iterate still carries {gone!r}; the Phase 3 checks live in project-start 1-C"
+    assert_whole_line(text, _I43_ITERATE_ANCHOR)
+    assert_whole_line(text, _G_REENTRY[-1])
+    assert "Phase 3 사전 확인" in _G_REENTRY[-1], "the re-entry line no longer names the checks the anchor defines"
+
+
+def test_i43_surfaces_name_the_new_default() -> None:
+    lines = [l.strip() for l in read_skill(CODEX_REFERENCE).splitlines()]
+    assert lines.count("$project-start <issue-id> [in-place] [adr]") == 1
+    assert not [l for l in lines if l.startswith("$project-start") and "[worktree]" in l]
+    assert_whole_line(read_skill("README.md"), _I43_README_ROW)
+    done = read_skill("skills/project-done/SKILL.md")
+    assert "after `project-start` in worktree mode (the default) every step runs with a linked worktree as CWD" in done
+    assert "project-start … worktree" not in done

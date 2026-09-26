@@ -46,7 +46,7 @@ project-done <issue-id> [adr]
 
 **1. Confirm plan file**
 
-`.task/plan/` is gitignored, so the plan and the report exist only in the main checkout — and after `project-start … worktree` every step runs with a linked worktree as CWD. Find the plan in the main checkout and print its absolute path:
+`.task/plan/` is gitignored, so the plan and the report exist only in the main checkout — and after `project-start` in worktree mode (the default) every step runs with a linked worktree as CWD. Find the plan in the main checkout and print its absolute path:
 
 ```bash
 <harness_cli> plan-file <issue-id>

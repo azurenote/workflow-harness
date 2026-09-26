@@ -7,7 +7,9 @@
 `.task/plan/` 과 `.claude/state.json` 은 gitignore 되어 **main checkout 에만** 있다.
 `harness_cli.py` 와 `project.py` 는 워크트리 CWD 에서 호출해도 이 둘을 main checkout 기준으로
 resolve 한다(`harness_core.git.main_worktree_root()`). 단, main work tree 가 없는 레이아웃에서는
-추측하지 않고 `MainWorktreeUnresolvedError` 로 멈춘다(아래 표).
+추측하지 않고 `MainWorktreeUnresolvedError` 로 멈춘다(아래 표). `create-worktree` 도 같은 기준이다 —
+상대 경로를 main checkout 아래로 풀고 main checkout 에서 분기하므로, 링크드 워크트리 CWD 에서 불러도
+워크트리가 그 안에 중첩되거나 그 feature 에서 갈라지지 않는다.
 
 단, `git add` / `git commit` / `git push` 는 **워크트리 CWD** 에서 실행해야
 현재 브랜치에 붙는다. `cd` 를 반복하지 말 것.
