@@ -31,14 +31,24 @@ Do not translate these artifacts to English while moving between phases unless t
 ## Usage
 
 ```
-project-iterate <task description> [worktree] [adr]
-project-iterate <id> [worktree] [adr]
+project-iterate <task description> [in-place] [adr]
+project-iterate <id> [in-place] [adr]
 ```
 
 - `<task description>`: task description (required for a new run)
 - `<id>`: an issue that already exists — re-entry, including an issue that has no plan yet (see below)
-- `[worktree]`: branch in worktree mode
+- `[in-place]`: branch in the main checkout itself; Phase 3 calls `project-start` without `worktree`
 - `[adr]`: include ADR writing, passed to both start and done
+
+Branching defaults to a worktree: unless `in-place` is given, Phase 3 calls `project-start <id> worktree`.
+The `worktree` token is accepted as an alias of that default and changes nothing; when it is given, say in one line that a worktree is already the default.
+
+Argument rules:
+- The first token decides the form: an issue number or a Jira key is the `<id>` form, and a flag (`in-place`, `worktree`, `adr`) as the first token is an error — stop and show the correct order.
+- The `<id>` form is the id followed only by flags; if any other token follows the id, stop and ask whether this is a new run or a re-entry.
+- A flag counts only as a standalone token at the end of `$ARGUMENTS`, in exact lowercase, in any order among the trailing tokens; the same word in the middle of the description is part of the description.
+- A trailing token that is a near spelling of a flag (`--in-place`, `inplace`, `In-place`, `--worktree`) is not guessed — ask the user which was meant.
+- `in-place` and `worktree` together are a conflict — stop and have the user pick one.
 
 ## Re-entry After Interruption
 
@@ -82,16 +92,84 @@ sys.exit(0 if plan.is_file() else "no plan: %s" % plan)
 - `<id>` 가 주어졌을 때 `plan-<id>.md` 가 없으면 초안이 있어도 Plan 완료로 판정하지 않는다 — 초안에는 이슈 번호가 없어서, 거기 있는 초안은 다른 어떤 작업의 것이어도 된다.
 - 브랜치/워크트리는 있는데 `plan-<id>.md` 가 없으면 멈추고 사용자에게 보고한다. `project-start` 는 플랜 없이는 브랜치를 만들지 않으므로(Step 1-A) 이 상태는 손으로 만든 브랜치나 옛 실행에서만 나온다. Phase 4 로 넘겨도 `project-done` 이 플랜이 없어 멈춘다.
 
+"Start" 상태에서는 Phase 4 를 브랜치가 이미 체크아웃된 자리에서 잇는다. 그 자리는 아래 순서로 정한다.
+
+1. 로컬 브랜치만 접두 표지 없이 나열한다:
+
+```bash
+git branch --list "*issue-<id>-*" "*/<id>-*" --format='%(refname:lstrip=2)'
+```
+
+- 로컬 0개(원격에만 있음): 멈추고 두 선택지를 명령과 함께 보인다 — 제자리 `git checkout <branch>`, 또는 워크트리 `git worktree add "<main checkout>/.claude/worktrees/<project>-issue-<id>" <branch>`. 어느 쪽도 자동으로 실행하지 않는다.
+- 로컬 2개 이상: 멈추고 보고한다.
+- 로컬 1개: 그 브랜치로 2를 잇는다.
+
+2. `git worktree list --porcelain` 레코드에서 그 브랜치가 체크아웃된 자리를 찾는다. `detached` 레코드는 그 브랜치를 rebase 하는 중일 때만 그 브랜치의 자리로 본다:
+
+```bash
+git worktree list --porcelain | python3 -c '
+import os, subprocess, sys
+branch, standard = "refs/heads/" + sys.argv[1], sys.argv[2]
+records = [dict((l.split(" ", 1) + [""])[:2] for l in r.splitlines())
+           for r in sys.stdin.read().strip().split("\n\n")]
+def rebasing(path):
+    for name in ("rebase-merge/head-name", "rebase-apply/head-name"):
+        rel = subprocess.run(["git", "-C", path, "rev-parse", "--git-path", name],
+                             capture_output=True, text=True).stdout.strip()
+        head = os.path.join(path, rel) if rel else ""
+        if head and os.path.isfile(head) and open(head).read().strip() == branch:
+            return True
+    return False
+hit = [(i, r) for i, r in enumerate(records) if r.get("branch") == branch]
+stuck = [r for r in records if "detached" in r
+         and (r["worktree"].endswith(standard) or rebasing(r["worktree"]))]
+if hit:
+    i, r = hit[0]
+    state = "prunable" if "prunable" in r else "missing" if not os.path.isdir(r["worktree"]) \
+        else "main" if i == 0 else "linked"
+    print(state, r["worktree"])
+elif stuck:
+    print("detached", stuck[0]["worktree"])
+else:
+    print("none")
+' '<branch>' '/.claude/worktrees/<project>-issue-<id>'
+```
+
+- `main`: main checkout 에서 Phase 4 를 돈다.
+- `linked`: 이 워크트리를 다른 세션이 쓰고 있을 수 있다고 먼저 알리고, 그 경로를 CWD 로 Phase 4 를 돈다.
+- `prunable`: 멈춘다. 디렉터리를 옮겼으면 `git worktree repair <새 경로>` 를, 지웠으면 `git worktree prune` 을 안내한다 — 이 상태에서는 checkout 도 워크트리 추가도 실패한다.
+- `missing`: 잠긴(locked) 워크트리의 디렉터리가 없다. 멈추고 `git worktree repair <새 경로>` 를 안내한다.
+- `detached`: 그 브랜치를 rebase 하는 중인 checkout(main checkout 포함)이거나, 표준 경로의 워크트리가 rebase·bisect 같은 작업 중이다. 멈추고 보고한다.
+- `none`: 어디에도 체크아웃돼 있지 않다. 1의 로컬 0개와 같이 두 선택지를 보이고 멈춘다.
+
+3. 이 경로에서는 브랜치도 워크트리도 새로 만들지 않고, 분기 방식 플래그도 쓰지 않는다. 적용 중인 분기 방식(플래그가 없으면 기본값인 워크트리)이 기존 자리와 다르면 기존 자리를 따른다고 알린다.
+
+"Issue" 상태의 Phase 3 은 새 실행과 같은 인자 규칙과 Phase 3 사전 확인을 따른다.
+
 ## Instructions
 
 This skill calls four global skills in sequence.
 For each phase's detailed procedure, follow that skill document (`~/.claude/skills/<name>/SKILL.md`).
 
+**Main checkout first.**
+Once the re-entry state is known, check the CWD before any phase runs.
+Phases 1, 2 and 3 run from the main checkout — a new run, and re-entry in the "Issue" or "Issue only" state; from any other CWD, stop and print the main checkout path.
+Re-entry in the "Start" state is exempt: Phase 4 runs where the branch is already checked out (`## Re-entry After Interruption`).
+The main checkout is the first entry of `git worktree list --porcelain`. Run this fence as one shell call — shell variables do not survive to the next call:
+
+```bash
+MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {
+  echo "not the main checkout — rerun from: $MAIN_CHECKOUT"; exit 1; }
+```
+
 ---
 
 ### Phase 1: Plan
 
-1. Extract the task description from `$ARGUMENTS` (excluding `worktree` and `adr` keywords).
+1. Read `$ARGUMENTS` by the argument rules in `## Usage`: the task description is what remains once the trailing flags are taken off.
    - In the "Issue only" re-entry state, the task description is the issue body instead. Read it with the read command in `project-issue` Step 1-L and judge it by that step's content rule; do not write a tracker command here.
    - If that read fails or the content rule rejects it (closed, another number, a pull request), stop and report it before writing any plan.
    - 기존 초안이 있으면 목록을 보여 주고, 사용자가 그중 하나를 이 이슈의 플랜으로 명시적으로 고를 때만 그 경로를 Phase 2 에 넘긴다. 고르지 않으면 이슈 본문으로 새 초안을 쓴다 — 초안 소유를 추측하지 않는다.
@@ -103,6 +181,7 @@ For each phase's detailed procedure, follow that skill document (`~/.claude/skil
    - review the plan according to `Review Profile` policy
 3. **User confirmation**: show the plan summary and get approval.
    - Confirm first that the Intent Summary and base branch are correct.
+   - Show the parsed task description and the parsed flags on separate lines — branch mode `worktree` (default) or `in-place`, and whether `adr` is set — so a misread argument is corrected at approval.
    - If changes are requested, apply them and confirm again.
    - On approval, continue to Phase 2.
 
@@ -121,13 +200,44 @@ For each phase's detailed procedure, follow that skill document (`~/.claude/skil
 
 ### Phase 3: Start + Implementation
 
-1. Run the `start` skill procedure with the issue ID from Phase 2:
-   - pass the `worktree` argument when applicable
+1. Before calling `project-start`, run these checks from the main checkout. Run each fence below as one shell call; `could not resolve the main checkout` from either fence means stop and report.
+   - If Phase 1 was skipped ("Issue" re-entry), show the parsed flags before any check or branch — branch mode `worktree` (default) or `in-place`, and whether `adr` is set.
+   - Read the plan's base the way `project-start` Step 1-B does: `<harness_cli> get-base <id>`, or without a harness_cli the leading `base_branch:` line of the plan's frontmatter in the main worktree.
+   - If the plan declares no base, or declares the project default base, the main checkout must be on the project default base; if it is not, stop and report.
+   - This base check holds in both modes: a branch cut while another session's in-place run has left the main checkout on a feature branch would stack on that feature. Stacking on purpose is what plan frontmatter `base_branch` is for.
+   - A declared base other than the project default base skips this base check only; `project-start` then branches from that base. Fill `<project default base>` below with the `base_branch` that Read Settings found in `skill-config.yaml`.
+
+```bash
+MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"
+[ "$CURRENT" = "<project default base>" ] || {
+  echo "main checkout is on '${CURRENT:-a detached HEAD}', not <project default base>"; exit 1; }
+```
+
+   - In worktree mode, check that the main checkout ignores `.claude/worktrees/`, whether or not the base check was skipped. The trailing slash is required: without it a directory-only pattern does not match.
+   - Read the printed `check-ignore rc=<n>` line. `rc=0`: nothing to say.
+   - `rc=1`: warn in one line and continue — an unignored worktree directory can be staged as a gitlink by `git add -A` in an in-place run; the line to add is `.claude/worktrees/` in `.gitignore` or `.git/info/exclude`.
+   - Any other `rc=`: warn that ignoring could not be decided, and continue.
+   - This check writes to no file and is not a gate.
+
+```bash
+MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+git -C "$MAIN_CHECKOUT" check-ignore -q .claude/worktrees/
+echo "check-ignore rc=$?"
+```
+
+2. Run the `start` skill procedure with the issue ID from Phase 2:
+   - by default, or with `worktree`: call `project-start <id> worktree [adr]`, and run Phase 4 with the new worktree as the CWD
+   - with `in-place`: call `project-start <id> [adr]`, which branches in the main checkout
    - pass the `adr` argument when applicable, to write an ADR before implementation
    - read the Intent Summary and Drift Guards
    - print the Task Cards checklist and start implementation
    - review the implementation according to `Review Profile` policy
-2. **User confirmation**: show the implementation result summary and get approval.
+3. **User confirmation**: show the implementation result summary and get approval.
    - If changes are requested, apply them and confirm again.
    - On approval, continue to Phase 4.
 
@@ -156,5 +266,5 @@ For each phase's detailed procedure, follow that skill document (`~/.claude/skil
 
 To resume after interruption, call the relevant skill directly:
 - From Phase 2: `project-issue <plan-path>`, or `project-issue <plan-path> --issue <id>` when the issue already exists. Always name the path: discovery without it can pick up a draft that belongs to other work.
-- From Phase 3: `project-start <id>`
+- From Phase 3: `project-start <id> worktree`, or `project-start <id>` for a run that was `in-place` — either one called from the main checkout. `project-iterate <id>` resumes the same point through the "Issue" state and also runs the Phase 3 checks.
 - From Phase 4: `project-done <id>`
