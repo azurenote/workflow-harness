@@ -3069,7 +3069,7 @@ _GOLDEN_DONE_FORGEJO = (
     'printf \'REPORT=%s\\nCREATE_FAILED=%s\\nPR_NUMBER=%s\\n\' "$REPORT" "${CREATE_FAILED:-0}" "$PR_NUMBER"',
     'printf \'%s\\n\' "$CREATED"',
     '```',
-    '- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 파일이 없으면 PR 을 만들지 않고 멈춘다. 이 확인은 4단계가 보고서를 어디에 썼는지 대신 정해 주지 않는다 — 작업 CWD 에 쓰인 보고서는 여기서 "없음" 으로 드러나고, 그때는 메인 체크아웃의 이 경로로 옮긴 뒤 다시 실행한다.',
+    '- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 해석 세 줄은 1단계 fallback 펜스와 바이트까지 같아서, 1단계가 fallback 으로 돌았다면 4단계가 쓴 `<report-path>` 가 여기서 그대로 나온다. `plan-file` 은 `--git-common-dir` 의 부모로 구하므로 분리된 git 디렉터리·서브모듈·bare 저장소에서는 다른 곳을 가리킬 수 있다 — 어느 경우든 파일이 없으면 PR 을 만들지 않고 멈추고, 4단계가 어디에 썼는지 확인한다.',
     '- **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합 시 Forgejo 가 `Closes` 로 이슈를 닫는 것은 실측 네 건에서 확인됐다. 네 건 모두 본문과 커밋 트레일러 양쪽에 줄이 있었으므로, 어느 쪽이 닫았는지는 **가르지 못했다** — 그래서 둘 다 둔다.',
     '- **서브-PR 의 본문에는 `Closes #<id>` 가 없어야 한다.** 보고서에 습관처럼 그 줄이 남아 있으면 지운 뒤 펜스를 실행한다 — 5단계가 서브-PR 에서 `Closes` 를 뺀 이유가 본문에서 되살아나지 않게 한다.',
     '- **`--base`/`--head` 를 명시한다.** GitHub 절과 같은 이유다 — 세 계층이 한 출처에 합의해야 한다. 저장소는 `-r <forgejo_repo>` 로만 준다. 이 리프 명령에는 `-R` 이 없다.',
@@ -4280,3 +4280,332 @@ def test_readme_iterate_row_names_the_worktree_default() -> None:
         "기본은 워크트리에서 분기하고, `in-place` 를 붙이면 main checkout 에서 제자리 분기한다. "
         "`project-iterate <id>` 는 기존 이슈에서 출발하며, 플랜이 없으면 이슈 본문으로 쓰고 연결 모드로 붙인다 |"
     ))
+
+
+# --------------------------------------------------------------------------
+# project-done main-checkout paths (#31)
+#
+# `.task/plan/` is gitignored, so the plan and the report exist only in the
+# main checkout; after `project-start … worktree` every step runs with a linked
+# worktree as CWD. Step 1 used to fall back to `ls .task/plan/plan-<id>.md`, so
+# a repo without a harness passed the start gate and then stopped at done, and
+# Step 4 wrote the report into the worktree. Step 1 now resolves the main
+# checkout once, prints absolute paths, and every later step takes them as
+# literals. The fallback fence is run for real below, against a linked
+# worktree, because a path that is absolute but wrong reads as correct.
+# --------------------------------------------------------------------------
+
+_DONE_STEP1 = "**1. Confirm plan file**"
+
+
+def _fences_of(section: str) -> list[str]:
+    fences, current, inside = [], [], False
+    for line in section.splitlines():
+        if line.strip().startswith("```"):
+            if inside:
+                fences.append("\n".join(current))
+                current = []
+            inside = not inside
+            continue
+        if inside:
+            current.append(line)
+    return fences
+
+
+def _done_step1_fallback() -> str:
+    """Step 1's fallback fence alone: the harness line's fence is not shell."""
+    fallback = [f for f in _fences_of(_done_step(_DONE_STEP1)) if "REPORT_ROOT=" in f]
+    assert len(fallback) == 1, f"Step 1 should hold exactly one fallback fence, found {len(fallback)}"
+    assert "<harness_cli>" not in fallback[0], "the harness line was folded into the fallback fence"
+    return fallback[0]
+
+
+def _resolve_block(commands: list[str]) -> list[str]:
+    roots = [i for i, c in enumerate(commands) if c.startswith("REPORT_ROOT=")]
+    assert len(roots) == 1, f"expected one REPORT_ROOT resolution, got {len(roots)}"
+    return commands[roots[0]:roots[0] + 3]
+
+
+def test_done_has_no_cwd_relative_plan_or_report_path() -> None:
+    text = _done_skill()
+    # A bare `.task/plan/` names the directory (Step 5 asks git about it on
+    # purpose); a file under it is only ever reached through the main checkout.
+    offenders = [
+        line.strip() for line in text.splitlines()
+        if re.search(r"(?<!\$REPORT_ROOT/)\.task/plan/(?=[^\s`\"'])", line)
+    ]
+    assert not offenders, f"a plan or report path is built relative to the CWD: {offenders}"
+    assert "ls .task/plan" not in text, "the CWD-relative plan check is back"
+    # The regex cannot see `cd .task/plan` or "the plan under .task/plan", so
+    # every line naming the directory is also pinned: a new one is a decision.
+    mentions = [line.strip()[:48] for line in text.splitlines() if ".task/plan" in line]
+    assert mentions == list(_DONE_TASK_PLAN_LINES), (
+        "the lines naming .task/plan changed; if the new one is main-rooted or names the "
+        f"directory on purpose, add it here:\n{mentions}"
+    )
+
+
+# Line starts, in document order: Step 1's prose and fence, Step 5's ignore
+# check (which asks about the work tree's own rules on purpose), and Step 7's
+# Forgejo fence and bullet.
+_DONE_TASK_PLAN_LINES = (
+    '`.task/plan/` is gitignored, so the plan and the',
+    'PLAN="$REPORT_ROOT/.task/plan/plan-<issue-id>.md',
+    'printf \'PLAN=%s\\nREPORT=%s\\n\' "$PLAN" "$REPORT_R',
+    '- **Ask git for the main checkout; never build t',
+    '`.task/plan/` must stay ignored; never stage it.',
+    'git check-ignore -q --no-index .task/plan/ && rc',
+    'echo ".task/plan/" >> .gitignore ;;',
+    '- **Keep the trailing slash.** It tells git the ',
+    '- **The append guards the last line.** A `.gitig',
+    'git restore --staged ".task/plan/" 2>/dev/null |',
+    '**Check that the commit actually moved.** When t',
+    'REPORT="$REPORT_ROOT/.task/plan/impl-report-<id>',
+    '- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore',
+)
+
+
+def test_done_step1_fallback_resolves_the_main_checkout_in_order() -> None:
+    commands = _logical_lines(_done_step1_fallback())
+    starts = ("case '<issue-id>' in", "printf '%s\\n' '<issue-id>' | LC_ALL=C grep -Eqx",
+              "REPORT_ROOT=", '[ -f "$PLAN" ]', "printf 'PLAN=%s\\nREPORT=%s\\n'")
+    positions = []
+    for start in starts:
+        hits = [i for i, c in enumerate(commands) if c.startswith(start)]
+        assert len(hits) == 1, f"expected one line starting {start!r}, got {len(hits)}"
+        positions.append(hits[0])
+    assert positions == sorted(positions), f"the fallback runs out of order: {list(zip(starts, positions))}"
+    for wrong in ("--show-toplevel", "--git-common-dir", "--path-format", "$PWD", "$(pwd)", "harness_core"):
+        offenders = [c for c in commands if wrong in c]
+        assert not offenders, f"the main checkout is derived from {wrong}, wrong in a worktree: {offenders}"
+
+
+def test_done_step1_and_forgejo_resolve_the_main_checkout_identically() -> None:
+    step1 = _resolve_block(_logical_lines(_done_step1_fallback()))
+    forgejo = _resolve_block(_logical_lines(_fenced(_done_forgejo())))
+    assert step1 == forgejo, f"Step 1 and Step 7 resolve the main checkout differently:\n{step1}\n{forgejo}"
+    assert step1[0] == 'REPORT_ROOT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"'
+    assert step1[2].endswith("exit 1; }"), "an unresolved main checkout no longer stops the fence"
+
+
+def test_done_step1_id_regex_is_the_code_definition() -> None:
+    from harness_core.config import ISSUE_ID_PATTERN
+
+    found = re.findall(r"grep -Eqx '([^']+)'", _done_step1_fallback())
+    assert found == [ISSUE_ID_PATTERN.pattern], f"Step 1's id regex drifted from config: {found}"
+
+
+def test_done_step1_states_how_the_paths_travel() -> None:
+    section = _done_step(_DONE_STEP1)
+    assert_rule(section, "**Pass both paths on as literals.**",
+                starts_with="- **Pass both paths on as literals.** Whichever form ran")
+    line = rule_line(section, "**Pass both paths on as literals.**")
+    for token in ("`<plan-path>`", "`<report-path>`", "Steps 1-B, 1-C, 2 and 4 and Step 7's GitHub path",
+                  "a shell variable does not survive into the next call"):
+        assert token in line, f"the literal-passing rule lost {token!r}"
+    assert_rule(section, "**Ask git for the main checkout; never build the path from the CWD.**",
+                starts_with="- **Ask git for the main checkout; never build the path from the CWD.**")
+    assert_rule(section, "**The id is refused twice before it becomes a file name.**",
+                starts_with="- **The id is refused twice before it becomes a file name.**")
+    assert_whole_line(section, "If the file does not exist, stop and tell the user.")
+    assert_whole_line(section, "<harness_cli> plan-file <issue-id>")
+    assert "substitute those absolute paths" in line, "the literal-passing rule no longer says the paths are absolute"
+
+
+def test_done_later_steps_read_the_step1_paths() -> None:
+    for heading, token in (
+        ("**1-B.", "- Fallback without harness: inspect leading frontmatter in `<plan-path>` directly"),
+        ("**1-C.", "Read the `## Review Profile` section of `<plan-path>`."),
+        ("**2. Verify Definition of Done**", "Check each DoD item in `<plan-path>`."),
+        ("**4. Write impl-report**", "Create `<report-path>` — Step 1's absolute path in the main checkout — in Korean. "
+                                     "A report written relative to the CWD lands in the linked worktree"),
+    ):
+        lines = [l.strip() for l in _done_step(heading).splitlines()]
+        assert sum(l.startswith(token) for l in lines) == 1, f"{heading} no longer reads the Step 1 path: {token!r}"
+    guard = rule_line(_done_skill(), "The completion report generated by this skill")
+    assert "`<report-path>` from Step 1" in guard, "the language guard names a CWD-relative report path"
+
+
+def test_done_github_pr_body_is_the_report_path() -> None:
+    github = "\n".join(_stripped_lines(_done_skill(), "### GitHub (`issue_tracker: github`)", "### Jira"))
+    bodies = re.findall(r"--body-file (\S+)", github)
+    assert bodies == ['"<report-path>"'] * 4, f"the GitHub PR body is not Step 1's report path: {bodies}"
+
+
+def test_done_commit_check_explains_why_the_report_is_not_staged() -> None:
+    line = rule_line(_done_step("**5. Commit source changes**"), "**Check that the commit actually moved.**")
+    assert "is in `.gitignore`" not in line, "the .gitignore string check is back as the explanation"
+    assert "git ignores `.task/plan/` (the check above asked it)" in line
+    assert "from a linked worktree the report is not even inside the work tree" in line
+
+
+# Rows: (name, cwd, issue id, expected outcome). "ok" means the fence printed
+# exactly the main checkout's plan and report paths.
+_STEP1_ROWS = (
+    ("worktree", "wt", "7", "ok"),
+    ("worktree subdir", "wt/sub/dir", "7", "ok"),
+    ("main", "main", "7", "ok"),
+    ("underscore key", "wt", "AB_C-7", "ok"),
+    ("missing", "wt", "8", "stop"),
+    ("leading zero", "wt", "07", "stop"),
+    ("multi-line id", "wt", "7\n8", "stop"),
+    ("traversal", "wt", "x/../../plan/plan-7", "stop"),
+    ("no repo", "norepo", "7", "unresolved"),
+    # `git worktree list` (2.54) names the git dir as the main worktree here,
+    # so the fence finds no plan and stops (a known limit). A git that names
+    # the work tree instead may print its plan; anything else is wrong.
+    ("separate git dir", "sep-wt", "7", "stop or sep"),
+)
+
+
+def test_done_step1_rows_are_all_present() -> None:
+    names = [row[0] for row in _STEP1_ROWS]
+    assert names == [
+        "worktree", "worktree subdir", "main", "underscore key", "missing",
+        "leading zero", "multi-line id", "traversal", "no repo", "separate git dir",
+    ], f"a Step 1 behaviour row was dropped or renamed: {names}"
+
+
+def _step1_repos(tmp: Path) -> dict:
+    env = {
+        **_isolated_git_env(tmp),
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+
+    git("init", "-q", "main", cwd=tmp)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=tmp / "main")
+    git("worktree", "add", "-q", str(tmp / "wt"), cwd=tmp / "main")
+    plans = tmp / "main" / ".task" / "plan"
+    plans.mkdir(parents=True)
+    for name in ("plan-7.md", "plan-07.md", "plan-7\n8.md", "plan-AB_C-7.md"):
+        (plans / name).write_text("# Plan: t\n", encoding="utf-8")
+    (plans / "plan-x").mkdir()
+    (tmp / "wt" / "sub" / "dir").mkdir(parents=True)
+    (tmp / "norepo").mkdir()
+    git("init", "-q", f"--separate-git-dir={tmp / 'sep-git'}", "sep", cwd=tmp)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=tmp / "sep")
+    git("worktree", "add", "-q", str(tmp / "sep-wt"), cwd=tmp / "sep")
+    (tmp / "sep" / ".task" / "plan").mkdir(parents=True)
+    (tmp / "sep" / ".task" / "plan" / "plan-7.md").write_text("# Plan: t\n", encoding="utf-8")
+    return env
+
+
+def _step1_failures(fence: str, shell: list[str], tmp: Path) -> list[str]:
+    """Run the fence through every row; describe each row it gets wrong."""
+    tmp = tmp.resolve()
+    tmp.mkdir(parents=True, exist_ok=True)
+    env = _step1_repos(tmp)
+    plans = tmp / "main" / ".task" / "plan"
+    failures = []
+    for name, cwd, issue_id, expected in _STEP1_ROWS:
+        result = subprocess.run(
+            [*shell, "-c", fence.replace("<issue-id>", issue_id)],
+            cwd=tmp / cwd, env=env, capture_output=True, text=True,
+        )
+        out = result.stdout + result.stderr
+        if "syntax error" in out:
+            failures.append(f"{name} (syntax error: {out.strip()})")
+            continue
+        if expected == "stop or sep" and result.returncode == 0:
+            sep = tmp / "sep" / ".task" / "plan"
+            values = [l.split("=", 1)[1] for l in result.stdout.splitlines() if "=" in l]
+            if [Path(v).resolve() for v in values] != [(sep / "plan-7.md").resolve(), (sep / "impl-report-7.md").resolve()]:
+                failures.append(f"{name} (printed paths outside the work tree: {result.stdout!r})")
+            continue
+        if expected == "ok":
+            stem = "plan-%s.md" % issue_id
+            lines = result.stdout.splitlines()
+            keys = [l.split("=", 1)[0] for l in lines]
+            if result.returncode != 0 or keys != ["PLAN", "REPORT"]:
+                failures.append(f"{name} (rc {result.returncode}, stdout {result.stdout!r}, stderr {result.stderr!r})")
+                continue
+            values = [l.split("=", 1)[1] for l in lines]
+            if not all(os.path.isabs(v) for v in values):
+                failures.append(f"{name} (relative path printed: {values})")
+            elif [Path(v).resolve() for v in values] != [(plans / stem).resolve(), (plans / ("impl-report-%s.md" % issue_id)).resolve()]:
+                failures.append(f"{name} (not the main checkout's paths: {values})")
+            if (tmp / "wt" / ".task").exists():
+                failures.append(f"{name} (created .task/ inside the worktree)")
+        else:
+            if result.returncode == 0 or "PLAN=" in result.stdout:
+                failures.append(f"{name} (did not stop: rc {result.returncode}, stdout {result.stdout!r})")
+            elif expected == "unresolved" and "could not resolve the main checkout" not in out:
+                failures.append(f"{name} (stopped without naming the unresolved checkout: {out!r})")
+    return failures
+
+
+def test_done_step1_fallback_behaves_in_every_row(tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    fence = _done_step1_fallback()
+    for n, shell in enumerate(_shells()):
+        failures = _step1_failures(fence, shell, tmp_path / f"shell-{n}")
+        assert not failures, f"Step 1's fallback under {' '.join(shell)}:\n" + "\n".join(failures)
+
+
+def _step1_mutants(fence: str) -> dict:
+    """Each way of getting the fallback wrong that a regression could introduce."""
+    lines = fence.splitlines()
+    root = next(l for l in lines if l.startswith("REPORT_ROOT="))
+    guard = [l for l in lines if l.startswith('[ -n "$REPORT_ROOT" ]') or l.strip().startswith('echo "could not resolve')]
+    check = next(l for l in lines if l.startswith('[ -f "$PLAN" ]'))
+    printed = next(l for l in lines if l.startswith("printf 'PLAN="))
+    case = "\n".join(lines[:3])
+    grep = "\n".join(lines[3:5])
+    assert case.startswith("case ") and case.endswith("esac"), "the case block moved; update the mutant"
+    assert "grep -Eqx" in grep, "the grep check moved; update the mutant"
+    mutants = {
+        "show-toplevel": fence.replace(root, 'REPORT_ROOT="$(git rev-parse --show-toplevel)"'),
+        "pwd": fence.replace(root, 'REPORT_ROOT="$PWD"'),
+        "every worktree": fence.replace("'1s/^worktree //p'", "'s/^worktree //p'"),
+        "no guard": fence.replace("\n".join(guard) + "\n", ""),
+        "no plan check": fence.replace(check + "\n", ""),
+        "printed before check": fence.replace(check + "\n", "").replace(printed, printed + "\n" + check),
+        "no case": fence.replace(case + "\n", ""),
+        "no grep": fence.replace(grep + "\n", ""),
+        "no -x": fence.replace("grep -Eqx", "grep -Eq"),
+        "case refuses underscore": fence.replace("*[!A-Za-z0-9_-]*", "*[!A-Za-z0-9-]*"),
+        "no id check": fence.replace(case + "\n", "").replace(grep + "\n", ""),
+        "relative report": fence.replace('"$REPORT_ROOT/.task/plan/impl-report-', '".task/plan/impl-report-'),
+        "report beside the plan dir": fence.replace('"$REPORT_ROOT/.task/plan/impl-report-', '"$REPORT_ROOT/.task/impl-report-'),
+    }
+    for name, mutant in mutants.items():
+        assert mutant != fence, f"mutant {name!r} did not change the fence"
+    return mutants
+
+
+# Each mutant and the row that exists to catch it.
+_STEP1_MUTANT_CATCHERS = {
+    "show-toplevel": "worktree",
+    "pwd": "worktree",
+    "every worktree": "worktree",
+    "no guard": "no repo",
+    "no plan check": "missing",
+    "printed before check": "missing",
+    "no case": "multi-line id",
+    "no grep": "leading zero",
+    "no -x": "leading zero",
+    "case refuses underscore": "underscore key",
+    "no id check": "traversal",
+    "relative report": "worktree",
+    "report beside the plan dir": "worktree",
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_STEP1_MUTANT_CATCHERS))
+def test_done_step1_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
+    """Caught by the row meant for it, and not by a syntax error in every row."""
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    mutants = _step1_mutants(_done_step1_fallback())
+    assert set(mutants) == set(_STEP1_MUTANT_CATCHERS)
+    failures = _step1_failures(mutants[mutant], ["sh"], tmp_path)
+    row = _STEP1_MUTANT_CATCHERS[mutant]
+    assert any(f.startswith(f"{row} (") for f in failures), (
+        f"the {row!r} row does not reject the {mutant!r} mutant: {failures}"
+    )
+    assert not any("syntax error" in f for f in failures), f"the {mutant!r} mutant does not parse: {failures}"
