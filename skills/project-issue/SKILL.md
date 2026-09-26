@@ -227,8 +227,16 @@ path resolves to the main worktree root.
      jira issue comment add "<id>" --template '<plan-file>' --no-input
      ```
 
-   - **Forgejo** — `~/.claude/skills/SKILL-CONFIG.md` gives comments no `fj` contract yet. Post it
-     through the web UI by hand, or report it as 미반영.
+   - **Forgejo** — comments are part of the `fj` write contract in `~/.claude/skills/SKILL-CONFIG.md`.
+     The repository goes in the issue argument: this command takes no `-r`, and its `-R` names a git
+     remote, not `owner/repo`. Success prints nothing, so read it back with the `comments` surface and
+     look for the plan's title line, quoted as `> # Plan: <title>`; if it is not there, report the
+     comment as 미반영 (`project-done` Step 9 applies the same read-back to its own comment):
+
+     ```bash
+     fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file '<plan-file>'
+     fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments > "<log-file>" 2>&1
+     ```
 
 **2. User Confirmation**
 
@@ -543,5 +551,5 @@ written relative to the CWD does not exist from a linked worktree, where `.task/
 In link mode the output differs in three places:
 
 - metadata is what the Step 1-L read returned, as the tracker holds it — link mode inferred nothing, so there is no requested value to compare with. Where the read carries no field for a value (project fields on GitHub's `gh issue view`, and the type on a gh that does not return `issueType`; everything but labels on Forgejo), say so rather than guessing it.
-- the comment result from Step 1-L: posted (with where it can be seen), declined, skipped for a recovery run, or 미반영 on Forgejo. For every result but posted, include the Step 1-L command that would post `plan-<id>.md` later.
+- the comment result from Step 1-L: posted (with where it can be seen), declined, skipped for a recovery run, or 미반영 when the posted comment could not be read back. For every result but posted, include the Step 1-L command that would post `plan-<id>.md` later.
 - the issue line is the existing issue, and it says "linked", not "created".
