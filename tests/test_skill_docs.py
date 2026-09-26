@@ -7372,10 +7372,17 @@ def test_i59_readme_row_drops_the_per_phase_confirmation() -> None:
 _I53_STEP3 = (
     "The plan directory is the main checkout's, wherever this skill runs: `.task/plan/` is gitignored and exists only there, and `project-issue`, `project-start` and `project-done` look for drafts and plans nowhere else. So the fence asks git for the main checkout first — the four resolving lines are the canonical main-checkout block kept in the shared worktree reference — and builds every path from it. A path built from the CWD puts the draft inside a linked worktree, where no later skill finds it. In a layout with no main work tree (a separate-git-dir or bare repository) the fence stops rather than write the draft anywhere else.",
     "The ignore check is the same fence as `project-done` Step 5, which says why each part of it is there: ask git, not `.gitignore`'s text, and append only on exit 1. **Run this fence as one shell invocation** — later lines read `MAIN_CHECKOUT`, `SLUG` and `PLAN_FILE` from earlier ones. Any exit other than 0 or 1 means git could not answer, and the fence then exits 1: stop and report it before writing any plan.",
+    '- **The slug is checked before anything else.** It becomes a file name in the plan directory: a `/` would put the draft in another directory, and with `..` outside the plan directory, and uppercase, spaces, dots, quotes or non-ASCII letters make a name `project-issue` does not take as a draft. So the first lines refuse a slug outside the rule above with one `reject (slug)` line and exit 1, before the main checkout is resolved, the directory made or `.gitignore` touched; choose a slug that fits and run the fence again. The value sits in single quotes so `$(…)`, backticks and `"` reach the check as written. Never put a `\'` in a slug: it ends the quoting, and what follows it runs as shell before the check sees the value — the check cannot refuse it. The allowed characters are spelled out rather than written `a-z`, because a range in a shell pattern follows the locale — bash 3.2 under a UTF-8 locale lets `[a-z]` take `B`.',
     '- **The check runs in the main checkout, inside a subshell.** The question is whether the directory the plan goes to is ignored, so git is asked where that directory is, and an exit-1 append lands in the main checkout\'s `.gitignore` — from a linked worktree the check would otherwise read the feature branch\'s rules and edit a tracked file on that branch. The `cd` sits in a subshell so the lines of the check stay byte for byte those of `project-done` Step 5 and the session\'s working directory does not move; this is not a second exception to the "do not repeat `cd`" rule in the shared worktree reference.',
     '- **An exit-1 answer edits (or creates) the main checkout\'s `.gitignore`**, whichever checkout this skill runs from, and leaves that change uncommitted there. The fence prints nothing for it, so after it runs, `git -C "<main checkout>" status --porcelain -- .gitignore` shows whether it happened; include that in the output.',
     '- **Write the draft to the printed path.** The last line is `PLAN_FILE=<absolute path>`; shell variables do not survive to the next call, and a relative path names a different file from a linked worktree.',
     '```bash',
+    "SLUG='<convert-task-description-to-3-5-word-english-slug>'",
+    'case "$SLUG" in',
+    '  *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|-*|*-|*--*|*-*-*-*-*-*) echo "reject (slug): not 3-5 lowercase words joined by hyphens" >&2; exit 1 ;;',
+    '  *-*-*) ;;',
+    '  *) echo "reject (slug): not 3-5 lowercase words joined by hyphens" >&2; exit 1 ;;',
+    'esac',
     'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
     'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
     '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
@@ -7391,7 +7398,6 @@ _I53_STEP3 = (
     '  *) echo "stop: git check-ignore exited $rc; .gitignore not touched" >&2; exit 1 ;;',
     'esac',
     ') || exit 1',
-    'SLUG="<convert-task-description-to-3-5-word-english-slug>"',
     'PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}.md"',
     '# Add a suffix on collision',
     'N=2',
@@ -7405,7 +7411,8 @@ _I53_STEP3 = (
 
 _I53_HEADING = "**3. Create plan-draft-<slug>.md**"
 _I53_SLUG_PLACEHOLDER = "<convert-task-description-to-3-5-word-english-slug>"
-_I53_DRAFT = "plan-draft-x.md"
+_I53_SLUG = "abc-def-ghi"  # #67: the fence refuses a slug that is not 3-5 words
+_I53_DRAFT = f"plan-draft-{_I53_SLUG}.md"
 _I53_ROWS = (
     "main", "worktree", "worktree subdir", "collision", "plan dir is a file",
     "check-ignore fails", "no repository", "separate git dir",
@@ -7484,7 +7491,7 @@ def _i53_repos(tmp: Path, row: str) -> dict:
 
 def _i53_run(fence: str, shell: list[str], cwd: Path, env: dict) -> tuple[subprocess.CompletedProcess, dict]:
     assert fence.count(_I53_SLUG_PLACEHOLDER) == 1, "the slug placeholder is not in the fence exactly once"
-    script = fence.replace(_I53_SLUG_PLACEHOLDER, "x") + "\nprintf 'PWD=%s\\n' \"$(pwd -P)\"\n"
+    script = fence.replace(_I53_SLUG_PLACEHOLDER, _I53_SLUG) + "\nprintf 'PWD=%s\\n' \"$(pwd -P)\"\n"
     result = subprocess.run([*shell, "-c", script], cwd=cwd, env=env, capture_output=True, text=True)
     values: dict = {}
     for line in result.stdout.splitlines():
@@ -7550,7 +7557,8 @@ def _i53_row_failures(fence: str, shell: list[str], tmp: Path, row: str) -> list
 
     if row == "collision":
         plans.mkdir(parents=True)
-        for seeded, want in (("plan-draft-x.md", "plan-draft-x-2.md"), ("plan-draft-x-2.md", "plan-draft-x-3.md")):
+        stem = f"plan-draft-{_I53_SLUG}"
+        for seeded, want in ((f"{stem}.md", f"{stem}-2.md"), (f"{stem}-2.md", f"{stem}-3.md")):
             (plans / seeded).write_text("# Plan: a\n")
             result, values, seen = run()
             path = plan_file(values)
@@ -8668,7 +8676,7 @@ _I37_RC_PROSE_SNAPSHOT = {
         "**0**": 1, "**2**": 1, "**3**": 1, "**4**": 1, "exit 0": 1, "exit 3": 1,
         "exit 4": 1, "exit 5": 1, "exits 1": 1, "exits 2": 1,
     },
-    "skills/project-plan/SKILL.md": {"exit 1": 1, "exits 1": 1},
+    "skills/project-plan/SKILL.md": {"exit 1": 2, "exits 1": 1},  # #67: the slug check's shell exit, not a harness rc
 }
 
 
@@ -8762,3 +8770,275 @@ def test_i37_rc_prose_scan_sees_a_new_number(tmp_path: Path) -> None:
     plan.write_text(plan.read_text(encoding="utf-8") + "\nThe helper exits 3 when it gives up.\n", encoding="utf-8")
     assert _i37_rc_prose(tmp_path) != _I37_RC_PROSE_SNAPSHOT
     assert _i37_rc_prose(tmp_path)["skills/project-plan/SKILL.md"]["exits 3"] == 1
+
+
+# --------------------------------------------------------------------------
+# #67 — project-plan Step 3 refuses a slug outside the rule before anything
+#
+# The session fills the slug, and the fence used it as a file name without a
+# look: `/` or `..` pointed outside the plan directory, and uppercase, spaces
+# or non-ASCII letters made a draft `project-issue` does not take. One `case`
+# now runs first and refuses such a slug with one stderr line and exit 1,
+# before the main checkout is resolved or anything is made. There is no
+# `grep`: every `grep -Eqx` in the skills is read as a copy of the id pattern
+# (test_doc_id_pattern_is_the_code_definition), and a glob says the whole
+# rule. The characters are spelled out because a range follows the locale.
+#
+# Reject rows run first in one repository per shell, each followed by a look
+# for side effects, so a leak fails at the row that leaked; the accept rows
+# come after, because they make the plan directory.
+# --------------------------------------------------------------------------
+
+_I67_README_ROW = "| `project-plan` | 플랜 문서 작성(frontmatter 선언 포함). 초안은 main checkout 의 `.task/plan/` 에 생기고(어느 CWD 에서 불러도 같다), 3단계가 그 절대 경로를 `PLAN_FILE=` 로 출력한다. 규칙(소문자·숫자로 된 3-5 단어, 하이픈 구분)을 벗어난 slug 는 아무것도 만들기 전에 거부한다 |"
+_I67_SLUG_RULE = "- Generate the slug from the task description automatically (3-5 lowercase English words, hyphen-separated), in ASCII letters and digits only. The fence below refuses any other slug and never rewrites one."
+_I67_REJECT = "reject (slug): not 3-5 lowercase words joined by hyphens"
+_I67_MARKER = "{marker}"
+
+# name -> (value, CWD, kind). Kinds: "reject" (the check's own refusal),
+# "break" (one `'` ends the quoting in a syntax error, so only "nothing
+# happened" is asked; a pair re-opens it and runs what lies between, which no
+# check can refuse — the prose says never to put one in a slug),
+# "accept", and "unresolved" (a valid slug outside a repository stops at the
+# canonical block — the pair of "norepo two words", which shows the order).
+_I67_ROWS = {
+    "empty": ("", "wt", "reject"),
+    "placeholder": (_I53_SLUG_PLACEHOLDER, "wt", "reject"),
+    "slash": ("abc/def-ghi-jkl", "wt", "reject"),
+    "dot-dot": ("../../abc-def-ghi", "wt", "reject"),
+    "uppercase": ("Abc-def-ghi", "wt", "reject"),
+    "space": ("abc def-ghi-jkl", "wt", "reject"),
+    "hangul": ("한글-슬러그-이름", "wt", "reject"),
+    "underscore": ("abc_def-ghi-jkl", "wt", "reject"),
+    "dot": ("abc.def-ghi-jkl", "wt", "reject"),
+    "dollar": ("abc$def-ghi-jkl", "wt", "reject"),
+    "double quote": ('abc-"def"-ghi', "wt", "reject"),
+    "command substitution": ("$(touch " + _I67_MARKER + ")-def-ghi", "wt", "reject"),
+    "multi-line": ("abc-def-ghi\nxyz", "wt", "reject"),
+    "two words": ("abc-def", "wt", "reject"),
+    "six words": ("a-b-c-d-e-f", "wt", "reject"),
+    "empty word": ("a--b-c-d", "wt", "reject"),
+    "leading hyphen": ("-abc-def-ghi", "wt", "reject"),
+    "trailing hyphen": ("abc-def-ghi-", "wt", "reject"),
+    "non-ascii letter": ("abc-dÜf-ghi", "wt", "reject"),
+    "norepo two words": ("abc-def", "norepo", "reject"),
+    "single quote": ("abc-d'ef-ghi", "wt", "break"),
+    "three words": ("abc-def-ghi", "wt", "accept"),
+    "five words": ("a-b-c-d-e", "wt", "accept"),
+    "digits": ("oauth2-token-refresh", "wt", "accept"),
+    "every allowed character": ("abcdefghijklm-nopqrstuvwxyz-0123456789", "wt", "accept"),
+    "norepo three words": ("abc-def-ghi", "norepo", "unresolved"),
+}
+_I67_SHELLS = (("sh",), ("sh", "-e"), ("dash",), ("dash", "-e"), ("bash",), ("zsh",))
+
+
+def _i67_utf8_locale() -> str | None:
+    """en_US.UTF-8 when the host has it, else the first UTF-8 locale `locale -a` lists."""
+    try:
+        names = subprocess.run(["locale", "-a"], capture_output=True, text=True).stdout.split()
+    except OSError:
+        return None
+    utf8 = [n for n in names if n.lower().replace("-", "").endswith(".utf8")]
+    for want in ("en_US.UTF-8", "en_US.utf8", "C.UTF-8", "C.utf8"):
+        if want in utf8:
+            return want
+    return utf8[0] if utf8 else None
+
+
+def _i67_side_effects(tmp: Path, env: dict) -> list[str]:
+    found = []
+    for where in ("main/.task", "main/.gitignore", "wt/.task", "norepo/.task", "marker"):
+        if (tmp / where).exists():
+            found.append(f"{where} exists")
+    status = _i53_worktree_clean(tmp, env)
+    if status:
+        found.append(f"the linked worktree changed: {status!r}")
+    return found
+
+
+def _i67_row(fence: str, shell: list[str], tmp: Path, env: dict, row: str, locale: str = "C") -> list[str]:
+    """Run one row against repositories `_i53_repos` made; describe what it got wrong."""
+    value, cwd, kind = _I67_ROWS[row]
+    value = value.replace(_I67_MARKER, str(tmp / "marker"))
+    assert fence.count(_I53_SLUG_PLACEHOLDER) == 1, "the slug placeholder is not in the fence exactly once"
+    script = fence.replace(_I53_SLUG_PLACEHOLDER, value)
+    result = subprocess.run([*shell, "-c", script], cwd=tmp / cwd, env={**env, "LC_ALL": locale},
+                            capture_output=True, text=True)
+    where = f"{row} ({' '.join(shell)}, LC_ALL={locale})"
+    seen = f"exit {result.returncode}, stdout {result.stdout!r}, stderr {result.stderr!r}"
+    plans = [l.partition("=")[2] for l in result.stdout.splitlines() if l.startswith("PLAN_FILE=")]
+    failures = []
+    if kind == "accept":
+        want = tmp / "main" / ".task" / "plan" / f"plan-draft-{value}.md"
+        if result.returncode != 0 or len(plans) != 1 or not os.path.isabs(plans[0]) or Path(plans[0]).resolve() != want:
+            return [f"{where}: expected PLAN_FILE={want}: {seen}"]
+        from harness_core.config import is_draft_plan
+        for name in (want.name, want.name.replace(".md", "-2.md")):
+            if not is_draft_plan(name):
+                failures.append(f"{where}: {name} is not a name project-issue takes as a draft")
+        return failures
+    if kind == "unresolved":
+        if result.returncode == 0 or plans or "could not resolve the main checkout" not in result.stdout \
+                or "reject (slug)" in result.stderr:
+            failures.append(f"{where}: a valid slug outside a repository did not stop at the canonical block: {seen}")
+        if (tmp / cwd / ".task").exists():
+            failures.append(f"{where}: made .task/ in the CWD")
+        return failures  # the accept rows before it made the main checkout's plan directory
+    if kind == "break":
+        if result.returncode == 0 or plans:
+            failures.append(f"{where}: a slug with ' did not stop: {seen}")
+    elif result.returncode != 1 or plans or result.stdout or result.stderr != _I67_REJECT + "\n":
+        failures.append(f"{where}: expected exit 1 and only {_I67_REJECT!r} on stderr: {seen}")
+    failures += [f"{where}: {e}" for e in _i67_side_effects(tmp, env)]
+    return failures
+
+
+def _i67_repos(tmp: Path) -> dict:
+    tmp = tmp.resolve()
+    tmp.mkdir(parents=True, exist_ok=True)
+    return _i53_repos(tmp, "main")
+
+
+def test_i67_readme_row_says_where_the_draft_goes() -> None:
+    assert_whole_line(read_skill("README.md"), _I67_README_ROW)
+
+
+def test_i67_slug_rule_names_the_refusal() -> None:
+    assert_whole_line(read_skill("skills/project-plan/SKILL.md"), _I67_SLUG_RULE)
+
+
+def test_i67_rows_are_all_present() -> None:
+    kinds = [k for _, _, k in _I67_ROWS.values()]
+    assert kinds == sorted(kinds, key=["reject", "break", "accept", "unresolved"].index), (
+        "reject rows must run before the accept rows make the plan directory"
+    )
+    assert set(_I67_ROWS) == {
+        "empty", "placeholder", "slash", "dot-dot", "uppercase", "space", "hangul", "underscore", "dot", "dollar",
+        "double quote", "command substitution", "multi-line", "two words", "six words", "empty word",
+        "leading hyphen", "trailing hyphen", "non-ascii letter", "norepo two words", "single quote",
+        "three words", "five words", "digits", "every allowed character", "norepo three words",
+    }, "a slug row was dropped or renamed"
+
+
+@pytest.mark.parametrize("shell", _I67_SHELLS, ids=" ".join)
+def test_i67_slug_rows_behave_in_every_shell(shell: tuple, tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    if not shutil.which(shell[0]):
+        pytest.skip(f"{shell[0]} is not installed on this host")
+    fence = _i53_fence()
+    tmp = tmp_path.resolve()
+    env = _i67_repos(tmp)
+    failures = []
+    for row in _I67_ROWS:
+        failures += _i67_row(fence, list(shell), tmp, env, row)
+    assert not failures, "project-plan Step 3 slug check:\n" + "\n".join(failures)
+
+
+@pytest.mark.parametrize("shell", ("sh", "bash"))
+def test_i67_utf8_locale_does_not_widen_the_characters(shell: str, tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    locale = _i67_utf8_locale()
+    if locale is None:
+        pytest.skip("no UTF-8 locale on this host (`locale -a`)")
+    fence = _i53_fence()
+    tmp = tmp_path.resolve()
+    env = _i67_repos(tmp)
+    failures = []
+    for row in ("uppercase", "non-ascii letter", "hangul"):
+        failures += _i67_row(fence, [shell], tmp, env, row, locale)
+    assert not failures, "project-plan Step 3 slug check:\n" + "\n".join(failures)
+
+
+def _i67_lax_range(shell: str, locale: str, tmp: Path) -> bool:
+    """Does this shell's `[a-z]` take `A`, the catcher row's letter, under this locale?
+
+    bash 3.2 does; bash 5 (globasciiranges) and dash do not.
+    """
+    probe = 'case A in [a-z]) echo lax ;; esac'
+    return subprocess.run([shell, "-c", probe], env={**_i50_env(tmp), "LC_ALL": locale},
+                          capture_output=True, text=True).stdout.strip() == "lax"
+
+
+def _i67_move_check(fence: str, after: str) -> str:
+    """Move the six slug-check lines to just after the one line starting with `after`."""
+    lines = fence.splitlines()
+    block, rest = lines[:6], lines[6:]
+    assert block[0].startswith("SLUG=") and block[-1] == "esac", f"the slug check changed shape: {block}"
+    hits = [k for k, l in enumerate(rest) if l.startswith(after)]
+    assert len(hits) == 1, f"expected one line starting {after!r}, found {len(hits)}"
+    k = hits[0] + 1
+    return "\n".join(rest[:k] + block + rest[k:])
+
+
+def _i67_mutants(fence: str) -> dict[str, str]:
+    lines = fence.splitlines()
+    first, second, third = lines[2], lines[3], lines[4]
+    assert second.strip() == "*-*-*) ;;", f"the accepting arm changed: {second!r}"
+
+    def edit(line: str, old: str, new: str) -> str:
+        assert line.count(old) == 1, f"expected one {old!r} in {line!r}"
+        return fence.replace(line, line.replace(old, new), 1)
+
+    mutants = {
+        "range glob": edit(first, "abcdefghijklmnopqrstuvwxyz0123456789", "a-z0-9"),
+        "leading hyphen allowed": edit(first, "]*|-*|", "]*|"),
+        "trailing hyphen allowed": edit(first, "|*-|*--*|", "|*--*|"),
+        "empty word allowed": edit(first, "|*--*|", "|"),
+        "six words allowed": edit(first, "|*-*-*-*-*-*)", ")"),
+        "two words allowed": edit(second, "*-*-*)", "*-*)"),
+        "first arm does not exit": edit(first, ">&2; exit 1 ;;", ">&2 ;;"),
+        "third arm does not exit": edit(third, ">&2; exit 1 ;;", ">&2 ;;"),
+        "first arm on stdout": edit(first, " >&2;", ";"),
+        "third arm on stdout": edit(third, " >&2;", ";"),
+        "message changed": edit(third, "not 3-5 lowercase", "not lowercase"),
+        "check after the canonical block": _i67_move_check(fence, "  echo \"could not resolve the main checkout\""),
+        "check after mkdir": _i67_move_check(fence, "mkdir -p "),
+        "double-quoted assignment": fence.replace(lines[0], lines[0].replace("'", '"'), 1),
+    }
+    for name, mutant in mutants.items():
+        assert mutant != fence, f"mutant {name!r} did not change the fence"
+    return mutants
+
+
+# Each mutant and the (row, shell, locale) that exists to catch it; "utf8"
+# stands for `_i67_utf8_locale()`. The range glob shows only where the shell's
+# `[a-z]` follows the locale (macOS bash 3.2 as sh), and is skipped elsewhere.
+_I67_MUTANT_CATCHERS = {
+    "range glob": ("uppercase", ("sh",), "utf8"),
+    "leading hyphen allowed": ("leading hyphen", ("sh",), "C"),
+    "trailing hyphen allowed": ("trailing hyphen", ("sh",), "C"),
+    "empty word allowed": ("empty word", ("sh",), "C"),
+    "six words allowed": ("six words", ("sh",), "C"),
+    "two words allowed": ("two words", ("sh",), "C"),
+    "first arm does not exit": ("multi-line", ("sh",), "C"),
+    "third arm does not exit": ("two words", ("sh",), "C"),
+    "first arm on stdout": ("multi-line", ("sh",), "C"),
+    "third arm on stdout": ("two words", ("sh",), "C"),
+    "message changed": ("two words", ("sh",), "C"),
+    "check after the canonical block": ("norepo two words", ("sh",), "C"),
+    "check after mkdir": ("two words", ("sh",), "C"),
+    "double-quoted assignment": ("command substitution", ("sh",), "C"),
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_I67_MUTANT_CATCHERS))
+def test_i67_slug_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    mutants = _i67_mutants(_i53_fence())
+    assert set(mutants) == set(_I67_MUTANT_CATCHERS)
+    row, shell, locale = _I67_MUTANT_CATCHERS[mutant]
+    if locale == "utf8":
+        locale = _i67_utf8_locale()
+        if locale is None:
+            pytest.skip("no UTF-8 locale on this host (`locale -a`)")
+        if not _i67_lax_range(shell[0], locale, tmp_path.resolve()):
+            pytest.skip(f"{shell[0]}'s [a-z] does not take A under {locale} (bash 5 globasciiranges, dash): "
+                        "the range glob mutant is invisible here")
+    tmp = tmp_path.resolve()
+    env = _i67_repos(tmp)
+    failures = _i67_row(mutants[mutant], list(shell), tmp, env, row, locale)
+    assert failures, f"the {row!r} row does not reject the {mutant!r} mutant under {' '.join(shell)}, LC_ALL={locale}"
+    # dash reports "Syntax error", bash and zsh "syntax error".
+    assert not any("syntax error" in f.lower() for f in failures), f"the {mutant!r} mutant does not parse: {failures}"

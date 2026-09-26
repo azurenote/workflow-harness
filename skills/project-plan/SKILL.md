@@ -61,7 +61,7 @@ On finding a similar implementation, **extending it is the default**. Creating s
 
 Filename rules:
 - **Draft (unregistered, canonical)**: `plan-draft-<slug>.md`
-- Generate the slug from the task description automatically (3-5 lowercase English words, hyphen-separated)
+- Generate the slug from the task description automatically (3-5 lowercase English words, hyphen-separated), in ASCII letters and digits only. The fence below refuses any other slug and never rewrites one.
 - Example: "Implement JWT auth Lambda" -> `plan-draft-jwt-auth-lambda.md`
 - **Slug collision**: if the same slug file already exists, add `-2`, `-3`, etc.
   - Example: `plan-draft-jwt-auth-lambda-2.md`
@@ -71,11 +71,18 @@ The plan directory is the main checkout's, wherever this skill runs: `.task/plan
 
 The ignore check is the same fence as `project-done` Step 5, which says why each part of it is there: ask git, not `.gitignore`'s text, and append only on exit 1. **Run this fence as one shell invocation** — later lines read `MAIN_CHECKOUT`, `SLUG` and `PLAN_FILE` from earlier ones. Any exit other than 0 or 1 means git could not answer, and the fence then exits 1: stop and report it before writing any plan.
 
+- **The slug is checked before anything else.** It becomes a file name in the plan directory: a `/` would put the draft in another directory, and with `..` outside the plan directory, and uppercase, spaces, dots, quotes or non-ASCII letters make a name `project-issue` does not take as a draft. So the first lines refuse a slug outside the rule above with one `reject (slug)` line and exit 1, before the main checkout is resolved, the directory made or `.gitignore` touched; choose a slug that fits and run the fence again. The value sits in single quotes so `$(…)`, backticks and `"` reach the check as written. Never put a `'` in a slug: it ends the quoting, and what follows it runs as shell before the check sees the value — the check cannot refuse it. The allowed characters are spelled out rather than written `a-z`, because a range in a shell pattern follows the locale — bash 3.2 under a UTF-8 locale lets `[a-z]` take `B`.
 - **The check runs in the main checkout, inside a subshell.** The question is whether the directory the plan goes to is ignored, so git is asked where that directory is, and an exit-1 append lands in the main checkout's `.gitignore` — from a linked worktree the check would otherwise read the feature branch's rules and edit a tracked file on that branch. The `cd` sits in a subshell so the lines of the check stay byte for byte those of `project-done` Step 5 and the session's working directory does not move; this is not a second exception to the "do not repeat `cd`" rule in the shared worktree reference.
 - **An exit-1 answer edits (or creates) the main checkout's `.gitignore`**, whichever checkout this skill runs from, and leaves that change uncommitted there. The fence prints nothing for it, so after it runs, `git -C "<main checkout>" status --porcelain -- .gitignore` shows whether it happened; include that in the output.
 - **Write the draft to the printed path.** The last line is `PLAN_FILE=<absolute path>`; shell variables do not survive to the next call, and a relative path names a different file from a linked worktree.
 
 ```bash
+SLUG='<convert-task-description-to-3-5-word-english-slug>'
+case "$SLUG" in
+  *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|-*|*-|*--*|*-*-*-*-*-*) echo "reject (slug): not 3-5 lowercase words joined by hyphens" >&2; exit 1 ;;
+  *-*-*) ;;
+  *) echo "reject (slug): not 3-5 lowercase words joined by hyphens" >&2; exit 1 ;;
+esac
 FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
 MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
 [ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
@@ -91,7 +98,6 @@ case "$rc" in
   *) echo "stop: git check-ignore exited $rc; .gitignore not touched" >&2; exit 1 ;;
 esac
 ) || exit 1
-SLUG="<convert-task-description-to-3-5-word-english-slug>"
 PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}.md"
 # Add a suffix on collision
 N=2
