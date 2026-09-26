@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from harness_core import cli, plan_body, scaffold
+from harness_core import cli, plan_body, plan_restore, scaffold
 from harness_core.exitcodes import ExitCode
 from harness_core.trackers import github
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "skills" / "_shared" / "references" / "exit-codes.md"
-MODULES = (cli, plan_body, scaffold, github)
+MODULES = (cli, plan_body, plan_restore, scaffold, github)
 
 
 def _doc() -> str:
@@ -58,6 +58,7 @@ def _commands() -> dict:
     """name -> (function as registered, handler behind any wrapper)."""
     found = {name: (func, _unwrap(func)) for name, func in _registered().items()}
     found["plan_body"] = (plan_body.main, plan_body.main)
+    found["plan_restore"] = (plan_restore.main, plan_restore.main)
     found["scaffold"] = (scaffold.main, scaffold.main)
     return found
 
@@ -368,3 +369,15 @@ def test_handler_docs_point_at_the_table(command: str) -> None:
         # A number is allowed only as the value next to its name, e.g. `FINDINGS (6)`.
         bare = [m for m in _RC_IN_PROSE.findall(text)]
         assert not bare, f"{command}: an exit code as a number: {bare}"
+
+
+def test_findings_means_a_finding_that_needs_a_person() -> None:
+    """#70 widened FINDINGS from a gate's drift to any read-only check that found
+    something a person must judge; the row names both of its users."""
+    row = next(l for l in _section("열거형").splitlines() if l.startswith("| 6 | `FINDINGS` |"))
+    meaning, caller = [c.strip() for c in row.strip("|").split("|")[2:4]]
+    assert meaning.startswith("읽기 전용 검사가 사람 판단이 필요한 것을 찾았다.")
+    assert "`audit-fields --fail-on-drift` 의 드리프트" in meaning
+    assert "`plan_restore` 의 summary·rev·작성자 불일치" in meaning
+    assert caller == "성공으로 취급하지 않는다. 게이트면 실패, 스킬 절차면 사람에게 묻는다"
+    assert "**`FINDINGS` 가 이긴다**" in _doc(), "the FINDINGS-over-INCOMPLETE rule is gone"

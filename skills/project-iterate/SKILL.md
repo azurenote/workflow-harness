@@ -64,7 +64,7 @@ With `<id>`, check these states in this order and continue from the first one th
 | Branch, no plan | branch/worktree for `<id>` exists, `plan-<id>.md` does not | the two checks below | stop and report |
 | Start | branch/worktree for `<id>` exists and `plan-<id>.md` exists | the two checks below | Phase 4 |
 | Issue | `plan-<id>.md` exists, no branch/worktree | the plan check below | Phase 3 |
-| Issue only | none of the above | — | Phase 1 from the issue body, then Phase 2 in link mode |
+| Issue only | none of the above | the restore below | Phase 3 when the restore below brings the plan back; otherwise Phase 1 from the issue body, then Phase 2 in link mode |
 
 The branch check matches the whole id segment of the branch names `project-start` creates —
 `git branch -a | grep <id>` would let `2` match `issue-25`:
@@ -161,6 +161,13 @@ else:
 
 3. 이 경로에서는 브랜치도 워크트리도 새로 만들지 않고, 분기 방식 플래그도 쓰지 않는다. 적용 중인 분기 방식(플래그가 없으면 기본값인 워크트리)이 기존 자리와 다르면 기존 자리를 따른다고 알린다.
 
+"Issue only" 상태는 Phase 1 로 가기 전에 이슈에 올라간 플랜으로 `plan-<id>.md` 를 복원해 본다. `## Instructions` 의 "Main checkout first" 확인을 통과한 뒤, Phase 1 1단계가 쓰는 `project-issue` Step 1-L 읽기와 내용 규칙으로 이슈를 판정하고(거부면 거기서 멈춘다), 같은 문서 `## Plan Body Rules` 의 그 트래커 restore 펜스를 한 셸 호출로 돌린다. 그 표에 행이 없는 트래커는 restore 펜스가 없으니 지금처럼 Phase 1 로 간다. 펜스의 마지막 줄로 가른다.
+
+- `RESTORE=restored`: 그 줄을 보이고 "Issue" 상태로 다시 판정해 Phase 3 으로 간다. 복원한 플랜의 승인은 `## Questions After Plan Approval` 이 정한다.
+- `RESTORE=none`: 이 이슈 번호의 마커 코멘트가 없다. Phase 1(이슈 본문)과 Phase 2 연결 모드로 간다.
+- `RESTORE=refused (…)`: 마지막 마커 코멘트가 다른 사람의 것이거나, 요약본이거나, rev 가 맞지 않는다. 이유를 보이고 이슈 본문으로 새 플랜을 쓸지 한 번 묻는다 — 예면 Phase 1, 아니오면 멈춘다. 플랜 승인 전의 질문이다.
+- `RESTORE=stopped (…)`, `RESTORE=미확인 (read failed)`, 또는 그 밖의 마지막 줄(트레이스백 등): 멈추고 보고한다. 읽지 못한 것을 "코멘트 없음" 으로 보지 않는다.
+
 "Issue" 상태의 Phase 3 은 새 실행과 같은 인자 규칙과 Phase 3 사전 확인을 따른다.
 
 ## Instructions
@@ -255,7 +262,7 @@ MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse 
 ## Questions After Plan Approval
 
 The plan approval opens the run: after it, this skill asks only when one of the conditions below holds.
-On re-entry at Phase 3 or Phase 4, that approval is the one the issue skill's Step 2 took when it registered `plan-<id>.md`; when the plan was edited after that, or placed by hand, show its summary and ask once before going on.
+On re-entry at Phase 3 or Phase 4, that approval is the one the issue skill took when it put `plan-<id>.md` on the issue — Step 2 when it registered the plan, Step 1-R when it posted a revision — and a plan brought back with `RESTORE=restored` (`## Re-entry After Interruption`) is that plan, not one placed by hand; when the plan was edited after that, or placed by hand, show its summary and ask once before going on.
 
 1. A DoD item is not met.
 2. The Review Profile review left a blocker unresolved.

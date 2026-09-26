@@ -16,7 +16,7 @@ harness 의 모든 명령은 아래 열거형의 값으로 끝난다. 이 표가
 | 3 | `INCOMPLETE` | 일부만 됐다. 쓰기는 복구가 필요하고, 읽기는 판정이 불완전하다. stdout 에 한 일이 있다 | 성공으로 취급하지 않는다 |
 | 4 | `UNKNOWN` | 쓰기의 결과를 모른다 | 확인하기 전에는 다시 실행하지 않는다 |
 | 5 | `NOOP` | 이미 되어 있어 할 일이 없다 | 성공으로 취급한다 |
-| 6 | `FINDINGS` | 판정은 완결됐고, 호출자가 실패로 지정한 결과가 있다 | 게이트 실패 |
+| 6 | `FINDINGS` | 읽기 전용 검사가 사람 판단이 필요한 것을 찾았다. 판정은 완결됐다 — 예: `audit-fields --fail-on-drift` 의 드리프트, `plan_restore` 의 summary·rev·작성자 불일치 | 성공으로 취급하지 않는다. 게이트면 실패, 스킬 절차면 사람에게 묻는다 |
 
 - 1 을 크래시 전용으로 두는 이유: 파이썬 트레이스백은 항상 1 로 끝난다. 1 에 다른 뜻을 주면 크래시와 구별할 수 없다. 그래서 린터 관례("발견 = 1") 대신 6 을 쓴다.
 - 사용법 오류(argparse: 모르는 인자, 빠진 인자, `type=` 검증 실패)는 **모든 명령**에서 `REFUSED` 다. 아래 표는 그 밖의 경우를 적는다.
@@ -39,6 +39,7 @@ harness 의 모든 명령은 아래 열거형의 값으로 끝난다. 이 표가
 | `set-fields` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 첫 쓰기 전에 거부했다(링크 대상이 없거나 풀 리퀘스트거나 읽을 수 없음, 다른 부모가 이미 있음, 새로 붙일 부모가 하위 이슈 상한에 참 포함). `INCOMPLETE`: 첫 쓰기 뒤에 실패했다 — 모든 조각을 시도한 뒤이고, stdout 에 적용된 것, stderr 에 복구 줄이 있다. 요청한 링크가 이미 되어 있으면 `OK` 다(`NOOP` 아님 — 복구 호출자는 성공을 성공으로 읽는다) |
 | `audit-fields` | `OK` · `REFUSED` · `INCOMPLETE` · `FINDINGS` | `OK`: 모든 축을 읽었다(drift 가 있어도, `--fail-on-drift` 가 없으면). `REFUSED`: 이슈 목록을 읽지 못했다, stdout 이 비었다. `INCOMPLETE`: 읽지 못한 축이 있다 — `warnings` 가 이름을 댄다. `FINDINGS`: `--fail-on-drift` 이고 drift 가 1건 이상이다 |
 | `plan_body` | `OK` · `REFUSED` · `NOOP` | `python -m harness_core.plan_body`. `REFUSED`: 플랜이 없거나 이름·위치가 틀림, id·rev 불일치, 인코딩이 UTF-8 이 아니거나 빈 파일, 요약도 한도를 넘음, 트래커 읽기 파일을 읽지 못함, main checkout 해석 불가. `--screen`(Step 2 화면)에서는 초안이 아닌 플랜, `--issue` 와 `--issue-read` 가 짝이 맞지 않음, base 를 정할 수 없음(frontmatter 도 `--default-base` 도 없음), 이슈 읽기 파일을 해석하지 못함, 읽은 번호가 `--issue` 와 다름도 `REFUSED` 다 — 화면 모드는 `OK`(화면과 `SCREEN=` 출력) 아니면 `REFUSED` 이고 `NOOP` 은 없다. `NOOP`: 같은 내용이 이미 트래커에 있다(`SEEN=`) |
+| `plan_restore` | `OK` · `REFUSED` · `FINDINGS` | `python -m harness_core.plan_restore`. `OK`: `plan-<id>.md` 를 복원했다(`RESTORE=restored`), 또는 이 이슈의 마커 코멘트가 없다(`RESTORE=none`). `FINDINGS`: 마지막 마커 코멘트를 거절했다 — 작성자가 로그인 사용자가 아님, 요약본, rev 불일치(`RESTORE=refused (…)`). 파일은 없다. `REFUSED`: 판정 전에 멈췄다 — 읽기·whoami 파일을 못 읽음, UTF-8 아님, GitHub 읽기가 JSON 아님, 로그인을 못 읽음, `plan-<id>.md` 가 이미 있음(끊긴 심볼릭 링크 포함), 플랜 디렉터리를 못 씀, main checkout 해석 불가(`RESTORE=stopped (…)`) |
 | `scaffold` | `OK` · `REFUSED` | `harness-init`·`harness-update`. `REFUSED`: 프리플라이트 실패 또는 `error:` 경고 — 파일을 쓰기 전에 돌아온다 |
 | board 스텁 | `REFUSED` | 프로젝트 소유(`project.py` 템플릿의 fail-closed 선택지), 코드 검사 밖. 설정이 없어 명령을 쓸 수 없다는 이유를 출력한다 |
 
