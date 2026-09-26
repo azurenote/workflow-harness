@@ -144,6 +144,7 @@ After this, perform all work inside `$WORKTREE_PATH`.
 <harness_cli> add-progress "<node-id>"
 # fallback (GitHub): gh project item-edit <github_project.number> --owner <github_project.owner> --url <issue-url> --field Status --value "<status_names.in_progress>" || echo "status not applied"
 # fallback (Jira):   jira issue move "<ticket-id>" "<target-state>"   # then read it back, below
+# fallback (Forgejo): none - see the Forgejo paragraph at the end of this step
 ```
 
 Status is a project field, not a label. The fallback above writes that field; if it fails — no `github_project` block, a token without the `project` scope, a gh older than 2.97.0 — report the status as **not applied** and continue. Do not add a workflow-state label instead; see `~/.claude/skills/_shared/references/github-issue-fields.md`.
@@ -166,6 +167,8 @@ jira issue view "<ticket-id>" --raw      # read the status field out of this res
 (The optional `--issue-number`/`--branch-name` flags are still accepted for
 backward compatibility but are no-ops — no branch-notification comment is
 posted.)
+
+**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Progress 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이다.
 
 **4. ADR (conditional)**
 

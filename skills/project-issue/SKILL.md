@@ -266,6 +266,8 @@ Are the Intent Summary and base branch correct? Link this file to #<id>? [yes/no
 The issue title is the check no command above can make: it is how a human notices that `<id>` names
 the wrong issue, or a pull request.
 
+From `project-iterate`, Phase 1's approval is this step's confirmation only when that same run's Phase 1 screen carried this step's screen as written above — the create or link form that matches the mode, down to its question line — and the user answered yes; ask this step again instead if the plan file was edited after that yes (review fixes included), Step 1 resolved a different path than the screen showed, the Step 1-L read returns a title or state other than the screen's, this run had no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step 1-L comment question is still asked on its own.
+
 **3. Infer Issue Type** (GitHub only)
 
 - In link mode (`--issue`), Steps 3–7 do not run: after Step 2's yes, go straight to Step 8.
@@ -415,17 +417,20 @@ Compare the summary, type and project on the response with what was sent. This r
 
 harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 **무관하게** `fj` 직접 호출이 유일한 경로다. 전역 옵션(`-H`, `-C`, `--style`)은 서브커맨드 **앞**에 온다. 버전 확인 명령(`fj version`)과 최소 버전은 `~/.claude/skills/dependencies.yaml` 이 선언한다 — 여기서 추측하지 않는다.
 
-생성을 먼저 잡고, 번호는 그 출력에서 읽는다. 격리 제거가 그 추출의 한 단이다:
+생성을 먼저 잡고, 번호는 그 출력에서 읽는다. 격리 제거가 그 추출의 한 단이다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:
 
 ```bash
 DRAFT_PLAN="<draft-plan-path>"
 # Repo targeting: -r <forgejo_repo> as below, or -R <forgejo_remote> when the project
 # declares a remote that actually exists locally. Both are accepted by create/search/edit.
 TITLE="$(sed -n 's/^# Plan: //p' "$DRAFT_PLAN" | head -1)"
+[ -n "$TITLE" ] || { echo "no '# Plan: ' title line in $DRAFT_PLAN"; exit 1; }
 CREATED="$(fj -H <forgejo_host> issue create "$TITLE" --body-file "$DRAFT_PLAN" -r <forgejo_repo> --no-template)" || CREATE_FAILED=1
 ISSUE_NUMBER="$(printf '%s\n' "$CREATED" \
   | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().replace("\u2068", "").replace("\u2069", ""))' \
   | sed -n 's/^created issue #\([0-9][0-9]*\).*/\1/p')"
+printf 'CREATE_FAILED=%s\nISSUE_NUMBER=%s\n' "${CREATE_FAILED:-0}" "$ISSUE_NUMBER"
+printf '%s\n' "$CREATED"
 ```
 
 - 격리 제거(`\u2068`/`\u2069`)는 군더더기가 아니다. 파이프 한 단으로 두고 **추출보다 앞에** 둔다 — 뒤에 두면 추출이 영영 매치하지 않는다. 빼면 `#` 와 첫 숫자 사이에 격리 문자가 끼어 추출이 **에러 없이 빈 문자열**을 돌려주고, 그 빈 값이 8단계로 흘러든다. 8단계의 id 검사가 `plan-.md` 는 막지만, 그때는 이미 만들어진 이슈의 번호를 잃은 채 멈추는 것이다. 실패가 조용하다는 것이 이 단계를 지켜야 하는 이유다.
@@ -439,19 +444,26 @@ ISSUE_NUMBER="$(printf '%s\n' "$CREATED" \
 
 두 경우의 복구가 다르다. 갈라두는 이유가 이것이다:
 
-- `CREATE_FAILED` — 이슈는 **만들어지지 않았다**. 아래 웹 UI 마지막 단으로 간다. 여기서 검색으로 번호를 찾으려 하지 마라.
-- 생성은 됐는데 `$ISSUE_NUMBER` 가 비었다 — 번호만 못 읽은 것이므로 방금 만든 제목으로 찾는다. 번호 없이 8단계로 넘어가지 않는다:
+- `CREATE_FAILED` 가 `1` — 이슈는 **만들어지지 않았다**. 아래 웹 UI 마지막 단으로 간다. 여기서 검색으로 번호를 찾으려 하지 마라.
+- 생성은 됐는데 `ISSUE_NUMBER` 가 비었다 — 번호만 못 읽은 것이다. 먼저 펜스가 출력한 생성 출력 원문에서 번호를 읽는다. 읽을 수 없을 때만 아래 펜스로 방금 만든 제목을 찾아 잡힌 번호의 제목을 눈으로 대조하고, 그래도 없으면 웹 UI 마지막 단으로 간다. 번호 없이 8단계로 넘어가지 않는다.
+
+이 펜스도 **한 셸 호출로 실행한다** — 앞 펜스의 `TITLE` 은 이 호출까지 살아 있지 않으므로 같은 줄로 초안에서 제목을 다시 읽고, 제목이 비면 검색하지 않고 멈춘다. 빈 제목의 `issue search` 는 아무 열린 이슈나 잡는다:
 
 ```bash
+DRAFT_PLAN="<draft-plan-path>"
+TITLE="$(sed -n 's/^# Plan: //p' "$DRAFT_PLAN" | head -1)"
+[ -n "$TITLE" ] || { echo "no '# Plan: ' title line in $DRAFT_PLAN"; exit 1; }
 fj -H <forgejo_host> --style minimal issue search -r <forgejo_repo> "$TITLE"
 ```
 
 `issue search` 는 기본이 `-s open` 인 자유 텍스트 검색이다. 제목이 비슷한 기존 열린 이슈가 있으면 **엉뚱한 번호가 잡힌다** — 생성 실패 경로에서 이걸 쓰면 안 되는 이유이고, 여기서도 잡힌 번호의 제목을 눈으로 대조한 뒤 쓴다. 이 출력 형식은 미검증이므로 create 용 파서를 돌리지 않는다.
 
+라벨 적용과 읽기 확인 펜스의 `<ISSUE_NUMBER>` 는 리터럴로 치환한다 — 생성 펜스가 출력한 `ISSUE_NUMBER=` 값, 그것이 비었을 때 생성 출력 원문에서 읽은 번호, 재검색으로 잡아 제목을 대조한 번호, 웹 UI 에서 사람이 돌려준 번호 중 하나다. 8단계와 같은 이유로 앞 호출의 셸 변수를 넘기지 않는다: 살아남지 못한 변수는 빈 값으로 도착하고, 그러면 `"<forgejo_repo>#"` 는 대상 없는 호출이 된다.
+
 라벨은 4단계에서 이미 추론한 area 태그를 재사용한다. `fj` 의 create 에는 라벨 플래그가 없으므로 생성 후 두 번째 호출로 적용한다 — GitHub 절이 한 번의 호출을 고집하는 것과 갈리는 이유는 도구 표면의 차이이지 절차 설계의 선택이 아니다:
 
 ```bash
-fj -H <forgejo_host> issue edit "<forgejo_repo>#$ISSUE_NUMBER" labels -a "<area tag>"
+fj -H <forgejo_host> issue edit "<forgejo_repo>#<ISSUE_NUMBER>" labels -a "<area tag>"
 ```
 
 - 4단계가 태그를 둘 추론하면(`["BE", "FE"]`) `-a` 를 태그마다 하나씩 준다. 쉼표로 묶은 `-a "BE,FE"` 는 **측정된 적 없고**, 틀렸다면 없는 라벨 취급을 받아 종료코드 0 으로 조용히 무시된다. 어느 쪽이든 판정은 아래 읽기 확인이다.
@@ -466,7 +478,7 @@ type·priority·size 는 `fj` 에 대응 플래그가 없다. 셋 다 **미반�
 
 ```bash
 # forgejo (read path - see "이슈 트래커" in SKILL-CONFIG.md)
-fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#$ISSUE_NUMBER"
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<ISSUE_NUMBER>"
 ```
 
 - 확인할 일은 둘이다: 이슈가 실재하는지, 그리고 라벨이 실제로 붙었는지. 위 원칙 때문에 라벨은 여기 말고 확인할 데가 없다.

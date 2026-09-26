@@ -1954,7 +1954,7 @@ def test_forgejo_read_back_reads_the_body_surface_not_comments() -> None:
     """
     views = [
         inv for inv in _fj_invocations(_forgejo_section())
-        if "issue view" in inv and "$ISSUE_NUMBER" in inv
+        if "issue view" in inv and "<ISSUE_NUMBER>" in inv
     ]
     assert views, "the Forgejo section no longer reads the issue back"
 
@@ -4609,3 +4609,362 @@ def test_done_step1_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None
         f"the {row!r} row does not reject the {mutant!r} mutant: {failures}"
     )
     assert not any("syntax error" in f for f in failures), f"the {mutant!r} mutant does not parse: {failures}"
+
+
+# --------------------------------------------------------------------------
+# #40 — skill-doc consistency: fences that carry no shell variable across
+# calls, `project-start` Step 3 on Forgejo, and one approval for two screens
+#
+# 1. The Forgejo create section of `project-issue` spread one set of shell
+#    variables over four fences. Tool calls do not share a shell, so every
+#    fence after the first read an empty `$TITLE` or `$ISSUE_NUMBER`, and fj
+#    fails quietly: `issue search ""` catches any open issue, and
+#    `edit "<repo>#" labels` targets nothing. The create fence now prints what
+#    later steps need and those steps take `<ISSUE_NUMBER>` as a literal —
+#    the shape `project-done` Step 7 already uses for `<PR_NUMBER>`. The
+#    invariant is pinned for every fence in the document, not just these.
+# 2. `project-start` Step 3 now says what `project-done` Step 8 says about a
+#    Forgejo status — derived from that golden line, so the two cannot drift.
+# 3. `project-iterate` Phase 1 and `project-issue` Step 2 asked the same
+#    human-layer question twice. The approval now counts once, and only under
+#    the conditions Step 2 states; the vocabulary scan keeps an unconditional
+#    "skip Step 2" from being added beside the pinned lines.
+#
+# Helpers carry an `_i40_` prefix: a same-named `def _` later in this file
+# silently replaces an earlier one (#46/#47), which the last test here checks.
+# --------------------------------------------------------------------------
+
+import ast
+
+_I40_CREATE_DIRECTIVE = (
+    "생성을 먼저 잡고, 번호는 그 출력에서 읽는다. 격리 제거가 그 추출의 한 단이다. "
+    "**아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 "
+    "넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:"
+)
+_I40_TITLE = "TITLE=\"$(sed -n 's/^# Plan: //p' \"$DRAFT_PLAN\" | head -1)\""
+_I40_TITLE_GUARD = '[ -n "$TITLE" ] || { echo "no \'# Plan: \' title line in $DRAFT_PLAN"; exit 1; }'
+_I40_CREATE_FENCE = (
+    'DRAFT_PLAN="<draft-plan-path>"',
+    "# Repo targeting: -r <forgejo_repo> as below, or -R <forgejo_remote> when the project",
+    "# declares a remote that actually exists locally. Both are accepted by create/search/edit.",
+    _I40_TITLE,
+    _I40_TITLE_GUARD,
+    'CREATED="$(fj -H <forgejo_host> issue create "$TITLE" --body-file "$DRAFT_PLAN" -r <forgejo_repo> --no-template)" || CREATE_FAILED=1',
+    'ISSUE_NUMBER="$(printf \'%s\\n\' "$CREATED" \\',
+    '  | python3 -c \'import sys; sys.stdout.write(sys.stdin.read().replace("\\u2068", "").replace("\\u2069", ""))\' \\',
+    "  | sed -n 's/^created issue #\\([0-9][0-9]*\\).*/\\1/p')\"",
+    'printf \'CREATE_FAILED=%s\\nISSUE_NUMBER=%s\\n\' "${CREATE_FAILED:-0}" "$ISSUE_NUMBER"',
+    'printf \'%s\\n\' "$CREATED"',
+)
+_I40_SEARCH_DIRECTIVE = (
+    "이 펜스도 **한 셸 호출로 실행한다** — 앞 펜스의 `TITLE` 은 이 호출까지 살아 있지 않으므로 같은 "
+    "줄로 초안에서 제목을 다시 읽고, 제목이 비면 검색하지 않고 멈춘다. 빈 제목의 `issue search` 는 "
+    "아무 열린 이슈나 잡는다:"
+)
+_I40_SEARCH_FENCE = (
+    'DRAFT_PLAN="<draft-plan-path>"',
+    _I40_TITLE,
+    _I40_TITLE_GUARD,
+    'fj -H <forgejo_host> --style minimal issue search -r <forgejo_repo> "$TITLE"',
+)
+_I40_RECOVERY = (
+    "- 생성은 됐는데 `ISSUE_NUMBER` 가 비었다 — 번호만 못 읽은 것이다. 먼저 펜스가 출력한 생성 출력 "
+    "원문에서 번호를 읽는다. 읽을 수 없을 때만 아래 펜스로 방금 만든 제목을 찾아 잡힌 번호의 제목을 "
+    "눈으로 대조하고, 그래도 없으면 웹 UI 마지막 단으로 간다. 번호 없이 8단계로 넘어가지 않는다."
+)
+_I40_PROVENANCE = (
+    "라벨 적용과 읽기 확인 펜스의 `<ISSUE_NUMBER>` 는 리터럴로 치환한다 — 생성 펜스가 출력한 "
+    "`ISSUE_NUMBER=` 값, 그것이 비었을 때 생성 출력 원문에서 읽은 번호, 재검색으로 잡아 제목을 대조한 "
+    "번호, 웹 UI 에서 사람이 돌려준 번호 중 하나다. 8단계와 같은 이유로 앞 호출의 셸 변수를 넘기지 "
+    "않는다: 살아남지 못한 변수는 빈 값으로 도착하고, 그러면 `\"<forgejo_repo>#\"` 는 대상 없는 호출이 된다."
+)
+_I40_LABEL = 'fj -H <forgejo_host> issue edit "<forgejo_repo>#<ISSUE_NUMBER>" labels -a "<area tag>"'
+_I40_VIEW = 'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<ISSUE_NUMBER>"'
+
+_I40_STEP2_SUBSTITUTE = (
+    "From `project-iterate`, Phase 1's approval is this step's confirmation only when that same run's "
+    "Phase 1 screen carried this step's screen as written above — the create or link form that matches "
+    "the mode, down to its question line — and the user answered yes; ask this step again instead if the "
+    "plan file was edited after that yes (review fixes included), Step 1 resolved a different path than "
+    "the screen showed, the Step 1-L read returns a title or state other than the screen's, this run had "
+    "no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run "
+    "either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step "
+    "1-L comment question is still asked on its own."
+)
+_I40_STEP2_KEPT = (
+    "Do not create an issue without confirmation. This checkpoint is not just filename/title "
+    "confirmation; it is a human-layer approval checkpoint. The user must review `Intent Summary`, "
+    "`Current State`, `Target State`, `Non-Goals`, and `Drift Guards` and confirm that the work intent "
+    "is correct."
+)
+_I40_ITERATE_PHASE1 = (
+    "- Carry on this same screen the Step 2 screen of the `issue` skill that Phase 2 will run — the "
+    "create or link form that matches the run, down to its question line — so that one yes can answer "
+    "both; Step 2 states when that yes counts."
+)
+_I40_ITERATE_PHASE2 = (
+    "- Phase 1 승인이 `issue` 스킬 Step 2 의 대체 조건을 모두 채웠으면 Step 2 를 다시 묻지 않고, "
+    "하나라도 채우지 못했으면 Step 2 를 그대로 묻는다."
+)
+
+_I40_READ = re.compile(r"\$\{?([A-Z_][A-Z0-9_]*)")
+# Command position only: `printf 'ISSUE_NUMBER=%s'` is not an assignment, and
+# counting it as one would hide a fence that lost its `ISSUE_NUMBER=` line.
+_I40_ASSIGN = re.compile(r"(?:^|\|\||&&|;)\s*([A-Z_][A-Z0-9_]*)=")
+
+
+def _i40_fence_after(text: str, directive: str) -> list[str]:
+    """The fence that opens on the first non-blank line after `directive`."""
+    lines = text.splitlines()
+    at = [i for i, l in enumerate(lines) if l.strip() == directive]
+    assert len(at) == 1, f"expected the directive once, found {len(at)}: {directive[:40]!r}"
+    i = at[0] + 1
+    while not lines[i].strip():
+        i += 1
+    assert lines[i].startswith("```"), f"the directive is not followed by its fence: {lines[i]!r}"
+    body: list[str] = []
+    for line in lines[i + 1:]:
+        if line.startswith("```"):
+            return body
+        body.append(line.rstrip())
+    raise AssertionError("the fence after the directive never closes")
+
+
+def _i40_unassigned_reads(block: list[str]) -> tuple[list[tuple[str, str]], set[str]]:
+    """Reads of a variable this block has not assigned yet, and every name read."""
+    assigned: set[str] = set()
+    missing: list[tuple[str, str]] = []
+    read: set[str] = set()
+    for line in _logical_lines("\n".join(block)):
+        if line.startswith("#"):
+            continue
+        for name in _I40_READ.findall(line):
+            read.add(name)
+            if name not in assigned:
+                missing.append((name, line))
+        assigned.update(_I40_ASSIGN.findall(line))
+    return missing, read
+
+
+def _i40_script(fence: list[str], draft: Path) -> str:
+    script = "\n".join(fence)
+    for placeholder, value in (
+        ("<draft-plan-path>", str(draft)), ("<forgejo_host>", "forge.test"),
+        ("<forgejo_repo>", "o/r"), ("<forgejo_remote>", "lab"),
+    ):
+        script = script.replace(placeholder, value)
+    assert not re.search(r"<[a-z_-]+>", script), f"a placeholder is left for the shell to parse:\n{script}"
+    return script
+
+
+def _i40_fake_env(tmp_path: Path, mode: str) -> tuple[dict[str, str], Path]:
+    """A PATH with a fake `fj` and no route to the real one (/opt/homebrew/bin holds it here)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    log = tmp_path / f"fj-{mode}.log"
+    fj = bin_dir / "fj"
+    fj.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do printf \'%s\\n\' "$a"; done > "$FJ_LOG"\n'
+        'if [ "$FAKE_MODE" = fail ]; then echo "Error: boom" >&2; exit 1; fi\n'
+        "printf 'created issue #\\342\\201\\25041\\342\\201\\251: \\342\\201\\250t\\342\\201\\251\\n'\n"
+    )
+    python3 = bin_dir / "python3"
+    python3.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    for path in (fj, python3):
+        path.chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "FJ_LOG": str(log), "FAKE_MODE": mode, "HOME": str(tmp_path)}
+    return env, log
+
+
+def _i40_shells() -> list[str]:
+    return [s for s in ("bash", "sh", "zsh") if shutil.which(s)]
+
+
+# A title a pasted literal would break three ways: a backtick, an apostrophe,
+# and a command substitution that leaves a file behind if it ever runs.
+_I40_HOSTILE_TITLE = "`x` it's $(touch pwned) title"
+
+
+def test_i40_create_fence_prints_what_later_steps_need() -> None:
+    assert tuple(_i40_fence_after(_forgejo_section(), _I40_CREATE_DIRECTIVE)) == _I40_CREATE_FENCE, (
+        "the Forgejo create fence changed"
+    )
+
+
+@pytest.mark.parametrize("shell", _i40_shells())
+def test_i40_create_fence_runs_against_a_fake_fj(shell: str, tmp_path: Path) -> None:
+    fence = _i40_fence_after(_forgejo_section(), _I40_CREATE_DIRECTIVE)
+    draft = tmp_path / "plan-draft-x.md"
+    draft.write_text(f"# Plan: {_I40_HOSTILE_TITLE}\n\nbody\n")
+
+    env, log = _i40_fake_env(tmp_path, "ok")
+    ran = subprocess.run([shell, "-c", _i40_script(fence, draft)], cwd=tmp_path, env=env,
+                         capture_output=True, text=True)
+    out = ran.stdout.splitlines()
+    assert ran.returncode == 0, ran.stderr
+    assert out[:2] == ["CREATE_FAILED=0", "ISSUE_NUMBER=41"], f"the fence printed {out}"
+    assert any(l.startswith("created issue #") for l in out), "the raw create output is not printed"
+    assert log.read_text().splitlines() == [
+        "-H", "forge.test", "issue", "create", _I40_HOSTILE_TITLE,
+        "--body-file", str(draft), "-r", "o/r", "--no-template",
+    ]
+    assert not (tmp_path / "pwned").exists(), "the title ran as a command"
+
+    env, log = _i40_fake_env(tmp_path, "fail")
+    ran = subprocess.run([shell, "-c", _i40_script(fence, draft)], cwd=tmp_path, env=env,
+                         capture_output=True, text=True)
+    assert ran.stdout.splitlines()[:2] == ["CREATE_FAILED=1", "ISSUE_NUMBER="], ran.stdout
+
+    untitled = tmp_path / "plan-draft-y.md"
+    untitled.write_text("# Not a plan title\n")
+    env, log = _i40_fake_env(tmp_path, "empty")
+    ran = subprocess.run([shell, "-c", _i40_script(fence, untitled)], cwd=tmp_path, env=env,
+                         capture_output=True, text=True)
+    assert ran.returncode != 0 and not log.exists(), "an empty title reached fj issue create"
+
+
+def test_i40_search_fence_reads_its_own_title() -> None:
+    section = _forgejo_section()
+    search = _i40_fence_after(section, _I40_SEARCH_DIRECTIVE)
+    assert tuple(search) == _I40_SEARCH_FENCE, "the re-search fence changed"
+    create = _i40_fence_after(section, _I40_CREATE_DIRECTIVE)
+    titles = [l for l in create + search if l.startswith("TITLE=")]
+    assert len(titles) == 2 and titles[0] == titles[1], "the two fences read the title differently"
+    assert_whole_line(section, _I40_RECOVERY)
+
+
+@pytest.mark.parametrize("shell", _i40_shells())
+def test_i40_search_fence_never_searches_for_an_empty_title(shell: str, tmp_path: Path) -> None:
+    search = _i40_fence_after(_forgejo_section(), _I40_SEARCH_DIRECTIVE)
+    untitled = tmp_path / "plan-draft-y.md"
+    untitled.write_text("# Not a plan title\n")
+    env, log = _i40_fake_env(tmp_path, "empty")
+    ran = subprocess.run([shell, "-c", _i40_script(search, untitled)], cwd=tmp_path, env=env,
+                         capture_output=True, text=True)
+    assert ran.returncode != 0 and not log.exists(), "an empty title reached fj issue search"
+
+    draft = tmp_path / "plan-draft-x.md"
+    draft.write_text(f"# Plan: {_I40_HOSTILE_TITLE}\n")
+    env, log = _i40_fake_env(tmp_path, "ok")
+    ran = subprocess.run([shell, "-c", _i40_script(search, draft)], cwd=tmp_path, env=env,
+                         capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert log.read_text().splitlines() == [
+        "-H", "forge.test", "--style", "minimal", "issue", "search", "-r", "o/r", _I40_HOSTILE_TITLE,
+    ]
+
+
+def test_i40_every_issue_fence_assigns_what_it_reads() -> None:
+    """No fence in `project-issue` may lean on a variable an earlier call set."""
+    blocks = _fence_blocks(_issue_skill())
+    assert len(blocks) > 10, "the fence scanner found almost nothing"
+    offenders = [f"{name}: {line}" for block in blocks for name, line in _i40_unassigned_reads(block)[0]]
+    assert not offenders, "a fence reads a shell variable it never assigned:\n" + "\n".join(offenders)
+
+    _, read = _i40_unassigned_reads(_i40_fence_after(_forgejo_section(), _I40_SEARCH_DIRECTIVE))
+    assert {"DRAFT_PLAN", "TITLE"} <= read, "the scanner no longer sees the re-search fence's reads"
+
+
+def test_i40_label_and_view_take_the_number_as_a_literal() -> None:
+    section = _forgejo_section()
+    assert_whole_line(section, _I40_LABEL)
+    assert_whole_line(section, _I40_VIEW)
+    assert_whole_line(section, _I40_PROVENANCE)
+    lines = [l.strip() for l in section.splitlines()]
+    assert lines.index(_I40_PROVENANCE) < lines.index(_I40_LABEL) < lines.index(_I40_VIEW), (
+        "the literal's provenance is stated after the calls that use it"
+    )
+    create = set(_I40_CREATE_FENCE)
+    stray = [l for l in section.splitlines() if "$ISSUE_NUMBER" in l and l.rstrip() not in create]
+    assert not stray, "`$ISSUE_NUMBER` is used outside the fence that sets it:\n" + "\n".join(stray)
+
+
+def test_i40_start_step3_reports_forgejo_status_as_not_applied() -> None:
+    assert _GOLDEN_DONE_STEP8_FORGEJO.count("In Review") == 1
+    expected = _GOLDEN_DONE_STEP8_FORGEJO.replace("In Review", "In Progress")
+    step3 = skill_section(_start_skill(), "**3. Issue status")
+    assert step3, "project-start has no Step 3"
+    lines = [l.strip() for l in step3.splitlines()]
+    assert_whole_line(step3, expected)
+    assert_whole_line(step3, _GOLDEN_DONE_STEP8_FENCE)
+
+    first = _fence_blocks(step3)[0]
+    assert first[0].startswith("<harness_cli> add-progress") and _GOLDEN_DONE_STEP8_FENCE in first, (
+        "the Forgejo fallback comment is not in the status fence"
+    )
+    limitation = next(i for i, l in enumerate(lines) if l.startswith("> Limitation:"))
+    progress = next(i for i, l in enumerate(lines) if l.startswith("`add-progress` transitions"))
+    assert lines.index(expected) > max(limitation, progress), (
+        "the Forgejo paragraph sits where the GitHub/Jira paragraphs read as applying to it"
+    )
+    assert not _fj_invocations(step3), "Step 3 invokes fj, which has no status contract"
+    forgejo = [l for l in lines if "forgejo" in l.lower()]
+    assert forgejo == [_GOLDEN_DONE_STEP8_FENCE, expected], f"another Forgejo rule in Step 3: {forgejo}"
+    labels = [l for l in lines if re.search(r"라벨|label", l, re.IGNORECASE)]
+    assert len(labels) == 3 and expected in labels, f"a label line was added to the status step: {labels}"
+
+
+def test_i40_step2_states_when_the_iterate_approval_counts() -> None:
+    step2 = skill_section(_issue_skill(), "**2. User Confirmation**")
+    assert step2, "project-issue has no Step 2"
+    assert_whole_line(step2, _I40_STEP2_SUBSTITUTE)
+    assert_whole_line(step2, _I40_STEP2_KEPT)
+    lines = [l.strip() for l in step2.splitlines()]
+    question = next(i for i, l in enumerate(lines) if l.endswith("Link this file to #<id>? [yes/no]"))
+    assert lines.index(_I40_STEP2_SUBSTITUTE) > question, (
+        "the substitution is stated before the screen it refers to"
+    )
+
+    iterate = _iterate_skill()
+    phase1, phase2 = _iterate_phase(iterate, 1), _iterate_phase(iterate, 2)
+    assert_whole_line(phase1, _I40_ITERATE_PHASE1)
+    assert_whole_line(phase2, _I40_ITERATE_PHASE2)
+    p1 = [l.strip() for l in phase1.splitlines()]
+    assert p1.index(_I40_ITERATE_PHASE1) < p1.index("- On approval, continue to Phase 2."), (
+        "the screen requirement comes after the approval it shapes"
+    )
+
+
+def test_i40_approval_substitution_lives_only_in_pinned_lines() -> None:
+    """A bare "from iterate, skip Step 2" beside the pinned lines is caught by vocabulary.
+
+    The net is wide on purpose — any line naming iterate or a Phase together
+    with Step 2, a confirmation, or a skip — because an unconditional bypass
+    can be phrased without any one verb ("no need to confirm again", "한 번만
+    묻는다"). Lines already pinned elsewhere are listed by their exact text.
+    """
+    pinned = {_I40_STEP2_SUBSTITUTE, _I40_ITERATE_PHASE1, _I40_ITERATE_PHASE2}
+    pinned |= set(_G_USAGE + _G_REENTRY + _G_INSTRUCTIONS_HEAD + _G_PHASE3 + _G_PRESERVED)
+    pinned |= {
+        "- On approval, continue to Phase 2.",
+        "- Phase 1 이 방금 만든 플랜 경로를 `project-issue` 에 위치 인자로 그대로 넘긴다. 경로는 이미 알려져 "
+        "있으므로 자동 탐색을 다시 돌리지 않는다 — 초안이 여럿이면 그 탐색은 자기가 만든 파일조차 고르지 "
+        "못하고 멈춘다.",
+    }
+    context = re.compile(r"iterate|phase [12]", re.I)
+    words = re.compile(
+        r"step 2|skip|생략|다시|묻지|묻는다|confirm|확인|approv|승인|replace|대신|stands? in|in place of|"
+        r"no need|once|한 번", re.I,
+    )
+    stray = [
+        f"{path}: {l.strip()}"
+        for path, text in (("project-issue", _issue_skill()), ("project-iterate", _iterate_skill()))
+        for l in text.splitlines()
+        if context.search(l) and words.search(l) and l.strip() not in pinned
+    ]
+    assert not stray, "an approval-substitution rule was stated outside the pinned lines:\n" + "\n".join(stray)
+
+
+def test_i40_test_module_defines_each_name_once() -> None:
+    """A second `def _x` or `_X =` at module level silently replaces the first."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            names.append(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names += [t.id for t in targets if isinstance(t, ast.Name)]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    assert not duplicates, f"defined more than once at module level: {duplicates}"
