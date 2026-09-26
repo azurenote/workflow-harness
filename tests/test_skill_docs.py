@@ -7690,7 +7690,6 @@ def test_i53_step3_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
 
 _I41_REF = "skills/_shared/references/forgejo.md"
 _I41_POINTER = "_shared/references/forgejo.md"
-_I41_BASE = "efec97f"
 _I41_SKILLS = (
     "skills/project-issue/SKILL.md", "skills/project-done/SKILL.md",
     "skills/project-start/SKILL.md", "skills/SKILL-CONFIG.md",
@@ -8173,12 +8172,6 @@ _I41_JIRA_LINES = {
         "> Limitation: this skillset's own repo has no Jira project, so this path was checked against the installed CLI's flag surface and this document's internal consistency. It has not been executed against a live Jira.",
     ),
 }
-_I41_FENCE_EDITS = {
-    "skills/project-issue/SKILL.md": ((
-        "# declares a remote that actually exists locally. Both are accepted by create/search/edit.",
-        "# declares a remote that actually exists locally. create and search take both; edit takes -R only.",
-    ),),
-}
 
 
 def _i41_units(text: str) -> list[str]:
@@ -8410,56 +8403,6 @@ def test_i41_reference_hygiene() -> None:
     ):
         assert not re.search(pattern, ref), f"forgejo.md holds {name}"
     assert_whole_line(ref, _I41_LIMIT_POINTER)
-
-
-def _i41_raw_fences(text: str) -> list[tuple[str, list[str]]]:
-    """Each fence as raw lines, markers and info string included, keyed by the heading above it."""
-    blocks: list[tuple[str, list[str]]] = []
-    heading, fence, current = "", "", None
-    for raw in text.splitlines():
-        s = raw.strip()
-        marker = re.match(r"(`{3,}|~{3,})(.*)$", s)
-        if fence:
-            current.append(raw)
-            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) \
-                    and not marker.group(2).strip():
-                blocks.append((heading, current))
-                fence, current = "", None
-            continue
-        if marker:
-            fence, current = marker.group(1), [raw]
-        elif _STEP_HEADING.match(raw) or raw.startswith("#"):
-            heading = s
-    return blocks
-
-
-def test_i41_fences_match_the_branch_point() -> None:
-    """#41 moved prose only. Compared with where the branch left main, not with a
-    fixed commit: once #41 is on main the branch point is HEAD itself, and later
-    fence edits are not #41's to judge."""
-    def git(*args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
-    try:
-        base = git("merge-base", "HEAD", "origin/main")
-    except FileNotFoundError:
-        pytest.skip("git is not installed")
-    if base.returncode != 0 or not base.stdout.strip():
-        pytest.skip("no origin/main to find the branch point against")
-    # On a later branch the branch point is not HEAD but a main that already
-    # holds #41 — forgejo.md is its mark — and that branch's fence edits are
-    # its own (#37 moved the Plan Body Rules comparisons from 3 to 5).
-    if git("cat-file", "-e", f"{base.stdout.strip()}:skills/_shared/references/forgejo.md").returncode == 0:
-        pytest.skip("#41 is already on the branch point; later fence edits are not #41's to judge")
-    for path in _I41_SKILLS:
-        shown = git("show", f"{base.stdout.strip()}:{path}")
-        if shown.returncode != 0:
-            pytest.skip(f"the branch point does not have {path}")
-        before = shown.stdout
-        for old, new in _I41_FENCE_EDITS.get(path, ()):
-            before = before.replace(old, new)
-        assert _i41_raw_fences(read_skill(path)) == _i41_raw_fences(before), (
-            f"{path}: a fence changed; #41 moves prose only"
-        )
 
 
 # --------------------------------------------------------------------------
