@@ -281,10 +281,10 @@ _REFUSALS = {
     "rename-plan": {"InvalidPlanFileError", "PlanFileExistsError", "MainWorktreeUnresolvedError"},
     "plan-file": {"PlanFileNotFoundError", "MainWorktreeUnresolvedError"},
     "get-base": {"MainWorktreeUnresolvedError"},
-    "create-worktree": {"MainWorktreeUnresolvedError"},
-    "clean-up": {"MainWorktreeUnresolvedError"},
-    "create-branch": set(),
-    "push-branch": set(),
+    "create-worktree": {"MainWorktreeUnresolvedError", "GitRefusedError"},
+    "clean-up": {"MainWorktreeUnresolvedError", "GitRefusedError"},
+    "create-branch": {"GitRefusedError"},
+    "push-branch": {"GitRefusedError"},
 }
 
 

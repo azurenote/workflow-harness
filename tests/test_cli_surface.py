@@ -303,7 +303,7 @@ class TestCleanUpBaseInjection:
         seen: dict = {}
         monkeypatch.setattr(
             cli, "clean_up_stale_branches",
-            lambda bases=None, plan_dir=None: seen.setdefault("bases", bases) or {},
+            lambda bases=None, plan_dir=None: (seen.setdefault("bases", bases), {})[1],
         )
         parser = build_core_parser(clean_up_bases=["develop", "main", "master"])
         dispatch(parser, ["clean-up"])
@@ -317,7 +317,7 @@ class TestCleanUpBaseInjection:
         seen: dict = {}
         monkeypatch.setattr(
             cli, "clean_up_stale_branches",
-            lambda bases=None, plan_dir=None: seen.setdefault("bases", bases) or {},
+            lambda bases=None, plan_dir=None: (seen.setdefault("bases", bases), {})[1],
         )
         dispatch(build_core_parser(), ["clean-up"])
         capsys.readouterr()
@@ -434,3 +434,101 @@ class TestCoreRefusals:
         parser = build_core_parser()
         subparsers(parser).add_parser("quiet").set_defaults(func=lambda _args: nothing)
         assert dispatch(parser, ["quiet"]) == ExitCode.OK
+
+
+# ---------------------------------------------------------------------------
+# #74 — the git outcomes' shape at the CLI: REFUSED is one stderr line and an
+# empty stdout; INCOMPLETE and UNKNOWN put what is known on stdout as JSON.
+# The real-repository rows are in tests/test_git.py; these pin the wiring.
+
+
+def _i74_dispatch(monkeypatch, capsys, name: str, raise_: BaseException, argv: list[str]):
+    from harness_core import cli
+
+    def fail(*_a, **_k):
+        raise raise_
+
+    monkeypatch.setattr(cli, name, fail)
+    capsys.readouterr()
+    rc = dispatch(build_core_parser(), argv)
+    out, err = capsys.readouterr()
+    return rc, out, err
+
+
+_I74_COMMANDS = {
+    "create-branch": ("create_branch", ["create-branch", "x"]),
+    "create-worktree": ("create_worktree", ["create-worktree", "/tmp/i74-never", "x"]),
+    "push-branch": ("push_branch", ["push-branch", "x"]),
+    "clean-up": ("clean_up_stale_branches", ["clean-up"]),
+}
+
+
+class TestI74GitOutcomes:
+    @pytest.mark.parametrize("command", sorted(_I74_COMMANDS))
+    def test_refusal_is_one_line_and_no_stdout(self, command, monkeypatch, capsys) -> None:
+        from harness_core import cli
+        from harness_core.git import GitRefusedError
+
+        monkeypatch.setattr(cli, "_plan_dir", lambda: Path("/nonexistent"))
+        name, argv = _I74_COMMANDS[command]
+        rc, out, err = _i74_dispatch(monkeypatch, capsys, name, GitRefusedError("branch 'x' already exists"), argv)
+        assert rc == ExitCode.REFUSED
+        assert out == ""
+        assert err.strip().splitlines() == ["Error: branch 'x' already exists"]
+
+    @pytest.mark.parametrize("command", ["create-branch", "create-worktree"])
+    def test_incomplete_puts_what_is_left_on_stdout(self, command, monkeypatch, capsys) -> None:
+        import json
+        from harness_core.git import GitIncompleteError
+
+        done = {"branch": "x", "branch_created": True, "error": "boom"}
+        name, argv = _I74_COMMANDS[command]
+        rc, out, err = _i74_dispatch(monkeypatch, capsys, name, GitIncompleteError("left the branch", done), argv)
+        assert rc == ExitCode.INCOMPLETE
+        assert json.loads(out) == done
+        assert "left the branch" in err
+
+    def test_push_unknown_puts_the_state_on_stdout(self, monkeypatch, capsys) -> None:
+        import json
+        from harness_core.git import GitUnknownError
+
+        state = {"branch": "x", "remote_head": None, "error": "connection reset"}
+        rc, out, _ = _i74_dispatch(monkeypatch, capsys, "push_branch", GitUnknownError("no read-back", state),
+                                   ["push-branch", "x"])
+        assert rc == ExitCode.UNKNOWN
+        assert json.loads(out) == state
+
+    def test_push_confirmed_by_the_read_back_is_ok_with_a_note(self, monkeypatch, capsys) -> None:
+        import json
+        from harness_core import cli
+
+        monkeypatch.setattr(cli, "push_branch", lambda _b: "error: failed to push some refs")
+        rc = dispatch(build_core_parser(), ["push-branch", "x"])
+        out, err = capsys.readouterr()
+        assert rc == ExitCode.OK
+        assert json.loads(out) == {"branch": "x"}
+        assert "already has x" in err
+
+    @pytest.mark.parametrize("warnings, expected", [([], ExitCode.OK), (["Could not delete y: z"], ExitCode.INCOMPLETE)])
+    def test_clean_up_warnings_are_incomplete(self, warnings, expected, monkeypatch, capsys) -> None:
+        import json
+        from harness_core import cli
+
+        result = {"removed_worktrees": [], "deleted_branches": [], "skipped_dirty": [],
+                  "protected_branches": [], "warnings": warnings}
+        monkeypatch.setattr(cli, "_plan_dir", lambda: Path("/nonexistent"))
+        monkeypatch.setattr(cli, "clean_up_stale_branches", lambda bases=None, plan_dir=None: result)
+        assert dispatch(build_core_parser(), ["clean-up"]) == expected
+        assert json.loads(capsys.readouterr().out) == result
+
+    def test_the_three_outcomes_are_siblings(self) -> None:
+        # A refusal handler that caught one of the others would turn a partial
+        # write into "safe to rerun".
+        from harness_core.git import GitError, GitIncompleteError, GitRefusedError, GitUnknownError
+
+        classes = (GitRefusedError, GitIncompleteError, GitUnknownError)
+        for cls in classes:
+            assert cls.__bases__ == (GitError,), cls
+        for a in classes:
+            for b in classes:
+                assert a is b or not issubclass(a, b), (a, b)

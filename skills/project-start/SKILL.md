@@ -24,6 +24,7 @@ That document holds the common contract only. This skill additionally reads:
 - `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
 - `~/.claude/skills/_shared/references/github-issue-fields.md` — GitHub issue metadata contract (`issue_tracker: github` only)
 - `~/.claude/skills/_shared/references/forgejo.md` — `fj` surface facts (`issue_tracker: forgejo` only)
+- `~/.claude/skills/_shared/references/exit-codes.md` — what `create-branch` and `create-worktree` mean by each exit code
 
 Read nothing else from the reference set; the rest does not apply here.
 
@@ -187,6 +188,12 @@ echo "check-ignore rc=$?"
 # fallback (undeclared): git checkout -b "<branch-name>"
 ```
 
+`create-branch` exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`):
+- `OK`: the branch is created and checked out; go on.
+- `REFUSED`: nothing was created; the one stderr line says why. Fix the cause and run it again.
+- `INCOMPLETE`: the branch was created and the command still failed. Stop and report the stdout JSON; do not clean up and do not run it again until a person has looked.
+- `CRASH`: stop and report it as a bug.
+
 Branch push happens during `project-done`. Do not push here.
 
 **2-B. Worktree (default)**
@@ -198,7 +205,13 @@ Branch push happens during `project-done`. Do not push here.
 <harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>"
 ```
 
-`create-worktree` takes the relative path under the main checkout and runs there, from any CWD, and prints the worktree's absolute path. It stops before creating anything when the layout has no main work tree.
+`create-worktree` takes the relative path under the main checkout and runs there, from any CWD, and prints the worktree's absolute path when it ends `OK`.
+
+`create-worktree` exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`):
+- `OK`: stdout is the worktree's absolute path; read it as `$WORKTREE_PATH` only on this code.
+- `REFUSED`: nothing was created; the one stderr line says why. Fix the cause and run it again.
+- `INCOMPLETE`: the command failed after creating the branch, the worktree, or both. Stop and report the stdout JSON; do not clean up and do not run it again until a person has looked.
+- `CRASH`: stop and report it as a bug.
 
 Without a harness_cli, use this fence — **run it as one shell invocation**; the four resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`. Fill `BASE` by Step 1-B's rule: empty when the plan declares no base or declares the project default base, so the worktree branches from the main checkout's HEAD; otherwise the declared base, which is resolved as a local branch first, then as `origin/<base>`, fetching that one branch when neither exists; a base written as `origin/<base>` skips the local branch. `--no-track` keeps either one from becoming the new branch's upstream.
 

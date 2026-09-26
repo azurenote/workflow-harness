@@ -14,9 +14,12 @@ inversion).
 Exit codes are :class:`~harness_core.exitcodes.ExitCode` members; what each core
 command means by them is in ``skills/_shared/references/exit-codes.md``. A core
 command refuses a precondition it knows — no plan, no draft or several, a draft
-that cannot be renamed, a main checkout git cannot name — with one line on
-stderr and ``REFUSED``. Any other exception is left to crash, so a bug still
-reads as one.
+that cannot be renamed, a main checkout git cannot name, a git failure that
+changed nothing (``GitRefusedError``) — with one line on stderr and
+``REFUSED``. A git write that failed after changing something ends
+``INCOMPLETE``, and a push whose effect could not be read back ``UNKNOWN``;
+both put what is known on stdout as JSON. Any other exception is left to
+crash, so a bug still reads as one.
 """
 
 from __future__ import annotations
@@ -29,6 +32,9 @@ from typing import Callable
 from .config import is_issue_id
 from .exitcodes import ExitCode
 from .git import (
+    GitIncompleteError,
+    GitRefusedError,
+    GitUnknownError,
     MainWorktreeUnresolvedError,
     clean_up_stale_branches,
     create_branch,
@@ -144,26 +150,45 @@ def _get_base(args: argparse.Namespace) -> ExitCode:
 
 
 def _create_branch(args: argparse.Namespace) -> ExitCode:
-    print(create_branch(args.branch_name, base_ref=args.base_ref))
+    try:
+        print(create_branch(args.branch_name, base_ref=args.base_ref))
+    except GitIncompleteError as exc:
+        print_error(str(exc))
+        print_json(exc.done)
+        return ExitCode.INCOMPLETE
     return ExitCode.OK
 
 
 def _create_worktree(args: argparse.Namespace) -> ExitCode:
-    print(create_worktree(args.path, args.branch_name, base_ref=args.base_ref))
+    try:
+        print(create_worktree(args.path, args.branch_name, base_ref=args.base_ref))
+    except GitIncompleteError as exc:
+        print_error(str(exc))
+        print_json(exc.done)
+        return ExitCode.INCOMPLETE
     return ExitCode.OK
 
 
 def _push_branch(args: argparse.Namespace) -> ExitCode:
-    push_branch(args.branch_name)
+    try:
+        overridden = push_branch(args.branch_name)
+    except GitUnknownError as exc:
+        print_error(str(exc))
+        print_json(exc.state)
+        return ExitCode.UNKNOWN
+    if overridden is not None:
+        print_error(
+            f"push reported a failure, but origin already has {args.branch_name} "
+            "at the local commit"
+        )
     print_json({"branch": args.branch_name})
     return ExitCode.OK
 
 
 def _clean_up(args: argparse.Namespace) -> ExitCode:
-    print_json(
-        clean_up_stale_branches(bases=args.clean_up_bases, plan_dir=_plan_dir())
-    )
-    return ExitCode.OK
+    result = clean_up_stale_branches(bases=args.clean_up_bases, plan_dir=_plan_dir())
+    print_json(result)
+    return ExitCode.INCOMPLETE if result.get("warnings") else ExitCode.OK
 
 
 # ── Registration ─────────────────────────────────────────────────────────────
@@ -228,7 +253,7 @@ def register_core(
     branch = sub.add_parser("create-branch", help="Create and checkout a branch")
     branch.add_argument("branch_name")
     branch.add_argument("--base-ref")
-    branch.set_defaults(func=_create_branch)
+    branch.set_defaults(func=_refusing(_create_branch, GitRefusedError))
 
     worktree = sub.add_parser(
         "create-worktree", help="Create a git worktree with a new branch"
@@ -236,15 +261,18 @@ def register_core(
     worktree.add_argument("path")
     worktree.add_argument("branch_name")
     worktree.add_argument("--base-ref")
-    worktree.set_defaults(func=_refusing(_create_worktree, MainWorktreeUnresolvedError))
+    worktree.set_defaults(
+        func=_refusing(_create_worktree, MainWorktreeUnresolvedError, GitRefusedError)
+    )
 
     push = sub.add_parser("push-branch", help="Push a branch to origin")
     push.add_argument("branch_name")
-    push.set_defaults(func=_push_branch)
+    push.set_defaults(func=_refusing(_push_branch, GitRefusedError))
 
     clean = sub.add_parser("clean-up", help="Delete stale local branches and their worktrees")
     clean.set_defaults(
-        func=_refusing(_clean_up, MainWorktreeUnresolvedError), clean_up_bases=clean_up_bases
+        func=_refusing(_clean_up, MainWorktreeUnresolvedError, GitRefusedError),
+        clean_up_bases=clean_up_bases,
     )
 
 

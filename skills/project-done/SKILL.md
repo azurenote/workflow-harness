@@ -24,6 +24,7 @@ That document holds the common contract only. This skill additionally reads:
 - `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
 - `~/.claude/skills/_shared/references/github-issue-fields.md` — GitHub issue metadata contract (`issue_tracker: github` only)
 - `~/.claude/skills/_shared/references/forgejo.md` — `fj` surface facts (`issue_tracker: forgejo` only)
+- `~/.claude/skills/_shared/references/exit-codes.md` — what `push-branch` means by each exit code
 
 Read nothing else from the reference set; the rest does not apply here.
 
@@ -232,6 +233,12 @@ Determine `<trailer>` from the sub-PR decision in 1-B:
 ```bash
 <harness_cli> push-branch "<branch-name>"   # fallback: git push -u origin "<branch-name>"
 ```
+
+`push-branch` exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`):
+- `OK`: origin has the branch at the local commit; go on to Step 7. A stderr note that the push reported a failure after the ref landed is not an error.
+- `REFUSED`: origin does not have this commit; the one stderr line says why. Report it and stop — a rejected push usually means the branch moved on origin, and that is for a person to resolve.
+- `UNKNOWN`: the push failed and origin could not be read back. Push once more — a push is idempotent, the one exception to the general `UNKNOWN` rule. If that ends `UNKNOWN` too, stop and report the stdout JSON.
+- `CRASH`: stop and report it as a bug.
 
 **7. PR / Branch handling**
 

@@ -802,3 +802,481 @@ class TestWorktreeRoot:
         _git("init", "--bare", cwd=bare)
         chdir(bare)
         assert worktree_root() == bare.resolve()
+
+
+# ---------------------------------------------------------------------------
+# #74 — a git failure in a core command ends REFUSED, INCOMPLETE or UNKNOWN,
+# never CRASH. What was measured on git 2.54 decides each row: an existing
+# path or an unwritable parent makes `worktree add -b` leave the branch, a
+# failing post-checkout hook leaves the branch (and the worktree), and a
+# pre-push hook fails a push whose ref has already landed.
+
+
+@pytest.fixture
+def _i74_repo(tmp_path, monkeypatch, chdir):
+    """A repo on main with the host's git config cut off, as the CWD."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "home"))
+    repo = tmp_path / "repo"
+    _init_repo(repo, default_branch="main")
+    chdir(repo)
+    return repo
+
+
+def _i74_failing_hook(repo: Path, name: str) -> None:
+    """Point this repo's hooksPath at a dir whose ``name`` hook exits 1."""
+    hooks = repo.parent / f"hooks-{repo.name}"
+    hooks.mkdir(exist_ok=True)
+    hook = hooks / name
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    _git("config", "core.hooksPath", str(hooks), cwd=repo)
+
+
+def _i74_run(argv: list[str], capsys) -> tuple[int, str, str]:
+    from harness_core.cli import build_core_parser, dispatch
+    capsys.readouterr()
+    rc = dispatch(build_core_parser(), argv)
+    out, err = capsys.readouterr()
+    return rc, out, err
+
+
+def _i74_branch(name: str, cwd: Path) -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", f"refs/heads/{name}"],
+        cwd=str(cwd), capture_output=True,
+    ).returncode == 0
+
+
+def _i74_registered(path: Path, cwd: Path) -> bool:
+    listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=str(cwd), capture_output=True, text=True,
+    ).stdout
+    want = os.path.realpath(path)
+    return any(l.startswith("worktree ") and os.path.realpath(l[9:]) == want for l in listing.splitlines())
+
+
+def _i74_refused(rc: int, out: str, err: str) -> str:
+    """Assert the REFUSED shape — one stderr line, empty stdout — and return the line."""
+    from harness_core.exitcodes import ExitCode
+    assert rc == ExitCode.REFUSED, (rc, out, err)
+    assert out == "", out
+    lines = err.strip().splitlines()
+    assert len(lines) == 1, err
+    return lines[0]
+
+
+class TestI74CreateBranch:
+    def test_existing_branch_is_refused(self, _i74_repo, capsys):
+        _git("branch", "x", cwd=_i74_repo)
+        line = _i74_refused(*_i74_run(["create-branch", "x"], capsys))
+        assert "'x' already exists" in line
+        assert current_branch() == "main"
+
+    def test_a_tag_of_that_name_is_not_a_branch(self, _i74_repo, capsys):
+        from harness_core.exitcodes import ExitCode
+        _git("tag", "x", cwd=_i74_repo)
+        rc, out, _ = _i74_run(["create-branch", "x"], capsys)
+        assert rc == ExitCode.OK and out.strip() == "x"
+        head = subprocess.run(["git", "symbolic-ref", "HEAD"], cwd=str(_i74_repo),
+                              capture_output=True, text=True).stdout.strip()
+        assert head == "refs/heads/x"
+
+    def test_unresolvable_base_is_refused(self, _i74_repo, capsys):
+        line = _i74_refused(*_i74_run(["create-branch", "x", "--base-ref", "no/such"], capsys))
+        assert "no/such" in line
+        assert not _i74_branch("x", _i74_repo)
+
+    def test_checkout_that_creates_nothing_is_refused(self, _i74_repo, capsys):
+        _add_branch_with_commit(_i74_repo, "other", from_branch="main")
+        (_i74_repo / "other").write_text("dirty")  # untracked, and `other` tracks it
+        line = _i74_refused(*_i74_run(["create-branch", "x", "--base-ref", "other"], capsys))
+        assert "created nothing" in line
+        assert not _i74_branch("x", _i74_repo)
+
+    def test_hook_failure_after_the_branch_is_incomplete(self, _i74_repo, capsys):
+        import json
+        from harness_core.exitcodes import ExitCode
+        _i74_failing_hook(_i74_repo, "post-checkout")
+        rc, out, _ = _i74_run(["create-branch", "x"], capsys)
+        assert rc == ExitCode.INCOMPLETE
+        done = json.loads(out)
+        assert set(done) == {"branch", "branch_created", "checked_out", "error"}
+        assert done["branch"] == "x" and done["branch_created"] is True
+        # What the JSON says is what is there.
+        assert _i74_branch("x", _i74_repo)
+        assert done["checked_out"] == current_branch()
+
+
+class TestI74CreateWorktree:
+    def _refused_and_no_branch(self, repo, capsys, path, branch="b") -> str:
+        line = _i74_refused(*_i74_run(["create-worktree", str(path), branch], capsys))
+        assert not _i74_branch(branch, repo), "a refusal left the branch behind"
+        return line
+
+    def test_nonempty_path_is_refused_before_the_branch(self, _i74_repo, tmp_path, capsys):
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / "y").write_text("y")
+        assert "already exists" in self._refused_and_no_branch(_i74_repo, capsys, wt)
+
+    def test_dangling_link_is_refused(self, _i74_repo, tmp_path, capsys):
+        wt = tmp_path / "wt"
+        wt.symlink_to(tmp_path / "nowhere")
+        self._refused_and_no_branch(_i74_repo, capsys, wt)
+
+    def test_empty_directory_is_refused(self, _i74_repo, tmp_path, capsys):
+        # git would take it; refusing it keeps "there after a failure" meaning "ours".
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        self._refused_and_no_branch(_i74_repo, capsys, wt)
+
+    def test_registered_path_with_no_directory_is_refused(self, _i74_repo, tmp_path, capsys):
+        import shutil
+        wt = tmp_path / "wt"
+        _git("worktree", "add", "-b", "b0", str(wt), cwd=_i74_repo)
+        shutil.rmtree(wt)
+        self._refused_and_no_branch(_i74_repo, capsys, wt)
+
+    def test_existing_branch_is_refused_before_the_path(self, _i74_repo, tmp_path, capsys):
+        _git("branch", "b", cwd=_i74_repo)
+        wt = tmp_path / "wt"
+        _i74_refused(*_i74_run(["create-worktree", str(wt), "b"], capsys))
+        assert not os.path.lexists(wt)
+
+    def test_unresolvable_base_creates_nothing(self, _i74_repo, tmp_path, capsys):
+        wt = tmp_path / "wt"
+        line = _i74_refused(*_i74_run(["create-worktree", str(wt), "b", "--base-ref", "no/such"], capsys))
+        assert "no/such" in line
+        assert not _i74_branch("b", _i74_repo) and not os.path.lexists(wt)
+
+    def test_nothing_left_behind_is_refused(self, _i74_repo, tmp_path, capsys):
+        # An invalid name fails before git makes anything: the read-back finds nothing.
+        wt = tmp_path / "wt"
+        line = self._refused_and_no_branch(_i74_repo, capsys, wt, "bad..name")
+        assert "created nothing" in line
+        assert not os.path.lexists(wt) and not _i74_registered(wt, _i74_repo)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root writes through a read-only directory")
+    def test_unwritable_parent_leaves_the_branch_and_is_incomplete(self, _i74_repo, tmp_path, capsys):
+        import json
+        from harness_core.exitcodes import ExitCode
+        ro = tmp_path / "ro"
+        ro.mkdir()
+        wt = ro / "wt"
+        ro.chmod(0o555)
+        try:
+            rc, out, _ = _i74_run(["create-worktree", str(wt), "b"], capsys)
+        finally:
+            ro.chmod(0o755)
+        assert rc == ExitCode.INCOMPLETE
+        done = json.loads(out)
+        assert set(done) == {"branch", "worktree", "branch_created", "worktree_created", "error"}
+        assert (done["branch_created"], done["worktree_created"]) == (True, False)
+        assert done["branch_created"] == _i74_branch("b", _i74_repo)
+        assert done["worktree_created"] == (os.path.lexists(wt) or _i74_registered(wt, _i74_repo))
+
+    def test_hook_failure_leaves_both_and_is_incomplete(self, _i74_repo, tmp_path, capsys):
+        import json
+        from harness_core.exitcodes import ExitCode
+        _i74_failing_hook(_i74_repo, "post-checkout")
+        wt = tmp_path / "wt"
+        rc, out, _ = _i74_run(["create-worktree", str(wt), "b"], capsys)
+        assert rc == ExitCode.INCOMPLETE
+        done = json.loads(out)
+        assert (done["branch_created"], done["worktree_created"]) == (True, True)
+        assert done["branch_created"] == _i74_branch("b", _i74_repo)
+        assert done["worktree_created"] == (os.path.lexists(wt) or _i74_registered(wt, _i74_repo))
+        assert os.path.realpath(done["worktree"]) == os.path.realpath(wt)
+
+    def test_failed_fallback_retry_goes_through_the_read_back(self, _i74_repo, tmp_path, capsys, monkeypatch):
+        import harness_core.git as hgit
+        real = hgit._run_git
+
+        def old_git(*args: str, **kwargs):
+            if "worktree" in args and "--no-track" in args:
+                raise GitError(" ".join(args), "error: unknown option `no-track'")
+            if "worktree" in args:
+                raise GitError(" ".join(args), "fatal: the retry failed too")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(hgit, "_run_git", old_git)
+        wt = tmp_path / "wt"
+        line = self._refused_and_no_branch(_i74_repo, capsys, wt)
+        # Both failures are reported, the first first: it says why the retry ran.
+        assert "unknown option" in line and "retry failed" in line
+        assert line.index("unknown option") < line.index("retry failed")
+
+
+def _i74_remote(tmp_path: Path, repo: Path, name: str = "remote.git") -> Path:
+    remote = tmp_path / name
+    remote.mkdir()
+    _git("init", "--bare", "-b", "main", cwd=remote)
+    return remote
+
+
+def _i74_pushed(tmp_path: Path, repo: Path) -> Path:
+    """origin is a bare remote holding main and branch `b` at the local commit."""
+    remote = _i74_remote(tmp_path, repo)
+    _git("remote", "add", "origin", str(remote), cwd=repo)
+    _git("push", "origin", "main", cwd=repo)
+    _add_branch_with_commit(repo, "b", from_branch="main")
+    return remote
+
+
+def _i74_git_calls(monkeypatch) -> list[tuple[list[str], dict | None]]:
+    """Record every subprocess.run the git module makes: argv and env."""
+    import harness_core.git as hgit
+    real = subprocess.run
+    calls: list[tuple[list[str], dict | None]] = []
+
+    def spy(cmd, *args, **kwargs):
+        calls.append((list(cmd), kwargs.get("env")))
+        return real(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hgit.subprocess, "run", spy)
+    return calls
+
+
+def _i74_ran(calls, word: str) -> bool:
+    return any(word in cmd for cmd, _ in calls)
+
+
+class TestI74PushBranch:
+    def test_non_fast_forward_is_refused_without_a_read_back(self, _i74_repo, tmp_path, capsys, monkeypatch):
+        remote = _i74_pushed(tmp_path, _i74_repo)
+        other = tmp_path / "other"
+        _git("clone", "-q", str(remote), str(other), cwd=tmp_path)
+        _git("checkout", "-b", "b", cwd=other)
+        (other / "o").write_text("o")
+        _git("add", ".", cwd=other)
+        _git("commit", "-m", "theirs", cwd=other)
+        _git("push", "origin", "b", cwd=other)
+        calls = _i74_git_calls(monkeypatch)
+        line = _i74_refused(*_i74_run(["push-branch", "b"], capsys))
+        assert "rejected" in line and "hint:" not in line
+        assert _i74_ran(calls, "push") and not _i74_ran(calls, "ls-remote"), calls
+
+    def test_no_local_branch_is_refused_before_any_push(self, _i74_repo, tmp_path, capsys, monkeypatch):
+        _i74_pushed(tmp_path, _i74_repo)
+        calls = _i74_git_calls(monkeypatch)
+        line = _i74_refused(*_i74_run(["push-branch", "nope"], capsys))
+        assert "nope" in line
+        assert not _i74_ran(calls, "push")
+
+    def test_failure_after_the_ref_landed_is_ok(self, _i74_repo, tmp_path, capsys, monkeypatch):
+        import json
+        from harness_core.exitcodes import ExitCode
+        _i74_pushed(tmp_path, _i74_repo)
+        _git("push", "origin", "b", cwd=_i74_repo)
+        _i74_failing_hook(_i74_repo, "pre-push")
+        calls = _i74_git_calls(monkeypatch)
+        rc, out, err = _i74_run(["push-branch", "b"], capsys)
+        assert rc == ExitCode.OK
+        assert json.loads(out) == {"branch": "b"}
+        assert len(err.strip().splitlines()) == 1 and "already has b" in err
+        assert _i74_ran(calls, "ls-remote")
+
+    def test_failure_with_the_branch_absent_is_refused(self, _i74_repo, tmp_path, capsys):
+        _i74_pushed(tmp_path, _i74_repo)
+        _i74_failing_hook(_i74_repo, "pre-push")
+        line = _i74_refused(*_i74_run(["push-branch", "b"], capsys))
+        assert "has no such branch" in line
+
+    def test_failure_with_another_commit_there_is_refused(self, _i74_repo, tmp_path, capsys):
+        # origin has `b`, just not the local commit: a branch being there is not OK.
+        _i74_pushed(tmp_path, _i74_repo)
+        _git("push", "origin", "b", cwd=_i74_repo)
+        _git("checkout", "b", cwd=_i74_repo)
+        (_i74_repo / "more").write_text("more")
+        _git("add", ".", cwd=_i74_repo)
+        _git("commit", "-m", "more", cwd=_i74_repo)
+        _i74_failing_hook(_i74_repo, "pre-push")
+        line = _i74_refused(*_i74_run(["push-branch", "b"], capsys))
+        assert "is at" in line
+
+    def test_unreadable_origin_is_unknown(self, _i74_repo, tmp_path, capsys):
+        import json
+        from harness_core.exitcodes import ExitCode
+        _git("remote", "add", "origin", str(tmp_path / "missing.git"), cwd=_i74_repo)
+        _add_branch_with_commit(_i74_repo, "b", from_branch="main")
+        rc, out, _ = _i74_run(["push-branch", "b"], capsys)
+        assert rc == ExitCode.UNKNOWN
+        state = json.loads(out)
+        assert set(state) == {"branch", "remote_head", "error"}
+        assert state["branch"] == "b" and state["remote_head"] is None and state["error"]
+
+    def test_push_and_read_back_run_in_the_c_locale(self, _i74_repo, tmp_path, capsys, monkeypatch):
+        _i74_pushed(tmp_path, _i74_repo)
+        _git("push", "origin", "b", cwd=_i74_repo)
+        _i74_failing_hook(_i74_repo, "pre-push")
+        calls = _i74_git_calls(monkeypatch)
+        _i74_run(["push-branch", "b"], capsys)
+        network = [(cmd, env) for cmd, env in calls if "push" in cmd or "ls-remote" in cmd]
+        assert {"push", "ls-remote"} <= {w for cmd, _ in network for w in cmd}
+        for cmd, env in network:
+            assert env is not None and env.get("LC_ALL") == "C", cmd
+            assert env.get("PATH") == os.environ["PATH"], f"{cmd}: the environment was replaced, not extended"
+
+    def test_read_back_asks_the_push_url(self, _i74_repo, tmp_path, capsys):
+        from harness_core.exitcodes import ExitCode
+        _i74_pushed(tmp_path, _i74_repo)  # origin url: `b` absent there
+        pushed_to = _i74_remote(tmp_path, _i74_repo, "push.git")
+        _git("push", str(pushed_to), "b", cwd=_i74_repo)
+        _git("config", "remote.origin.pushurl", str(pushed_to), cwd=_i74_repo)
+        _i74_failing_hook(_i74_repo, "pre-push")
+        rc, _, err = _i74_run(["push-branch", "b"], capsys)
+        assert rc == ExitCode.OK, err
+
+
+class TestI74CleanUp:
+    def test_failed_fetch_is_refused(self, tmp_path, chdir, capsys):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        # With no remote at all `fetch --prune` succeeds; a remote that is gone does not.
+        _git("remote", "add", "origin", str(tmp_path / "missing.git"), cwd=repo)
+        _merged_branch(repo, "feat/merged")
+        chdir(repo)
+        line = _i74_refused(*_i74_run(["clean-up"], capsys))
+        assert "fetch --prune" in line
+        assert branch_exists("feat/merged"), "a refused clean-up deleted something"
+
+    def test_a_failed_deletion_is_incomplete(self, tmp_path, chdir, capsys):
+        import json
+        from harness_core.exitcodes import ExitCode
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/current")
+        _git("checkout", "feat/current", cwd=repo)  # the main checkout sits on it
+        chdir(repo)
+        rc, out, _ = _i74_run(["clean-up"], capsys)
+        assert rc == ExitCode.INCOMPLETE
+        result = json.loads(out)
+        assert result["warnings"] and "feat/current" not in result["deleted_branches"]
+
+    def test_a_failed_status_check_is_incomplete(self, tmp_path, chdir, capsys, monkeypatch):
+        import json
+        import harness_core.git as hgit
+        from harness_core.exitcodes import ExitCode
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/locked")
+        wt = tmp_path / "wt-locked"
+        _git("worktree", "add", str(wt), "feat/locked", cwd=repo)
+        real = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "-C", str(wt)] and "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: index.lock exists")
+            return real(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(hgit.subprocess, "run", fake_run)
+        chdir(repo)
+        rc, out, _ = _i74_run(["clean-up"], capsys)
+        assert rc == ExitCode.INCOMPLETE
+        result = json.loads(out)
+        assert "feat/locked" in result["skipped_dirty"]
+        assert any("status check failed" in w for w in result["warnings"]), result
+
+    def test_dirty_only_is_ok(self, tmp_path, chdir, capsys):
+        import json
+        from harness_core.exitcodes import ExitCode
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/dirty")
+        wt = tmp_path / "wt-dirty"
+        _git("worktree", "add", str(wt), "feat/dirty", cwd=repo)
+        (wt / "wip").write_text("wip")
+        chdir(repo)
+        rc, out, _ = _i74_run(["clean-up"], capsys)
+        result = json.loads(out)
+        assert rc == ExitCode.OK, result
+        assert result["skipped_dirty"] == ["feat/dirty"] and result["warnings"] == []
+
+
+class TestI74ReviewFixes:
+    """What the implementation review found, each measured on a real repository."""
+
+    def test_an_injected_base_is_never_stale(self, tmp_path, chdir, capsys):
+        from harness_core.exitcodes import ExitCode
+        repo = _repo_with_remote(tmp_path)
+        _git("branch", "master", cwd=repo)  # merged into develop, as a fresh base is
+        chdir(repo)
+        result = clean_up_stale_branches(bases=["develop", "main", "master"])
+        assert "master" not in result["deleted_branches"] and branch_exists("master")
+        _git("checkout", "master", cwd=repo)
+        result = clean_up_stale_branches(bases=["develop", "main", "master"])
+        assert result["warnings"] == [], "the checked-out base made every run incomplete"
+
+    def test_the_main_worktree_is_never_removed(self, tmp_path, chdir):
+        repo = _repo_with_remote(tmp_path)
+        _merged_branch(repo, "feat/current")
+        _git("checkout", "feat/current", cwd=repo)
+        chdir(repo)
+        result = clean_up_stale_branches()
+        assert not any("Could not remove worktree" in w for w in result["warnings"]), result
+        assert any("feat/current" in w for w in result["warnings"]), result
+
+    def test_an_option_shaped_push_url_is_not_run(self, _i74_repo, tmp_path, capsys, monkeypatch):
+        from harness_core.exitcodes import ExitCode
+        _i74_pushed(tmp_path, _i74_repo)
+        marker = tmp_path / "PWNED"
+        _git("config", "remote.origin.pushurl", f"--upload-pack=touch {marker};false", cwd=_i74_repo)
+        calls = _i74_git_calls(monkeypatch)
+        rc, _, err = _i74_run(["push-branch", "b"], capsys)
+        assert not marker.exists(), "the read-back ran the URL as an option"
+        reads = [cmd for cmd, _ in calls if "ls-remote" in cmd]
+        assert reads and all(cmd[cmd.index("ls-remote") + 1] == "--" for cmd in reads), reads
+        assert rc in (ExitCode.REFUSED, ExitCode.UNKNOWN), err
+
+    def test_several_push_urls_are_unknown(self, _i74_repo, tmp_path, capsys):
+        from harness_core.exitcodes import ExitCode
+        remote = _i74_pushed(tmp_path, _i74_repo)
+        second = _i74_remote(tmp_path, _i74_repo, "second.git")
+        _git("config", "--add", "remote.origin.pushurl", str(remote), cwd=_i74_repo)
+        _git("config", "--add", "remote.origin.pushurl", str(second), cwd=_i74_repo)
+        _i74_failing_hook(_i74_repo, "pre-push")
+        rc, out, _ = _i74_run(["push-branch", "b"], capsys)
+        assert rc == ExitCode.UNKNOWN, out
+
+    def test_a_tag_is_no_branch_for_the_worktree_either(self, _i74_repo, tmp_path, capsys):
+        from harness_core.exitcodes import ExitCode
+        _git("tag", "b", cwd=_i74_repo)
+        rc, out, err = _i74_run(["create-worktree", str(tmp_path / "wt"), "b"], capsys)
+        assert rc == ExitCode.OK, err
+        assert _i74_branch("b", _i74_repo)
+
+    def test_a_tag_is_no_branch_for_the_read_back(self, _i74_repo, capsys):
+        # A tag named like the branch must not read back as "the branch was made".
+        _git("tag", "x", cwd=_i74_repo)
+        _add_branch_with_commit(_i74_repo, "other", from_branch="main")
+        (_i74_repo / "other").write_text("dirty")
+        line = _i74_refused(*_i74_run(["create-branch", "x", "--base-ref", "other"], capsys))
+        assert "created nothing" in line
+
+    def test_pre_checks_run_before_any_fetch(self, _i74_repo, tmp_path, capsys, monkeypatch):
+        remote = _i74_remote(tmp_path, _i74_repo)
+        _git("remote", "add", "origin", str(remote), cwd=_i74_repo)
+        _git("push", "origin", "main", cwd=_i74_repo)
+        _git("push", "origin", "main:feat/remote-only", cwd=_i74_repo)
+        _git("branch", "-dr", "origin/feat/remote-only", cwd=_i74_repo)  # remote-only: resolving it fetches
+        _git("branch", "b", cwd=_i74_repo)
+        calls = _i74_git_calls(monkeypatch)
+        _i74_refused(*_i74_run(["create-worktree", str(tmp_path / "wt"), "b", "--base-ref", "feat/remote-only"], capsys))
+        _i74_refused(*_i74_run(["create-branch", "b", "--base-ref", "feat/remote-only"], capsys))
+        assert not _i74_ran(calls, "fetch"), [c for c, _ in calls if "fetch" in c]
+
+    def test_one_line_drops_hints_and_keeps_errors(self):
+        from harness_core.git import _one_line
+        stderr = "hint: Updates were rejected\nhint: see 'git push --help'\nerror: failed to push some refs\nfatal: the end"
+        assert _one_line(stderr) == "error: failed to push some refs; fatal: the end"
+        assert _one_line("hint: only a hint\nplain words") == "plain words"
+
+    def test_a_push_url_with_a_space_is_read_back(self, _i74_repo, tmp_path, capsys):
+        from harness_core.exitcodes import ExitCode
+        _i74_pushed(tmp_path, _i74_repo)
+        spaced = _i74_remote(tmp_path, _i74_repo, "with space.git")
+        _git("push", str(spaced), "b", cwd=_i74_repo)
+        _git("config", "remote.origin.pushurl", str(spaced), cwd=_i74_repo)
+        _i74_failing_hook(_i74_repo, "pre-push")
+        rc, _, err = _i74_run(["push-branch", "b"], capsys)
+        assert rc == ExitCode.OK, err
