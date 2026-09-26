@@ -55,18 +55,35 @@ PROTECT=$(grep -hERo '^base_branch:[[:space:]]*\S+' "$MAIN_CHECKOUT"/.task/plan/
   | sed -E 's/^base_branch:[[:space:]]*//' | sort -u)
 printf 'PROTECT=%s\n' "$PROTECT"
 
-# Gone branch list, excluding the protected set
-git branch -vv | grep '\[origin/.*: gone\]' | awk '{print $1}' \
+# Gone branches by bare name (for-each-ref prints no `*`/`+` marks), excluding the protected set and develop/main
+git for-each-ref --format='%(refname:lstrip=2) %(upstream:track)' refs/heads \
+  | awk '$2 == "[gone]" && $1 != "develop" && $1 != "main" {print $1}' \
   | grep -vxF "$PROTECT" 2>/dev/null
 
 # Worktree list
 git worktree list
 ```
 
-Then remove by hand, one branch at a time. These are templates, not a script: fill each in from the output above, and take the worktree path from `git worktree list`, which prints it absolute:
+Then remove by hand, one branch per run, from the main checkout. Fill in the two values — `BRANCH` from the gone list above, `WT` from `git worktree list`, which prints the path absolute — and run the fence as one shell call. Leave out any branch in `PROTECT`. The main checkout (the first entry of that list) is never a `WT`. An entry marked `prunable` has lost its directory: run `git worktree prune` first, then leave `WT` empty. If a value contains `'`, write it as `'\''`.
+
+The removal applies the harness's dirty-worktree guard (step 4 above) with the same `skipped_dirty` word. When `git -C "$WT" status --porcelain` prints anything (a modified or untracked file), the fence removes nothing — worktree and branch both stay — and prints `skipped_dirty: <branch> (<path>)`; when that check cannot run at all, it does the same below git's own error and adds `— status check failed`. Report every `skipped_dirty` line to the user, with the branch and path, so they see what was preserved and why. A clean worktree is removed only when it has `BRANCH` checked out and the shell is not inside it, and the branch is deleted only after that removal succeeds. Nothing is silenced: git's own errors always show, and a refusal or a failed removal exits non-zero.
 
 ```bash
-# Manually remove gone branches, excluding the protected set and default bases (develop/main)
-git worktree remove --force "<worktree path from git worktree list>" 2>/dev/null || true
-git branch -D <gone-branch>   # only when it is not in PROTECT and is not develop/main
+# One gone branch per run. Leave out any branch in PROTECT.
+BRANCH='<gone-branch>'
+WT='<its worktree path, absolute; leave empty when the branch has none>'
+if [ -z "$WT" ]; then
+  git branch -D "$BRANCH"
+elif ! STATUS="$(git -C "$WT" status --porcelain)"; then
+  echo "skipped_dirty: $BRANCH ($WT) — status check failed"
+elif [ -n "$STATUS" ]; then
+  echo "skipped_dirty: $BRANCH ($WT)"
+elif [ "$(git -C "$WT" symbolic-ref -q HEAD)" != "refs/heads/$BRANCH" ]; then
+  echo "refused: $WT does not have $BRANCH checked out" >&2; false
+else
+  case "$(pwd -P)/" in
+    "$(cd -P -- "$WT" >/dev/null 2>&1 && pwd -P)/"*) echo "refused: this shell is inside $WT; run from the main checkout" >&2; false ;;
+    *) git worktree remove --force "$WT" && git branch -D "$BRANCH" ;;
+  esac
+fi
 ```

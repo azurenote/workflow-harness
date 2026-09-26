@@ -5513,7 +5513,6 @@ _I50_RESOLUTION_LINES = (
     ('skills/project-clean/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
     ('skills/project-clean/SKILL.md', 'PROTECT=$(grep -hERo \'^base_branch:[[:space:]]*\\S+\' "$MAIN_CHECKOUT"/.task/plan/plan-*.md 2>/dev/null \\', 1),
     ('skills/project-clean/SKILL.md', 'git worktree list', 1),
-    ('skills/project-clean/SKILL.md', 'git worktree remove --force "<worktree path from git worktree list>" 2>/dev/null || true', 1),
     ('skills/project-done/SKILL.md', 'BASE_BEFORE="$(git -C "$MAIN_CHECKOUT" rev-parse <base_branch>)"', 1),
     ('skills/project-done/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 3),
     ('skills/project-done/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
@@ -6717,3 +6716,275 @@ def test_i45_post_fence_survives_noclobber(shell: str, tracker: str, tmp_path: P
     script = "set -o noclobber\n" + _i45_script(_i45_fences()[tracker, "post"], **{"<rev>": rev})
     ran = _i45_run(shell, script, env, main)
     assert ran.stdout.strip().splitlines()[-1] == "COMMENT=posted" and ran.returncode == 0, ran.stdout + ran.stderr
+
+
+
+# ---------------------------------------------------------------------------
+# #58: project-clean's fallback (harness_enabled: false). The collecting fence
+# read gone branches out of `git branch -vv` with awk, which took the `*` of
+# the current branch and the `+` of a branch checked out in another worktree
+# for the name. The removal template ran `worktree remove --force` with no
+# dirty check and silenced its failure. Both fences are run here as written.
+
+_I58_SKILL = "skills/project-clean/SKILL.md"
+_I58_OLD_GONE = "git branch -vv | grep '\\[origin/.*: gone\\]' | awk '{print $1}' \\"
+# The agent runs these fences through the user's shell, so zsh and bash too.
+_I58_SHELLS = ("sh", "dash", "bash", "zsh")
+
+
+def _i58_shell(shell: str) -> list[str]:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    if not shutil.which(shell):
+        pytest.skip(f"{shell} is not installed on this host")
+    return [shell]
+
+
+def _i58_fallback() -> str:
+    text = read_skill(_I58_SKILL)
+    return text[text.index("When `harness_enabled: false`:"):]
+
+
+def _i58_fences() -> tuple[str, str]:
+    """(collecting fence, removal fence), read from the skill."""
+    fences = _fences_of(_i58_fallback())
+    collect = [f for f in fences if "FIRST_WORKTREE=" in f]
+    remove = [f for f in fences if "git worktree remove" in f]
+    assert len(collect) == 1 and len(remove) == 1, "the fallback should hold one collecting and one removal fence"
+    return collect[0], remove[0]
+
+
+def _i58_env(tmp: Path) -> dict:
+    return {
+        **_isolated_git_env(tmp),
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+
+
+def _i58_git(env: dict, cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-c", "init.defaultBranch=main", *args], cwd=cwd, env=env, check=True, capture_output=True)
+
+
+def _i58_gone_repo(tmp: Path) -> dict:
+    """Gone: x (run from its worktree), z and feat/x (other worktrees), y (no
+    worktree, and a tag of the same name), develop, and u2 on a second remote.
+    feat/x is the one base a plan declares. keep is not gone."""
+    env = _i58_env(tmp)
+
+    def git(cwd: Path, *args: str) -> None:
+        _i58_git(env, cwd, *args)
+
+    git(tmp, "init", "-q", "--bare", "origin.git")
+    git(tmp, "init", "-q", "--bare", "second.git")
+    git(tmp, "clone", "-q", str(tmp / "origin.git"), "main")
+    main = tmp / "main"
+    git(main, "commit", "-q", "--allow-empty", "-m", "i")
+    git(main, "push", "-q", "-u", "origin", "main")
+    for b in ("x", "z", "y", "feat/x", "develop", "keep"):
+        git(main, "branch", b)
+        git(main, "push", "-q", "-u", "origin", b)
+    git(main, "remote", "add", "second", str(tmp / "second.git"))
+    git(main, "branch", "u2")
+    git(main, "push", "-q", "-u", "second", "u2")
+    for b, wt in (("x", "wx"), ("z", "wz"), ("feat/x", "wf")):
+        git(main, "worktree", "add", "-q", str(tmp / wt), b)
+    git(main, "tag", "y")
+    git(main, "push", "-q", "origin", *(f":refs/heads/{b}" for b in ("x", "z", "y", "feat/x", "develop")))
+    git(main, "push", "-q", "second", ":refs/heads/u2")
+    git(main, "fetch", "-q", "--prune", "second")
+    (main / ".task" / "plan").mkdir(parents=True)
+    (main / ".task" / "plan" / "plan-9.md").write_text("---\nbase_branch: feat/x\n---\n# Plan: x\n")
+    return env
+
+
+def _i58_collect_failures(fence: str, shell: list[str], tmp: Path) -> list[str]:
+    env = _i58_gone_repo(tmp)
+    result = subprocess.run([*shell, "-c", fence], cwd=tmp / "wx", env=env, capture_output=True, text=True)
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or "PROTECT=feat/x" not in lines:
+        return [f"gone (rc {result.returncode}: {result.stdout!r} {result.stderr!r})"]
+    after = lines[lines.index("PROTECT=feat/x") + 1:]
+    gone = after[:next((i for i, l in enumerate(after) if l.startswith("/")), len(after))]
+    if sorted(gone) != ["u2", "x", "y", "z"]:
+        return [f"gone (listed {gone!r}; stderr {result.stderr!r})"]
+    return []
+
+
+def _i58_fill(fence: str, branch: str, wt: str) -> str:
+    """Fill the two values the way the prose says, and nothing else."""
+    assert fence.count("'<gone-branch>'") == 1, "the BRANCH placeholder is not there exactly once"
+    wt_lines = [l for l in fence.splitlines() if l.startswith("WT='<")]
+    assert len(wt_lines) == 1, "the WT placeholder is not there exactly once"
+    return fence.replace("'<gone-branch>'", shlex.quote(branch)).replace(wt_lines[0], "WT=" + shlex.quote(wt))
+
+
+def _i58_branch_exists(env: dict, main: Path, branch: str) -> bool:
+    return subprocess.run(["git", "show-ref", "--verify", "-q", f"refs/heads/{branch}"],
+                          cwd=main, env=env).returncode == 0
+
+
+# Every row starts from main (f.txt committed), branch b in worktree wb and
+# branch b2 in worktree wb2. row -> (setup, prefix run before the fence,
+# BRANCH, WT, cwd, rc, branches left, worktrees left, stdout must, stderr must,
+# stderr must not). "left" is everything that exists afterwards, among b, b2,
+# BRANCH and wb, wb2. {wt} in an expectation is the filled WT.
+_I58_REMOVAL_ROWS = {
+    "clean": ("", "", "b", "wb", "main", "0", ("b2",), ("wb2",), (), (), ()),
+    "unmerged": ("git -C wb commit -q --allow-empty -m u", "", "b", "wb", "main", "0", ("b2",), ("wb2",),
+                 (), (), ()),
+    "modified": ("echo changed > wb/f.txt", "", "b", "wb", "main", "0", ("b", "b2"), ("wb", "wb2"),
+                 ("skipped_dirty: b ({wt})",), (), ()),
+    "untracked": ("echo new > wb/new.txt", "", "b", "wb", "main", "0", ("b", "b2"), ("wb", "wb2"),
+                  ("skipped_dirty: b ({wt})",), (), ()),
+    "status-fails": ("", "", "b", "nowhere", "main", "0", ("b", "b2"), ("wb", "wb2"),
+                     ("skipped_dirty: b ({wt}) — status check failed",), (), ()),
+    "lock": ("git -C main worktree lock wb", "", "b", "wb", "main", "128", ("b", "b2"), ("wb", "wb2"),
+             (), ("cannot remove a locked working tree",), ("used by worktree",)),
+    "other-branch": ("", "", "b", "wb2", "main", "non-0", ("b", "b2"), ("wb", "wb2"),
+                     (), ("refused: {wt} does not have b checked out",), ()),
+    "detached": ("git -C wb checkout -q --detach", "", "b", "wb", "main", "non-0", ("b", "b2"), ("wb", "wb2"),
+                 (), ("does not have b checked out",), ()),
+    "inside": ("mkdir wb/sub", "", "b", "wb", "wb/sub", "non-0", ("b", "b2"), ("wb", "wb2"),
+               (), ("refused: this shell is inside",), ()),
+    "inside-noisy-cd": ("mkdir wb/sub", 'cd() { command cd "$@" && echo noise; }', "b", "wb", "wb/sub",
+                        "non-0", ("b", "b2"), ("wb", "wb2"), (), ("refused: this shell is inside",), ()),
+    "inside-via-link": ("mkdir wb/sub && ln -s wb lnk", "", "b", "lnk", "wb/sub", "non-0", ("b", "b2"),
+                        ("wb", "wb2"), (), ("refused: this shell is inside",), ()),
+    "sibling": ("", "", "b", "wb", "wb2", "0", ("b2",), ("wb2",), (), (), ()),
+    "no-worktree": ("git -C main branch c", "", "c", "", "main", "0", ("b", "b2"), ("wb", "wb2"), (), (), ()),
+    "empty-wt": ("", "", "b", "", "main", "non-0", ("b", "b2"), ("wb", "wb2"), (), ("used by worktree",), ()),
+}
+
+
+def _i58_removal_failures(fence: str, shell: list[str], tmp: Path, rows=None) -> list[str]:
+    failures = []
+    for row in rows or _I58_REMOVAL_ROWS:
+        setup, prefix, branch, wt, cwd, rc, kept_b, kept_wt, out_must, err_must, err_not = _I58_REMOVAL_ROWS[row]
+        assert rc in ("0", "128", "non-0"), f"{row}: unknown rc {rc!r}"
+        base = tmp / row
+        base.mkdir()
+        env = _i58_env(base)
+        _i58_git(env, base, "init", "-q", "main")
+        (base / "main" / "f.txt").write_text("f\n")
+        _i58_git(env, base / "main", "add", "f.txt")
+        _i58_git(env, base / "main", "commit", "-q", "-m", "i")
+        for b, w in (("b", "wb"), ("b2", "wb2")):
+            _i58_git(env, base / "main", "branch", b)
+            _i58_git(env, base / "main", "worktree", "add", "-q", str(base / w), b)
+        if setup:
+            subprocess.run(["sh", "-c", setup], cwd=base, env=env, check=True, capture_output=True)
+        filled = str(base / wt) if wt else ""
+        script = (prefix + "\n" if prefix else "") + _i58_fill(fence, branch, filled)
+        result = subprocess.run([*shell, "-c", script], cwd=base / cwd, env=env, capture_output=True, text=True)
+        why = []
+        if (rc == "0") != (result.returncode == 0) or rc == "128" and result.returncode != 128:
+            why.append(f"rc {result.returncode}, wanted {rc}")
+        for b in sorted({"b", "b2", branch}):
+            if _i58_branch_exists(env, base / "main", b) != (b in kept_b):
+                why.append(f"branch {b} " + ("deleted" if b in kept_b else "left"))
+        for w in ("wb", "wb2"):
+            if (base / w).is_dir() != (w in kept_wt):
+                why.append(f"worktree {w} " + ("removed" if w in kept_wt else "left"))
+        changed = base / "wb" / "f.txt"
+        if row == "modified" and not (changed.is_file() and changed.read_text() == "changed\n"):
+            why.append("the change was lost")
+        why += [f"no {m!r} on stdout" for m in out_must if m.format(wt=filled) not in result.stdout]
+        why += [f"no {m!r} on stderr" for m in err_must if m.format(wt=filled) not in result.stderr]
+        why += [f"{m!r} on stderr" for m in err_not if m in result.stderr]
+        if "syntax error" in result.stderr or "parse error" in result.stderr:
+            why.append("syntax error")
+        if why:
+            failures.append(f"{row} ({'; '.join(why)}: {result.stdout!r} {result.stderr!r})")
+    return failures
+
+
+@pytest.mark.parametrize("shell", _I58_SHELLS)
+def test_i58_clean_fallback_lists_gone_branches_by_name(shell: str, tmp_path: Path) -> None:
+    """Current and worktree-bound gone branches come out by name, PROTECT and develop/main left out."""
+    collect, _ = _i58_fences()
+    assert _i58_collect_failures(collect, _i58_shell(shell), tmp_path) == []
+
+
+@pytest.mark.parametrize("shell", _I58_SHELLS)
+def test_i58_clean_fallback_removal_rows(shell: str, tmp_path: Path) -> None:
+    """Dirty or unreadable worktrees stay whole; a failed removal shows and keeps the branch."""
+    _, remove = _i58_fences()
+    assert _i58_removal_failures(remove, _i58_shell(shell), tmp_path) == []
+
+
+def test_i58_clean_fallback_hides_nothing() -> None:
+    collect, remove = _i58_fences()
+    assert "|| true" not in remove and "2>/dev/null" not in remove, "the removal fence silences a failure again"
+    code = [l for l in collect.splitlines() if not l.lstrip().startswith("#")]
+    assert not [l for l in code if "branch -vv" in l], "the gone list is parsed out of `git branch -vv` again"
+    assert "`skipped_dirty: <branch> (<path>)`" in rule_line(_i58_fallback(), "Report every `skipped_dirty` line")
+
+
+def _i58_mutants() -> dict:
+    collect, remove = _i58_fences()
+    lines = collect.splitlines()
+    head = next(i for i, l in enumerate(lines) if l.startswith("git for-each-ref"))
+    assert lines[head + 1].lstrip().startswith("| awk"), lines[head + 1]
+    old_pipe = "\n".join([*lines[:head], _I58_OLD_GONE, *lines[head + 2:]])
+    guard = '"$(cd -P -- "$WT" >/dev/null 2>&1 && pwd -P)/"*)'
+    mutants = {
+        "old pipe": ("collect", old_pipe),
+        "short": ("collect", collect.replace("refname:lstrip=2", "refname:short")),
+        "no PROTECT": ("collect", collect.replace('| grep -vxF "$PROTECT" 2>/dev/null', "| cat")),
+        "no develop/main": ("collect", collect.replace(' && $1 != "develop" && $1 != "main"', "")),
+        "old remove line": ("remove", remove.replace(
+            'git worktree remove --force "$WT" && git branch -D "$BRANCH"',
+            'git worktree remove --force "$WT" 2>/dev/null || true; git branch -D "$BRANCH"')),
+        "no dirty check": ("remove", remove.replace('elif [ -n "$STATUS" ]; then', "elif false; then")),
+        "swallowed status": ("remove", remove.replace(
+            'status --porcelain)"', 'status --porcelain 2>/dev/null || :)"')),
+        "; for &&": ("remove", remove.replace('"$WT" && git branch -D', '"$WT"; git branch -D')),
+        "-d for -D": ("remove", remove.replace('git branch -D "$BRANCH"', 'git branch -d "$BRANCH"')),
+        "no branch match": ("remove", remove.replace(
+            '[ "$(git -C "$WT" symbolic-ref -q HEAD)" != "refs/heads/$BRANCH" ]', "false")),
+        "no cwd guard": ("remove", remove.replace(guard, '"/i58-never/"*)')),
+        "noisy cd": ("remove", remove.replace(guard, '"$(cd -P -- "$WT" && pwd -P)/"*)')),
+        "logical path": ("remove", remove.replace(guard, '"$(cd -- "$WT" >/dev/null 2>&1 && pwd)/"*)')),
+        "no trailing slash": ("remove", remove.replace(guard, '"$(cd -P -- "$WT" >/dev/null 2>&1 && pwd -P)"*)')),
+    }
+    for name, (which, mutant) in mutants.items():
+        assert mutant != (collect if which == "collect" else remove), f"mutant {name!r} did not change the fence"
+    return mutants
+
+
+# Each mutant, the row that exists to catch it, and the shell it needs.
+_I58_MUTANT_CATCHERS = {
+    "old pipe": ("gone", ("sh",)),
+    "short": ("gone", ("sh",)),
+    "no PROTECT": ("gone", ("sh",)),
+    "no develop/main": ("gone", ("sh",)),
+    "old remove line": ("lock", ("sh",)),
+    "no dirty check": ("modified", ("sh",)),
+    "swallowed status": ("status-fails", ("sh",)),
+    "; for &&": ("lock", ("sh",)),
+    "-d for -D": ("unmerged", ("sh",)),
+    "no branch match": ("other-branch", ("sh",)),
+    "no cwd guard": ("inside", ("sh",)),
+    "noisy cd": ("inside-noisy-cd", ("sh",)),
+    "logical path": ("inside-via-link", ("sh",)),
+    "no trailing slash": ("sibling", ("sh",)),
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_I58_MUTANT_CATCHERS))
+def test_i58_clean_fallback_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
+    """The old pipe and the old removal line are the RED of #58's two defects."""
+    mutants = _i58_mutants()
+    assert set(mutants) == set(_I58_MUTANT_CATCHERS)
+    which, fence = mutants[mutant]
+    row, shell = _I58_MUTANT_CATCHERS[mutant]
+    shell = _i58_shell(shell[0])
+    if which == "collect":
+        failures = _i58_collect_failures(fence, shell, tmp_path)
+    else:
+        failures = _i58_removal_failures(fence, shell, tmp_path, rows=[row])
+    assert any(f.startswith(f"{row} (") for f in failures), (
+        f"the {row!r} row does not reject the {mutant!r} mutant: {failures}"
+    )
+    assert not any("syntax error" in f for f in failures), f"the {mutant!r} mutant does not parse: {failures}"
