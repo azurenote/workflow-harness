@@ -1,6 +1,6 @@
 ---
 name: project-issue
-description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as a ticket in the issue tracker, then rename it to `plan-<id>.md`. With `--issue <id>`, link the draft to an issue that already exists instead of creating one.
+description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as a ticket in the issue tracker, then rename it to `plan-<id>.md`. With `--issue <id>`, link the draft to an issue that already exists instead of creating one; with `--issue <id>` alone, post a revised `plan-<id>.md` to its issue as a new comment.
 ---
 
 # project-issue - Register Issue
@@ -11,6 +11,7 @@ Apply this skill in the following situations:
 - The user invokes `project-issue`, or asks to use the project-issue skill to register an issue
 - The user invokes `project-issue <plan-path>`, naming the draft file to register
 - The user invokes `project-issue [<plan-path>] --issue <id>`, or asks to attach a plan to an issue that already exists
+- The user invokes `project-issue --issue <id>` with no plan path, or asks to post a revised `plan-<id>.md` to its issue
 - A `plan-draft-*.md` or `plan-<uuid>.md` draft exists and issue-registration intent is detected
 - Keywords such as "register issue", "create ticket", "upload to GitHub", or "upload to Jira"
 
@@ -29,6 +30,7 @@ Read nothing else from the reference set; the rest does not apply here.
 
 Issue bodies created by this skill must preserve the plan file exactly as written.
 Because `project-plan` writes plan prose in Korean by default, do not translate or summarize the plan body into English during issue creation. Upload the Korean plan with `--body-file` as-is, including frontmatter.
+The one exception is a plan over the tracker's limit: `## Plan Body Rules` puts a fixed-format summary in its place, extracted from the plan's own words.
 
 ## Usage
 
@@ -46,14 +48,94 @@ only interactively. Naming the file settles it in one step, and settles it non-i
 
 - `[--issue <id>]`: an issue that already exists. Optional.
   - **Given** — link mode: the draft is linked to issue `<id>` and no ticket is created; Step 1-L below runs.
-- With `--issue`, `<plan-path>` is required: stop before Step 1 if it is missing, because discovery would take whatever single draft is there, and nothing in a draft names its issue.
+  - **Given alone, when `plan-<id>.md` already exists** — revision mode: that plan is posted to `<id>` again as a new comment; Step 1-R below runs.
+- With `--issue` and no `<plan-path>`, discovery never runs: when `plan-<id>.md` already exists this is revision mode, and otherwise stop before Step 1, because discovery would take whatever single draft is there, and nothing in a draft names its issue.
 
 Link mode exists because issues often come first — a defect filed from a review has a number before
 it has a plan. Without it the only way to attach a plan was to skip this skill and `mv` the file by
 hand, which bypasses both Step 1's validation and Step 8's refusal to overwrite, or to run this skill
 and get a second ticket for the same work.
 
+## Plan Body Rules
+
+A plan reaches the tracker three ways: as a new issue's body (Step 6), as a comment on the issue it is linked to (Step 1-L item 5), and as a revision comment later (Step 1-R). One rule covers all three, and it applies only to a tracker with a row in this table:
+
+| Tracker | Limit (characters) | Basis |
+|---|---|---|
+| GitHub | 65,536 | Documented: the API refuses an issue or comment body over 65,536 characters. Not measured here, and whether GitHub counts code points or UTF-16 units is unverified. |
+| Forgejo | 65,536 | Measured on a Forgejo 15 instance (2026-09-26): a 65,536-character comment was accepted and read back intact. The server's own ceiling was not probed; this is the cap the rule sets. |
+
+- `harness_core.plan_body.LIMITS` holds the same numbers, and a test compares the two.
+- A tracker without a row has no plan body rules: its create body, its link-mode comment question and its comment command stay as they were, and Step 1-R stops.
+- Length is counted in characters of the UTF-8 text, never in bytes. A Korean plan is about three bytes a character, so a byte count would send a plan well inside the limit to the summary.
+- A body within the limit is the plan file itself, byte for byte. A body over it is a fixed-format summary: the frontmatter, the title, a line saying it is a summary, `Intent Summary` in full, the first line of each `Non-Goals` and `Drift Guards` item, the `Task Cards` titles, the `Definition of Done` checklist, and a last line naming the local file with the full plan and its size. The summary is extracted mechanically, so the same plan always gives the same bytes.
+- A summary that is itself over the limit is never cut to fit: nothing is posted, and the step reports why.
+- Every comment starts with a marker line, `<!-- plan-<id> rev:<rev> -->`, where `<rev>` is the first 8 hex digits of the plan file's sha1, and the marker counts toward the limit. A create-mode body carries no marker, because it is the plan as written.
+- The same content is never posted twice. Before posting, the issue body and comments are read, and the post is skipped when one of them starts with this marker line, or is this plan (or its create-mode summary) as a whole — an issue created from this plan. Each body and comment is compared on its own and in full, so a revision that only drops lines from the end is still posted.
+- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence, measured on Forgejo: an issue with no comments prints nothing and exits 0, and an issue that does not exist exits 1. Whether `gh issue view --json comments` returns every comment of a long thread is unverified.
+
+The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 3 when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.
+
+**GitHub** check:
+
+```bash
+SEEN="$(mktemp)" || exit 1
+trap 'rm -f "$SEEN"' EXIT
+gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }
+python -m harness_core.plan_body github --issue '<id>' --seen "$SEEN" --dry-run
+```
+
+**GitHub** post:
+
+```bash
+SEEN="$(mktemp)" || exit 1
+BODY_FILE="$(mktemp)" || exit 1
+trap 'rm -f "$SEEN" "$BODY_FILE"' EXIT
+gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }
+python -m harness_core.plan_body github --issue '<id>' --expect-rev '<rev>' --seen "$SEEN" --out "$BODY_FILE"
+RC=$?
+[ "$RC" = 3 ] && { echo "COMMENT=skipped"; exit 0; }
+[ "$RC" = 0 ] || { echo "COMMENT=미반영 (no body)"; exit 1; }
+gh issue comment "<id>" --body-file "$BODY_FILE"
+gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read-back failed)"; exit 1; }
+python -m harness_core.plan_body github --issue '<id>' --expect-rev '<rev>' --seen "$SEEN" --dry-run > /dev/null
+[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }
+```
+
+**Forgejo** check:
+
+```bash
+SEEN="$(mktemp)" || exit 1
+trap 'rm -f "$SEEN"' EXIT
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }
+python -m harness_core.plan_body forgejo --issue '<id>' --seen "$SEEN" --dry-run
+```
+
+**Forgejo** post:
+
+```bash
+SEEN="$(mktemp)" || exit 1
+BODY_FILE="$(mktemp)" || exit 1
+trap 'rm -f "$SEEN" "$BODY_FILE"' EXIT
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }
+python -m harness_core.plan_body forgejo --issue '<id>' --expect-rev '<rev>' --seen "$SEEN" --out "$BODY_FILE"
+RC=$?
+[ "$RC" = 3 ] && { echo "COMMENT=skipped"; exit 0; }
+[ "$RC" = 0 ] || { echo "COMMENT=미반영 (no body)"; exit 1; }
+fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file "$BODY_FILE"
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >| "$SEEN" || { echo "COMMENT=미반영 (read-back failed)"; exit 1; }
+python -m harness_core.plan_body forgejo --issue '<id>' --expect-rev '<rev>' --seen "$SEEN" --dry-run > /dev/null
+[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }
+```
+
+- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.
+- `fj` quotes every line of a body or comment with `> ` and wraps the lines between them in U+2068/U+2069; the module splits a Forgejo read into one entry per run of quoted lines, and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.
+
 ## Instructions
+
+- With `--issue <id>` and no `<plan-path>`, go straight to Step 1-R: Steps 1, 1-L and 2–8 do not run, and the flow ends at Step 9.
 
 **1. Detect Draft File**
 
@@ -170,6 +252,7 @@ path resolves to the main worktree root.
    ```
 
    - When `plan-<id>.md` already exists, link mode stops here, before Step 2's confirmation screen.
+   - On a tracker with a row in `## Plan Body Rules`, to post that existing plan to `<id>` again instead, run `project-issue --issue <id>` with no plan path (Step 1-R).
 
 3. **Read the issue.** Keep the output — `project-iterate` reuses the body as its task description.
 
@@ -207,19 +290,22 @@ path resolves to the main worktree root.
 
 4. **Confirm, then rename.** Step 2 runs with its link-mode additions, and the first line of Step 3 sends the flow to Step 8; nothing is inferred or created on the way, so the issue's type, labels, priority and size stay as the tracker has them.
 
-5. **After Step 8, offer the plan as a comment.** Ask on its own — `Post plan-<id>.md to #<id> as a comment? [yes/no]` — separately from Step 2.
+   - On a tracker with a row in `## Plan Body Rules`, first print the comment line for Step 2's screen, and for any screen that carries Step 2's screen in its place. `<draft-plan-path>` is the path Step 1 printed, and the `REV=` value is the `<rev>` item 5 posts:
 
-   - The comment is posted only on its own yes; a no is not an error, because the local `plan-<id>.md` is the canonical plan either way.
+     ```bash
+     python -m harness_core.plan_body '<issue_tracker>' '<draft-plan-path>' --issue '<id>' --dry-run
+     ```
+
+   - If it refuses because even the summary is over the limit, the screen carries that refusal as its comment line, the question is the link-only form, and item 5 reports the comment as 미반영.
+
+5. **After Step 8, post the plan as a comment.**
+
+   - On a tracker with a row in `## Plan Body Rules`, Step 2's yes already covers the comment: run that section's post fence with `<rev>` — the `REV=` value on the screen that received the yes, never a new run of item 4 — and report the `COMMENT=` line it prints. Nothing is asked again.
+   - On a tracker without a row, ask on its own — `Post plan-<id>.md to #<id> as a comment? [yes/no]` — separately from Step 2.
+   - On a tracker without a row, the comment is posted only on its own yes; a no is not an error, because the local `plan-<id>.md` is the canonical plan either way.
    - If the issue body read in item 3 is the same text as the draft, the body already is this plan (a create-mode Step 8 failure being recovered): do not ask, and report the comment as skipped.
 
    `<plan-file>` is the path Step 8 printed, substituted as a literal:
-
-   - **GitHub** — a project-local `add-comment` takes the body as a string argument, so it is not the
-     first choice for a whole plan:
-
-     ```bash
-     gh issue comment "<id>" --body-file '<plan-file>'
-     ```
 
    - **Jira** — a positional body argument would silently win over `--template`, so never add one.
      Not executed against a live Jira, like every Jira call in this skill:
@@ -228,16 +314,27 @@ path resolves to the main worktree root.
      jira issue comment add "<id>" --template '<plan-file>' --no-input
      ```
 
-   - **Forgejo** — comments are part of the `fj` write contract in `~/.claude/skills/SKILL-CONFIG.md`.
-     The repository goes in the issue argument: this command takes no `-r`, and its `-R` names a git
-     remote, not `owner/repo`. Success prints nothing, so read it back with the `comments` surface and
-     look for the plan's title line, quoted as `> # Plan: <title>`; if it is not there, report the
-     comment as 미반영 (`project-done` Step 9 applies the same read-back to its own comment):
+**1-R. Revision Mode (--issue without a plan path)**
 
-     ```bash
-     fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file '<plan-file>'
-     fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments > "<log-file>" 2>&1
-     ```
+Posts `plan-<id>.md` to issue `<id>` again, as a new comment, after the plan changed. Nothing is created or renamed, and the issue body stays as it is.
+
+1. Validate the id with Step 1-L item 1's command.
+2. Stop when there is no `plan-<id>.md`, as `## Usage` says. Step 1-L item 2's command exits non-zero exactly when the plan exists, so here its exit 0 is the stop.
+3. Stop when the tracker has no row in `## Plan Body Rules`: revision mode is those rules and nothing else.
+4. Read the issue with Step 1-L item 3's command, and judge it by the same content rule.
+5. Run the check fence in `## Plan Body Rules`.
+   - `SEEN=` means this revision, or this plan as the issue body, is already there: post nothing, and report the comment as skipped.
+   - A refusal because even the summary is over the limit is reported as 미반영.
+6. Otherwise show the screen and ask:
+
+   ```
+   issue: #<id> <issue title> (<state>)
+   revision: plan-<id>.md rev <REV> — <KIND>, <CHARS>/<LIMIT> characters
+
+   Post this revision of plan-<id>.md to #<id> as a comment? [yes/no]
+   ```
+
+7. On yes, run the post fence with `<rev>` from the screen and report its `COMMENT=` line, then go to Step 9.
 
 **2. User Confirmation**
 
@@ -254,7 +351,7 @@ human preview: <full frontmatter + first 30 body lines>
 Are the Intent Summary and base branch correct? Create an issue from this file? [yes/no]
 ```
 
-> Plan frontmatter (`base_branch`/`parent_issue`) is propagated to the issue without any extra work: Step 6 uploads the entire plan file as the issue body with `--body-file`, and Step 8 renames without changing content, preserving frontmatter. Title inference (`--title`) and type/label inference use a frontmatter-aware parser, so the leading `---` block does not affect them.
+> Plan frontmatter (`base_branch`/`parent_issue`) is propagated to the issue without any extra work: Step 6 uploads the entire plan file as the issue body with `--body-file` — or, over the limit, a summary that keeps the frontmatter (`## Plan Body Rules`) — and Step 8 renames without changing content, preserving frontmatter. Title inference (`--title`) and type/label inference use a frontmatter-aware parser, so the leading `---` block does not affect them.
 
 In link mode the screen also carries the issue Step 1-L read, and the question changes:
 
@@ -264,10 +361,19 @@ issue: #<id> <issue title> (<state>)
 Are the Intent Summary and base branch correct? Link this file to #<id>? [yes/no]
 ```
 
+On a tracker with a row in `## Plan Body Rules`, the link screen also carries the comment line Step 1-L item 4 printed, and one yes answers both:
+
+```
+issue: #<id> <issue title> (<state>)
+comment: plan-<id>.md after the rename — <KIND>, <CHARS>/<LIMIT> characters, rev <REV>
+
+Are the Intent Summary and base branch correct? Link this file to #<id> and post it as a comment? [yes/no]
+```
+
 The issue title is the check no command above can make: it is how a human notices that `<id>` names
 the wrong issue, or a pull request.
 
-From `project-iterate`, Phase 1's approval is this step's confirmation only when that same run's Phase 1 screen carried this step's screen as written above — the create or link form that matches the mode, down to its question line — and the user answered yes; ask this step again instead if the plan file was edited after that yes (review fixes included), Step 1 resolved a different path than the screen showed, the Step 1-L read returns a title or state other than the screen's, this run had no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step 1-L comment question is still asked on its own.
+From `project-iterate`, Phase 1's approval is this step's confirmation only when that same run's Phase 1 screen carried this step's screen as written above — the create or link form that matches the mode, down to its question line — and the user answered yes; ask this step again instead if the plan file was edited after that yes (review fixes included), Step 1 resolved a different path than the screen showed, the Step 1-L read returns a title or state other than the screen's, this run had no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step 1-L comment follows the screen: posted on that yes where the screen carried the comment line, and asked on its own where it did not.
 
 **3. Infer Issue Type** (GitHub only)
 
@@ -325,15 +431,22 @@ The names above are this project's option names as an example; use whatever the 
 
 Branch by `issue_tracker` value:
 
+- The GitHub and Forgejo create fences take `<draft-plan-path>` in single quotes, as Step 1 requires: inside double quotes a `$(...)` or backtick in the path would run. A path that contains `'` is not substituted at all — stop and report it.
+- On those two trackers the fence writes the body `## Plan Body Rules` chooses to `BODY_FILE` — the plan itself within the limit, else the summary — and prints its `KIND=` line for Step 9. `BODY_FAILED=1` means nothing was created: even the summary is over the limit, or the module could not run. It is not a failed create, so no create recovery applies; report it and stop.
+
 ### GitHub (`issue_tracker: github`)
 
 One call. Type, labels, priority, size and the initial project status are applied together, so there is no second call to forget:
 
 ```bash
-DRAFT_PLAN="<draft-plan-path>"
+DRAFT_PLAN='<draft-plan-path>'
+BODY_FILE="$(mktemp)" || exit 1
+trap 'rm -f "$BODY_FILE"' EXIT
+BODY="$(python -m harness_core.plan_body github "$DRAFT_PLAN" --out "$BODY_FILE")" || { echo "BODY_FAILED=1"; exit 1; }
+printf '%s\n' "$BODY"
 <harness_cli> create-issue \
   --title "<plan title>" \
-  --body-file "$DRAFT_PLAN" \
+  --body-file "$BODY_FILE" \
   --type "<Type>" \
   --label "<area tag>" \
   --priority "<Priority option>" \
@@ -358,10 +471,14 @@ Read `number` (ISSUE_NUMBER) and `node_id` (ISSUE_NODE_ID) from the output.
 When `harness_enabled: false`:
 
 ```bash
-DRAFT_PLAN="<draft-plan-path>"
+DRAFT_PLAN='<draft-plan-path>'
+BODY_FILE="$(mktemp)" || exit 1
+trap 'rm -f "$BODY_FILE"' EXIT
+BODY="$(python -m harness_core.plan_body github "$DRAFT_PLAN" --out "$BODY_FILE")" || { echo "BODY_FAILED=1"; exit 1; }
+printf '%s\n' "$BODY"
 gh issue create \
   --title "<plan title>" \
-  --body-file "$DRAFT_PLAN" \
+  --body-file "$BODY_FILE" \
   --type "<Type>" \
   --label "<area tag>"
 ```
@@ -421,16 +538,19 @@ harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harnes
 생성을 먼저 잡고, 번호는 그 출력에서 읽는다. 격리 제거가 그 추출의 한 단이다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:
 
 ```bash
-DRAFT_PLAN="<draft-plan-path>"
+DRAFT_PLAN='<draft-plan-path>'
 # Repo targeting: -r <forgejo_repo> as below, or -R <forgejo_remote> when the project
 # declares a remote that actually exists locally. Both are accepted by create/search/edit.
 TITLE="$(sed -n 's/^# Plan: //p' "$DRAFT_PLAN" | head -1)"
 [ -n "$TITLE" ] || { echo "no '# Plan: ' title line in $DRAFT_PLAN"; exit 1; }
-CREATED="$(fj -H <forgejo_host> issue create "$TITLE" --body-file "$DRAFT_PLAN" -r <forgejo_repo> --no-template)" || CREATE_FAILED=1
+BODY_FILE="$(mktemp)" || exit 1
+trap 'rm -f "$BODY_FILE"' EXIT
+BODY="$(python -m harness_core.plan_body forgejo "$DRAFT_PLAN" --out "$BODY_FILE")" || { echo "BODY_FAILED=1"; exit 1; }
+CREATED="$(fj -H <forgejo_host> issue create "$TITLE" --body-file "$BODY_FILE" -r <forgejo_repo> --no-template)" || CREATE_FAILED=1
 ISSUE_NUMBER="$(printf '%s\n' "$CREATED" \
   | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().replace("\u2068", "").replace("\u2069", ""))' \
   | sed -n 's/^created issue #\([0-9][0-9]*\).*/\1/p')"
-printf 'CREATE_FAILED=%s\nISSUE_NUMBER=%s\n' "${CREATE_FAILED:-0}" "$ISSUE_NUMBER"
+printf 'CREATE_FAILED=%s\nISSUE_NUMBER=%s\n%s\n' "${CREATE_FAILED:-0}" "$ISSUE_NUMBER" "$BODY"
 printf '%s\n' "$CREATED"
 ```
 
@@ -445,13 +565,14 @@ printf '%s\n' "$CREATED"
 
 두 경우의 복구가 다르다. 갈라두는 이유가 이것이다:
 
+- `BODY_FAILED=1` — 생성 호출 전에 멈췄으니 이슈는 **만들어지지 않았다**. 요약조차 한도를 넘었거나 모듈이 돌지 않은 것이다. 생성 실패가 아니므로 아래 두 복구를 타지 않고, 원인을 보고하고 멈춘다.
 - `CREATE_FAILED` 가 `1` — 이슈는 **만들어지지 않았다**. 아래 웹 UI 마지막 단으로 간다. 여기서 검색으로 번호를 찾으려 하지 마라.
 - 생성은 됐는데 `ISSUE_NUMBER` 가 비었다 — 번호만 못 읽은 것이다. 먼저 펜스가 출력한 생성 출력 원문에서 번호를 읽는다. 읽을 수 없을 때만 아래 펜스로 방금 만든 제목을 찾아 잡힌 번호의 제목을 눈으로 대조하고, 그래도 없으면 웹 UI 마지막 단으로 간다. 번호 없이 8단계로 넘어가지 않는다.
 
 이 펜스도 **한 셸 호출로 실행한다** — 앞 펜스의 `TITLE` 은 이 호출까지 살아 있지 않으므로 같은 줄로 초안에서 제목을 다시 읽고, 제목이 비면 검색하지 않고 멈춘다. 빈 제목의 `issue search` 는 아무 열린 이슈나 잡는다:
 
 ```bash
-DRAFT_PLAN="<draft-plan-path>"
+DRAFT_PLAN='<draft-plan-path>'
 TITLE="$(sed -n 's/^# Plan: //p' "$DRAFT_PLAN" | head -1)"
 [ -n "$TITLE" ] || { echo "no '# Plan: ' title line in $DRAFT_PLAN"; exit 1; }
 fj -H <forgejo_host> --style minimal issue search -r <forgejo_repo> "$TITLE"
@@ -558,11 +679,15 @@ written relative to the CWD does not exist from a linked worktree, where `.task/
 - **observed** Type / Labels / Priority / Size — the values read back in Step 7, not the values inferred in Steps 3-5. Where they differ, report both and say which is which.
   - On forgejo the only observable one is Labels, and it is observable only through the read-back in the Forgejo section. Type, Priority and Size have no field to land in there, so report all three as 미반영 — that is the normal result, not a failure.
 - anything reported as not applied, and the command that would apply it later
+- the body, on a tracker with a row in `## Plan Body Rules`: the plan in full, or the summary put in its place with the full size and the limit — the `KIND=` line the create fence printed
 - file rename result: `<draft-plan-path>` -> `plan-<id>.md`
 - next step: `project-start <issue-number>`
 
 In link mode the output differs in three places:
 
 - metadata is what the Step 1-L read returned, as the tracker holds it — link mode inferred nothing, so there is no requested value to compare with. Where the read carries no field for a value (project fields on GitHub's `gh issue view`, and the type on a gh that does not return `issueType`; everything but labels on Forgejo), say so rather than guessing it.
-- the comment result from Step 1-L: posted (with where it can be seen), declined, skipped for a recovery run, or 미반영 when the posted comment could not be read back. For every result but posted, include the Step 1-L command that would post `plan-<id>.md` later.
+- the comment result from Step 1-L, on a tracker with a row in `## Plan Body Rules`: the `COMMENT=` line of the post fence — posted (full or summary, with where it can be seen), skipped because this revision or this plan was already there, or 미반영 with its reason. For 미반영, include `project-issue --issue <id>`, which posts it later — except when even the summary is over the limit, which no later run posts until the plan is shorter.
+- the comment result from Step 1-L, on a tracker without a row: posted (with where it can be seen), declined, skipped for a recovery run, or 미반영 when the posted comment could not be read back. For every result but posted, include the Step 1-L command that would post `plan-<id>.md` later.
 - the issue line is the existing issue, and it says "linked", not "created".
+
+In revision mode the output is the existing issue with the word "revision", the revision and its body kind (`KIND=`, `CHARS=`, `LIMIT=`), and the comment result — posted, skipped with its reason, or 미반영 with its reason and `project-issue --issue <id>` to post it later (not for a summary over the limit).
