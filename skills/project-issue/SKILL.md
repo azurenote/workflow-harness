@@ -76,7 +76,7 @@ A plan reaches the tracker three ways: as a new issue's body (Step 6), as a comm
 - The same content is never posted twice. Before posting, the issue body and comments are read, and the post is skipped when one of them starts with this marker line, or is this plan (or its create-mode summary) as a whole — an issue created from this plan. Each body and comment is compared on its own and in full, so a revision that only drops lines from the end is still posted.
 - A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.
 
-The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 5 (`NOOP`) when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.
+The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` and exits `NOOP` when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.
 
 **GitHub** check:
 
@@ -258,7 +258,7 @@ path resolves to the main worktree root.
 
 3. **Read the issue.** Keep the output — `project-iterate` reuses the body as its task description.
 
-   - **GitHub**: the core `get-issue` is not this gate. It returns no `state`, and it exits 2 (`REFUSED`) when the
+   - **GitHub**: the core `get-issue` is not this gate. It returns no `state`, and it exits `REFUSED` when the
      project board cannot be read, which would refuse the link for a reason unrelated to the issue.
 
      ```bash
@@ -454,18 +454,15 @@ printf '%s\n' "$BODY"
   --size "<Size option>"
 ```
 
-Exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`):
+Exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`, whose `create-issue` row says what each one means; the items below say only what this skill does on each):
 
-- **0** `OK` — created. The JSON on stdout carries `number`, `node_id`, `url`, `requested`, `observed` and `drift`.
-- **2** `REFUSED` — refused *before* creating anything. Nothing exists. Two kinds, and they need different responses: a **bad argument**, which you fix and run again; and an **environment refusal** — the project board could not be read, so a label cannot be told apart from a field value. Re-running an environment refusal changes nothing. Report it.
-- **3** `INCOMPLETE` — the issue exists but its fields or links did not all apply.
-- **4** `UNKNOWN` — the create request failed and it is **not known** whether the issue exists. The server may have committed it before the connection dropped.
+- On `OK` the JSON on stdout carries `number`, `node_id`, `url`, `requested`, `observed` and `drift`.
+- On `REFUSED` read the reason on stderr: a **bad argument** you fix and run again; an **environment refusal** you report, because running it again changes nothing.
+- On `INCOMPLETE` the issue already exists: never re-run create-issue; run the recovery line it printed on stderr as `<harness_cli> <line>` — `set-fields <number>` carrying only the pieces that failed — and handle each piece it names as not repairable by `set-fields` the way that line says.
+- On `UNKNOWN` do not run create-issue again until you have searched the repository for the title: a blind re-run is how one plan becomes two issues.
+- An environment refusal or an `UNKNOWN` outcome is **not** "the harness call failed": the judgement ran and answered. Do not drop to the bare `gh` fallback, which carries no reserved-label check at all.
 
-- On exit 3 the issue already exists: never re-run create-issue; run the recovery line it printed on stderr as `<harness_cli> <line>` — `set-fields <number>` carrying only the pieces that failed — and handle each piece it names as not repairable by `set-fields` the way that line says.
-- On exit 4 do not run create-issue again until you have searched the repository for the title: a blind re-run is how one plan becomes two issues.
-- An environment refusal (2) or an unknown outcome (4) is **not** "the harness call failed": the judgement ran and answered. Do not drop to the bare `gh` fallback, which carries no reserved-label check at all.
-
-Read `number` (ISSUE_NUMBER) and `node_id` (ISSUE_NODE_ID) from the output.
+On `OK` or `INCOMPLETE`, read `number` (ISSUE_NUMBER) and `node_id` (ISSUE_NODE_ID) from the JSON on stdout.
 
 `add-backlog` is not part of this path. Call it on its own only after a deliberate `--no-project` creation, when the issue is later added to the board.
 
@@ -623,7 +620,7 @@ Before reporting, read what is actually on the issue:
 
 On the gh path, `gh issue view --json` does not return the issue type or the project fields; add `gh project item-list <github_project.number> --owner <github_project.owner> --format json` for the fields, or use the reference's GraphQL query for both at once.
 
-A `create-issue` exit of 0 already includes this read in its `observed`; repeat it only on the gh path.
+A `create-issue` `OK` already includes this read in its `observed`; repeat it only on the gh path.
 
 **8. Rename File**
 

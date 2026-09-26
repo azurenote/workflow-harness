@@ -1539,27 +1539,27 @@ def test_project_issue_creates_in_one_call() -> None:
 def test_project_issue_handles_partial_failure_without_recreating() -> None:
     assert_rule(
         read_skill("skills/project-issue/SKILL.md"),
-        "On exit 3 the issue already exists",
-        starts_with="- On exit 3",
+        "On `INCOMPLETE` the issue already exists",
+        starts_with="- On `INCOMPLETE`",
     )
 
 
 def test_project_issue_documents_the_unknown_create_outcome() -> None:
-    """Exit 4 exists because `gh` exiting non-zero does not mean nothing was made.
+    """`UNKNOWN` exists because `gh` exiting non-zero does not mean nothing was made.
 
-    A skill that only knows 0/2/3 reads a 4 as an unhandled failure, and the
-    generic recovery for that is to try again — which is the duplicate issue the
-    code path was split to prevent.
+    A skill that only knows `OK`/`REFUSED`/`INCOMPLETE` reads `UNKNOWN` as an
+    unhandled failure, and the generic recovery for that is to try again — which
+    is the duplicate issue the code path was split to prevent. What it means is
+    the `create-issue` row of exit-codes.md (#75); what the skill does is Step 6.
     """
     text = read_skill("skills/project-issue/SKILL.md")
+    table = read_skill("skills/_shared/references/exit-codes.md")
 
-    assert_rule(
-        text, "whether the issue exists",
-        starts_with="- **4**",
-    )
+    assert "이슈가 생겼는지 말하지 않고" in rule_line(table, "| `create-issue` |")
+    assert "whether the issue exists" not in text, "the meaning is back in the skill"
     assert_rule(
         text, "searched the repository for the title",
-        starts_with="- On exit 4",
+        starts_with="- On `UNKNOWN`",
     )
 
 
@@ -6156,7 +6156,7 @@ _I45_RULE_NO_CUT = '- A summary that is itself over the limit is never cut to fi
 _I45_RULE_MARKER = "- Every comment starts with a marker line, `<!-- plan-<id> rev:<rev> -->`, where `<rev>` is the first 8 hex digits of the plan file's sha1, and the marker counts toward the limit. A create-mode body carries no marker, because it is the plan as written."
 _I45_RULE_ONCE = '- The same content is never posted twice. Before posting, the issue body and comments are read, and the post is skipped when one of them starts with this marker line, or is this plan (or its create-mode summary) as a whole — an issue created from this plan. Each body and comment is compared on its own and in full, so a revision that only drops lines from the end is still posted.'
 _I45_RULE_READ = '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.'
-_I45_RULES_FENCES = 'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 5 (`NOOP`) when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.'
+_I45_RULES_FENCES = 'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` and exits `NOOP` when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.'
 _I45_INSTRUCTIONS_REVISION = '- With `--issue <id>` and no `<plan-path>`, go straight to Step 1-R: Steps 1, 1-L and 2–8 do not run, and the flow ends at Step 9.'
 _I45_USAGE_REVISION = '- **Given alone, when `plan-<id>.md` already exists** — revision mode: that plan is posted to `<id>` again as a new comment; Step 1-R below runs.'
 _I45_L2_POINTER = '- On a tracker with a row in `## Plan Body Rules`, to post that existing plan to `<id>` again instead, run `project-issue --issue <id>` with no plan path (Step 1-R).'
@@ -8126,7 +8126,7 @@ _I41_PROSE = {
     ),
     'issue/rules': (
         '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.',
-        'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 5 (`NOOP`) when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.',
+        'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` and exits `NOOP` when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.',
         '**GitHub** check:',
         '**GitHub** post:',
         '**Forgejo** check:',
@@ -8615,15 +8615,13 @@ _I37_REFERENCE = "skills/_shared/references/exit-codes.md"
 _I37_COMPARE = re.compile(r'^\[ "\$(?:RC|\?)" = (\d+) \]')
 _I37_RC_PROSE = re.compile(r"\bexit(?:s|ed)? [0-6]\b|\brc [0-6]\b|\*\*[0-6]\*\*")
 
-# Every exit-code number in skill prose outside fences, per file, as it stands
-# after #37. A new one fails: a number belongs in exit-codes.md, or next to the
-# member name it stands for.
+# Every exit-code number in skill prose outside fences, per file. A new one
+# fails: a number belongs in exit-codes.md, and prose names the member (#75).
+# What is left is not a harness rc: git, hooks and the fences' own exits.
 _I37_RC_PROSE_SNAPSHOT = {
     "skills/project-done/SKILL.md": {"**0**": 1, "**1**": 1, "exit 0": 2, "exit 1": 1, "exits 1": 1},
-    "skills/project-issue/SKILL.md": {
-        "**0**": 1, "**2**": 1, "**3**": 1, "**4**": 1, "exit 0": 1, "exit 3": 1,
-        "exit 4": 1, "exit 5": 1, "exits 1": 1, "exits 2": 1,
-    },
+    # #75: "the fence exits 1" (Plan Body Rules) and Step 1-R's "its exit 0" (a python check).
+    "skills/project-issue/SKILL.md": {"exit 0": 1, "exits 1": 1},
     "skills/project-plan/SKILL.md": {"exit 1": 2, "exits 1": 1},  # #67: the slug check's shell exit, not a harness rc
 }
 
@@ -8680,18 +8678,22 @@ def test_i37_plan_body_fences_compare_against_the_enum() -> None:
 def test_i37_plan_body_prose_names_the_member() -> None:
     from harness_core.exitcodes import ExitCode
 
-    line = rule_line(read_skill("skills/project-issue/SKILL.md"), "`SEEN=<why>` with exit")
-    assert f"with exit {int(ExitCode.NOOP)} (`NOOP`)" in line
+    line = rule_line(read_skill("skills/project-issue/SKILL.md"), "`SEEN=<why>` and exits")
+    assert "and exits `NOOP`" in line
+    assert f"exit {int(ExitCode.NOOP)}" not in line, "#75: prose names the member, not its number"
 
 
 def test_i37_create_issue_codes_are_the_enum() -> None:
     from harness_core.exitcodes import ExitCode
 
     text = read_skill("skills/project-issue/SKILL.md")
-    listed = re.findall(r"^- \*\*(\d)\*\* `([A-Z]+)` — ", text, re.M)
-    assert [(n, name) for n, name in listed] == [("0", "OK"), ("2", "REFUSED"), ("3", "INCOMPLETE"), ("4", "UNKNOWN")]
-    for number, name in listed:
-        assert ExitCode[name] == int(number), name
+    # #75: Step 6 names the members and says what the skill does on each; the
+    # numbers and what they mean are exit-codes.md's.
+    listed = [m.group(1) for l in _i75_step6_prose(text) if (m := re.match(r"- On `([A-Z]+)` ", l))]
+    assert listed == ["OK", "REFUSED", "INCOMPLETE", "UNKNOWN"]
+    for name in listed:
+        assert name in ExitCode.__members__, name
+    assert not re.findall(r"^- \*\*\d\*\* `[A-Z]+` — ", text, re.M), "a numbered definition list is back"
     assert "_shared/references/exit-codes.md" in rule_line(text, "Exit codes (names from")
 
 
@@ -9000,9 +9002,7 @@ def test_i67_slug_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
 # the same for both commands.
 # --------------------------------------------------------------------------
 
-_I20_STEP6_EXIT3 = '- On exit 3 the issue already exists: never re-run create-issue; run the recovery line it printed on stderr as `<harness_cli> <line>` — `set-fields <number>` carrying only the pieces that failed — and handle each piece it names as not repairable by `set-fields` the way that line says.'
-_I20_STEP6_CODE3 = '- **3** `INCOMPLETE` — the issue exists but its fields or links did not all apply.'
-_I20_ROW_CREATE = '| `create-issue` | `OK` · `REFUSED` · `INCOMPLETE` · `UNKNOWN` | `REFUSED`: 만들기 전에 거부했고 stdout 이 비었다(`--parent`·`--blocked-by` 대상이 없거나 풀 리퀘스트거나 읽을 수 없을 때, 부모가 GitHub 의 하위 이슈 상한에 이미 찼을 때 포함). `INCOMPLETE`: 이슈는 생겼고 메타데이터나 링크가 불완전하다 — 모든 조각을 시도한 뒤다. stderr 의 복구 줄(실패한 조각만 담은 `set-fields`)을 실행하고, `set-fields` 로 고칠 수 없다고 적힌 조각은 그 줄대로 처리한다. `UNKNOWN`: 생성 요청이 이슈가 생겼는지 말하지 않고 실패했다 — 제목으로 검색하기 전에는 다시 만들지 않는다 |'
+_I20_STEP6_EXIT3 = '- On `INCOMPLETE` the issue already exists: never re-run create-issue; run the recovery line it printed on stderr as `<harness_cli> <line>` — `set-fields <number>` carrying only the pieces that failed — and handle each piece it names as not repairable by `set-fields` the way that line says.'
 _I20_ROW_SET_FIELDS = '| `set-fields` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 첫 쓰기 전에 거부했다(링크 대상이 없거나 풀 리퀘스트거나 읽을 수 없음, 다른 부모가 이미 있음, 새로 붙일 부모가 하위 이슈 상한에 참 포함). `INCOMPLETE`: 첫 쓰기 뒤에 실패했다 — 모든 조각을 시도한 뒤이고, stdout 에 적용된 것, stderr 에 복구 줄이 있다. 요청한 링크가 이미 되어 있으면 `OK` 다(`NOOP` 아님 — 복구 호출자는 성공을 성공으로 읽는다) |'
 
 
@@ -9010,9 +9010,13 @@ def test_i20_step6_sends_exit_3_to_the_printed_recovery_line() -> None:
     issue = read_skill("skills/project-issue/SKILL.md")
     assert_whole_line(issue, _I20_STEP6_EXIT3)
     assert "run set-fields <number> instead" not in issue, "the bare repair that fixes no link is back"
-    assert_whole_line(issue, _I20_STEP6_CODE3)
+    # #75: "fields or links" is the meaning, now only in the create-issue row below.
+    assert "- **3** `INCOMPLETE`" not in issue
     table = read_skill("skills/_shared/references/exit-codes.md")
-    assert_whole_line(table, _I20_ROW_CREATE)
+    # #75: the row's whole text is pinned once, as _I75_CREATE_ROW; this holds #20's facts in it.
+    create = next(l for l in table.splitlines() if l.startswith("| `create-issue` |"))
+    for fact in ("`--parent`·`--blocked-by`", "하위 이슈 상한", "복구 줄", "메타데이터나 링크가 불완전하다"):
+        assert fact in create, fact
     assert_whole_line(table, _I20_ROW_SET_FIELDS)
 
 
@@ -9120,8 +9124,155 @@ def test_i74_exit_code_rows_name_the_new_outcomes() -> None:
         "push-branch": {"OK", "REFUSED", "UNKNOWN"},
         "clean-up": {"OK", "REFUSED", "INCOMPLETE"},
     }
+    # #75: a row states what happened; what the caller does is its skill's
+    # (_I74_BEHAVIOUR holds those lines: push once more in project-done Step 6,
+    # rerun-safe in project-clean, a person looks first in project-start).
     push = rule_line(text, "| `push-branch` |")
-    assert "한 번 더 push 해도 된다" in push and "두 번째도 `UNKNOWN` 이면 멈춘다" in push
+    assert "한 번 더 push 해도 된다" not in push and "이면 멈춘다" not in push
     assert "`LC_ALL=C`" in push
     clean = rule_line(text, "| `clean-up` |")
-    assert "다시 실행해도 안전하다" in clean
+    assert "다시 실행해도 안전하다" not in clean
+    for command in ("create-branch", "create-worktree"):
+        assert "사람이 확인한다" not in rule_line(text, f"| `{command}` |"), command
+
+
+# --------------------------------------------------------------------------
+# #75 — what an exit code means lives in exit-codes.md; what a skill does on it
+# lives in the skill
+#
+# The create-issue meanings were written twice, in the exit-codes.md row and in
+# a numbered list in project-issue Step 6, and the row also carried the skill's
+# actions. The row now states only what happened and what the command printed;
+# Step 6 names each member and says what this skill does on it. Prose names a
+# harness rc by its member, never by its number. No file-wide duplicate guard
+# (the #75 decision): these hold the one row, the Step 6 region and the four
+# sentences that used to carry numbers.
+# --------------------------------------------------------------------------
+
+_I75_CREATE_ROW = (
+    "| `create-issue` | `OK` · `REFUSED` · `INCOMPLETE` · `UNKNOWN` | "
+    "`REFUSED`: 만들기 전에 거부했고 stdout 이 비었다(`--parent`·`--blocked-by` 대상이 없거나 풀 리퀘스트거나 읽을 수 없을 때, "
+    "부모가 GitHub 의 하위 이슈 상한에 이미 찼을 때 포함). 잘못된 인자 말고 환경 거부도 있다 — 판정에 필요한 것(프로젝트 보드 "
+    "필드, 저장소 이슈 타입, 링크 대상)을 읽지 못한 경우다. stderr 가 이유를 말한다. `INCOMPLETE`: 이슈는 생겼고 메타데이터나 링크가 "
+    "불완전하다 — 모든 조각을 시도한 뒤다. stdout JSON 에 번호가 있다. stderr 에는 고칠 수 있는 조각이 있으면 그 조각만 "
+    "담은 `set-fields` 복구 줄이, 고칠 수 없는 조각마다 이름과 처리 안내가 있다. `UNKNOWN`: 생성 요청이 이슈가 생겼는지 "
+    "말하지 않고 실패했다 — 서버가 연결이 끊기기 전에 만들었을 수 있다 |"
+)
+# A caller's action, in any of the verbs it was or could be written with.
+_I75_ACTION = re.compile(r"부른다|호출|실행|돌린다|돌려|처리한다|다시 만들|검색|확인한다|멈춘다|도 된다|안전하다")
+# The rows #75 took the caller's actions out of: create-issue, and the four git
+# commands #74 had written them into. Other rows keep what they say (get-issue's
+# rerun advice is the enum table's general rule, not a skill's).
+_I75_MEANING_ROWS = ("create-branch", "create-worktree", "push-branch", "clean-up", "create-issue")
+
+_I75_STEP6_START = "### GitHub (`issue_tracker: github`)"
+_I75_STEP6_END = "`add-backlog` is not part of this path"
+_I75_STEP6_PROSE = (
+    "### GitHub (`issue_tracker: github`)",
+    "One call. Type, labels, priority, size and the initial project status are applied together, so there is no second call to forget:",
+    "Exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`, whose `create-issue` row says what each "
+    "one means; the items below say only what this skill does on each):",
+    "- On `OK` the JSON on stdout carries `number`, `node_id`, `url`, `requested`, `observed` and `drift`.",
+    "- On `REFUSED` read the reason on stderr: a **bad argument** you fix and run again; an **environment refusal** you "
+    "report, because running it again changes nothing.",
+    "- On `INCOMPLETE` the issue already exists: never re-run create-issue; run the recovery line it printed on stderr as "
+    "`<harness_cli> <line>` — `set-fields <number>` carrying only the pieces that failed — and handle each piece it names "
+    "as not repairable by `set-fields` the way that line says.",
+    "- On `UNKNOWN` do not run create-issue again until you have searched the repository for the title: a blind re-run is "
+    "how one plan becomes two issues.",
+    "- An environment refusal or an `UNKNOWN` outcome is **not** \"the harness call failed\": the judgement ran and "
+    "answered. Do not drop to the bare `gh` fallback, which carries no reserved-label check at all.",
+    "On `OK` or `INCOMPLETE`, read `number` (ISSUE_NUMBER) and `node_id` (ISSUE_NODE_ID) from the JSON on stdout.",
+)
+
+_I75_PLAN_BODY_LINE = "`SEEN=<why>` and exits `NOOP` when it is already there"
+_I75_GET_ISSUE_LINE = "It returns no `state`, and it exits `REFUSED` when the"
+_I75_STEP7_LINE = "A `create-issue` `OK` already includes this read in its `observed`; repeat it only on the gh path."
+_I75_FIELDS_PARAGRAPH = "**\"실패\" 는 호출이 성립하지 않은 경우다.**"
+
+
+def _i75_create_row(table: str) -> str:
+    rows = [l for l in table.splitlines() if l.startswith("| `create-issue` |")]
+    assert len(rows) == 1, f"expected one create-issue row, found {len(rows)}"
+    return rows[0]
+
+
+def _i75_step6_prose(text: str) -> tuple[str, ...]:
+    """Step 6 GitHub's prose lines, fences left out. The bounds are the section
+    heading and the add-backlog line, neither of which the region's own edits
+    touch, so a deleted line fails an assert instead of crashing the slice."""
+    lines = text.splitlines()
+    start = [i for i, l in enumerate(lines) if l.strip() == _I75_STEP6_START]
+    end = [i for i, l in enumerate(lines) if _I75_STEP6_END in l]
+    assert len(start) == 1 and len(end) == 1 and start[0] < end[0], (start, end)
+    prose, inside = [], False
+    for line in lines[start[0]:end[0]]:
+        if line.strip().startswith("```"):
+            inside = not inside
+            continue
+        if not inside and line.strip():
+            prose.append(line.strip())
+    return tuple(prose)
+
+
+def _i75_paragraph(text: str, first: str) -> str:
+    lines = text.splitlines()
+    starts = [i for i, l in enumerate(lines) if l.startswith(first)]
+    assert len(starts) == 1, f"expected one paragraph starting {first!r}, found {len(starts)}"
+    out = []
+    for line in lines[starts[0]:]:
+        if not line.strip():
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
+def test_i75_create_row_is_meaning_only() -> None:
+    row = _i75_create_row(read_skill("skills/_shared/references/exit-codes.md"))
+    assert row == _I75_CREATE_ROW, "the create-issue row changed; it states meaning only"
+    meaning = row.rstrip("|").rsplit("|", 1)[1]
+    assert not _I75_ACTION.search(meaning), f"a caller's action is back in the row: {_I75_ACTION.search(meaning)[0]!r}"
+    for fact in ("복구 줄", "`--parent`·`--blocked-by`", "환경 거부", "이슈가 생겼는지 말하지 않고"):
+        assert fact in meaning, fact
+
+
+def test_i75_step6_github_prose_is_the_behavior_list() -> None:
+    prose = _i75_step6_prose(read_skill("skills/project-issue/SKILL.md"))
+    assert prose == _I75_STEP6_PROSE, "Step 6 GitHub prose changed; meanings belong in exit-codes.md"
+    numbered = [l for l in prose if re.search(r"[0-9]", l)]
+    assert not numbered, f"a number in Step 6 GitHub prose — name the member instead: {numbered}"
+
+
+def test_i75_step6_items_follow_the_row_members() -> None:
+    from harness_core.exitcodes import ExitCode
+
+    prose = _i75_step6_prose(read_skill("skills/project-issue/SKILL.md"))
+    items = [m.group(1) for l in prose if (m := re.match(r"- On `([A-Z]+)` ", l))]
+    row = _i75_create_row(read_skill("skills/_shared/references/exit-codes.md"))
+    members = re.findall(r"`([A-Z]+)`", row.split("|")[2])
+    assert items == members, f"Step 6 items {items} do not follow the row's members {members}"
+    assert all(name in ExitCode.__members__ for name in items)
+
+
+def test_i75_harness_rc_prose_uses_names() -> None:
+    issue = read_skill("skills/project-issue/SKILL.md")
+    assert _I75_PLAN_BODY_LINE in rule_line(issue, "`SEEN=<why>`")
+    assert _I75_GET_ISSUE_LINE in rule_line(issue, "the core `get-issue` is not this gate")
+    assert_whole_line(issue, _I75_STEP7_LINE)
+    for old in ("with exit 5", "exits 2 (", "exit of 0"):
+        assert old not in issue, f"a harness rc number is back in prose: {old!r}"
+    fields = _i75_paragraph(read_skill("skills/_shared/references/github-issue-fields.md"), _I75_FIELDS_PARAGRAPH)
+    assert not re.search(r"[0-9]", fields), f"a number is back in the paragraph — name the member: {fields!r}"
+    flat = " ".join(fields.split())  # the paragraph wraps; the pointer may break across lines
+    for name in ("`REFUSED`", "`UNKNOWN`", "exit-codes.md` 의 `create-issue` 행"):
+        assert name in flat, name
+
+
+def test_i75_git_command_rows_are_meaning_only() -> None:
+    table = read_skill("skills/_shared/references/exit-codes.md")
+    for command in _I75_MEANING_ROWS:
+        rows = [l for l in table.splitlines() if l.startswith(f"| `{command}` |")]
+        assert len(rows) == 1, command
+        meaning = rows[0].rstrip("|").rsplit("|", 1)[1]
+        found = _I75_ACTION.search(meaning)
+        assert not found, f"{command}: a caller's action is back in the row ({found[0]!r}); it belongs in the skill"
