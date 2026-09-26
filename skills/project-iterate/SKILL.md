@@ -1,6 +1,6 @@
 ---
 name: project-iterate
-description: Run the one-stop workflow: project-plan -> project-issue -> project-start -> project-done. Includes user confirmation between each phase.
+description: Run the one-stop workflow: project-plan -> project-issue -> project-start -> project-done. Asks for plan approval; after it, asks only on a condition the skill lists under Questions After Plan Approval.
 ---
 
 # project-iterate - One-stop Workflow
@@ -219,8 +219,10 @@ MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse 
    - read the Intent Summary and Drift Guards
    - print the Task Cards checklist and start implementation
    - review the implementation according to `Review Profile` policy
-3. **User confirmation**: show the implementation result summary and get approval.
-   - If changes are requested, apply them and confirm again.
+3. **Confirm only on a listed condition**: once the implementation and its review are done, check the conditions in `## Questions After Plan Approval`.
+   - When none of them holds, do not ask; continue to Phase 4.
+   - When one holds, show the implementation result summary and each condition that holds, and get approval.
+   - If changes are requested, apply them and check the conditions again.
    - On approval, continue to Phase 4.
 
 ---
@@ -233,7 +235,26 @@ MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse 
    - write the impl-report
    - commit -> push -> create PR, or merge for Jira
    - set issue status to "In Review"
+   - once the DoD is confirmed, carry on from the impl-report through commit, push, the PR and the issue comment without asking; ask only on a condition in `## Questions After Plan Approval`.
 2. Print the final result (commit hash, PR URL).
+
+---
+
+## Questions After Plan Approval
+
+The plan approval opens the run: after it, this skill asks only when one of the conditions below holds.
+On re-entry at Phase 3 or Phase 4, that approval is the one the issue skill's Step 2 took when it registered `plan-<id>.md`; when the plan was edited after that, or placed by hand, show its summary and ask once before going on.
+
+1. A DoD item is not met.
+2. The Review Profile review left a blocker unresolved.
+3. A measurement contradicts the plan: a file, command or behavior differs from what the plan's Current State or Task Cards say, or the work would cross a Drift Guard.
+4. The scope changed: the work needs a file, module or requirement the plan does not name, or drops one it does.
+5. An external write — push, PR, issue comment — was blocked by the permission classifier.
+6. A called skill asks a question its own document states; that question stays, and this list neither adds to those questions nor removes any.
+
+When one holds, show which one and ask.
+This list is the only statement of these conditions; every rule in Phase 3 and Phase 4 that carries on without asking points here.
+A stop that a called skill documents is not a question: it still stops.
 
 ---
 

@@ -3995,8 +3995,10 @@ _G_PHASE3 = (
     '- read the Intent Summary and Drift Guards',
     '- print the Task Cards checklist and start implementation',
     '- review the implementation according to `Review Profile` policy',
-    '3. **User confirmation**: show the implementation result summary and get approval.',
-    '- If changes are requested, apply them and confirm again.',
+    '3. **Confirm only on a listed condition**: once the implementation and its review are done, check the conditions in `## Questions After Plan Approval`.',
+    '- When none of them holds, do not ask; continue to Phase 4.',
+    '- When one holds, show the implementation result summary and each condition that holds, and get approval.',
+    '- If changes are requested, apply them and check the conditions again.',
     '- On approval, continue to Phase 4.',
     '---',
 )
@@ -4269,7 +4271,8 @@ def test_codex_reference_shows_the_iterate_default() -> None:
 
 def test_readme_iterate_row_names_the_worktree_default() -> None:
     assert_whole_line(read_skill("README.md"), (
-        "| `project-iterate` | plan → issue → start → done 을 한 번에 실행(단계 사이 사용자 확인). "
+        "| `project-iterate` | plan → issue → start → done 을 한 번에 실행. "
+        "플랜 승인 뒤로는 `## Questions After Plan Approval` 의 조건에서만 묻는다. "
         "기본은 워크트리에서 분기하고, `in-place` 를 붙이면 main checkout 에서 제자리 분기한다. "
         "`project-iterate <id>` 는 기존 이슈에서 출발하며, 플랜이 없으면 이슈 본문으로 쓰고 연결 모드로 붙인다 |"
     ))
@@ -4941,6 +4944,7 @@ def test_i40_approval_substitution_lives_only_in_pinned_lines() -> None:
     """
     pinned = {_I40_STEP2_SUBSTITUTE, _I40_ITERATE_PHASE1, _I40_ITERATE_PHASE2}
     pinned |= set(_G_USAGE + _G_REENTRY + _G_INSTRUCTIONS_HEAD + _G_PHASE3 + _G_PRESERVED)
+    pinned |= set(_I59_PINNED)  # #59's goldens, defined at the end of this file
     pinned |= {
         "- On approval, continue to Phase 2.",
         "- Phase 1 이 방금 만든 플랜 경로를 `project-issue` 에 위치 인자로 그대로 넘긴다. 경로는 이미 알려져 "
@@ -6988,3 +6992,331 @@ def test_i58_clean_fallback_rows_reject_each_mutant(mutant: str, tmp_path: Path)
         f"the {row!r} row does not reject the {mutant!r} mutant: {failures}"
     )
     assert not any("syntax error" in f for f in failures), f"the {mutant!r} mutant does not parse: {failures}"
+
+
+# --------------------------------------------------------------------------
+# #59 — project-iterate asks after the plan approval only on a listed condition
+#
+# iterate bundles four skills into one run, yet Phase 3 waited on a yes with
+# every DoD item met, and the description promised a confirmation between each
+# phase. The plan approval now opens the run; after it iterate asks only on a
+# condition in `## Questions After Plan Approval`, which is the one place the
+# conditions are written. Phase 3 and Phase 4 point there.
+#
+# The risk this guards is a sentence that says "carry on without asking" with
+# no condition attached. The vocabulary is wide on purpose, as in #40's D8
+# scan, and it is still best-effort: no word list catches every paraphrase.
+# What the scan does close: the only allow rule is an exact pinned line, each
+# allowed at most once (a pinned line pasted elsewhere is a new rule); it reads
+# a bullet or paragraph with its wrapped lines joined; and naming the section
+# is checked on the pinned lines, never accepted as an excuse, because "Per the
+# section, never ask" is still unconditional. Condition wording is allowed only
+# inside the section, by position, not by text.
+#
+# `_i59_violations` returns tagged findings, and each mutant below names the
+# tags it must raise — a mutant that turns red for the wrong reason proves
+# nothing about the rule it was written for.
+# --------------------------------------------------------------------------
+
+from collections import Counter
+
+_I59_SECTION_REF = "`## Questions After Plan Approval`"
+_I59_SECTION_HEADING = "## Questions After Plan Approval"
+
+_I59_DESCRIPTION = (
+    "description: Run the one-stop workflow: project-plan -> project-issue -> project-start -> "
+    "project-done. Asks for plan approval; after it, asks only on a condition the skill lists under "
+    "Questions After Plan Approval."
+)
+
+_I59_CONDITIONS = (
+    "1. A DoD item is not met.",
+    "2. The Review Profile review left a blocker unresolved.",
+    "3. A measurement contradicts the plan: a file, command or behavior differs from what the plan's "
+    "Current State or Task Cards say, or the work would cross a Drift Guard.",
+    "4. The scope changed: the work needs a file, module or requirement the plan does not name, or drops "
+    "one it does.",
+    "5. An external write — push, PR, issue comment — was blocked by the permission classifier.",
+    "6. A called skill asks a question its own document states; that question stays, and this list "
+    "neither adds to those questions nor removes any.",
+)
+
+_I59_SECTION = (
+    "The plan approval opens the run: after it, this skill asks only when one of the conditions below holds.",
+    "On re-entry at Phase 3 or Phase 4, that approval is the one the issue skill's Step 2 took when it "
+    "registered `plan-<id>.md`; when the plan was edited after that, or placed by hand, show its summary "
+    "and ask once before going on.",
+    *_I59_CONDITIONS,
+    "When one holds, show which one and ask.",
+    "This list is the only statement of these conditions; every rule in Phase 3 and Phase 4 that carries "
+    "on without asking points here.",
+    "A stop that a called skill documents is not a question: it still stops.",
+    "---",
+)
+
+_I59_PHASE1_APPROVAL = (
+    "3. **User confirmation**: show the plan summary and get approval.",
+    "- Confirm first that the Intent Summary and base branch are correct.",
+    _I40_ITERATE_PHASE1,
+    _ITERATE_PHASE1_LINES[1],
+    "- If changes are requested, apply them and confirm again.",
+    "- On approval, continue to Phase 2.",
+    "---",
+)
+
+_I59_PHASE4_NO_ASK = (
+    "- once the DoD is confirmed, carry on from the impl-report through commit, push, the PR and the "
+    "issue comment without asking; ask only on a condition in `## Questions After Plan Approval`."
+)
+
+_I59_PHASE4 = (
+    "1. Run the `done` skill procedure with the issue ID from Phase 2:",
+    "- pass the `adr` argument when applicable",
+    "- verify the DoD",
+    "- write the impl-report",
+    "- commit -> push -> create PR, or merge for Jira",
+    '- set issue status to "In Review"',
+    _I59_PHASE4_NO_ASK,
+    "2. Print the final result (commit hash, PR URL).",
+    "---",
+)
+
+# Lines that already carried on without asking before #59, by exact text.
+# The Korean line is also spelled out in #40's D8 pinned set, which is local
+# to that test and cannot be referenced from here.
+_I59_LEGACY_NO_ASK = (
+    "- Phase 1 이 방금 만든 플랜 경로를 `project-issue` 에 위치 인자로 그대로 넘긴다. 경로는 이미 알려져 "
+    "있으므로 자동 탐색을 다시 돌리지 않는다 — 초안이 여럿이면 그 탐색은 자기가 만든 파일조차 고르지 "
+    "못하고 멈춘다.",
+    _I40_ITERATE_PHASE2,
+    "2. Print the issue ID / ticket URL, then automatically continue to Phase 3.",
+)
+
+# Also read by #40's D8 scan: exact lines are pinned there, its regex is untouched.
+_I59_PINNED = (_I59_DESCRIPTION, *_I59_SECTION, *_I59_PHASE1_APPROVAL, *_I59_PHASE4)
+
+_I59_NO_ASK = re.compile(
+    r"without (ask|confirm|approv|a question|wait|being)|do(n't| not) (ask|wait|confirm|stop|pause)|"
+    r"never (ask|pause|stop)|no (need|approval|confirmation|question|sign-off)|"
+    r"needs? no (sign|approv|confirm|yes|question)|automatic|straight|directly|go(es)? on to|move on|"
+    r"proceed|carr(y|ies) on|continue to (phase|the pr)|skip|omit|optional|pause|stop for|unprompted|"
+    r"unattended|not consulted|sign-off|\bon (your|its) own|last approval|"
+    r"묻지 않|묻지 말|물어보지 않|질문하지 않|기다리지 않|받지 않|확인 없이|승인 없이|건너뛰|생략|바로|곧장|"
+    r"자동|잇는다|넘어간다|끝까지",
+    re.I,
+)
+_I59_CONDITION_WORDS = re.compile(
+    r"blocker|classifier|분류기|실측|범위 변경|scope changed|DoD item is not met|measurement contradicts|"
+    r"차단 항목|미해결",
+    re.I,
+)
+_I59_ITEM_START = re.compile(r"(- |\* |\d+\. |#|\||```|>|<!--)")
+
+
+def _i59_region(text: str, start: str, end: str, *, inclusive: bool = False) -> tuple[str, ...] | None:
+    """`_region`, but None instead of an assertion, so a mutant reports rather than raises."""
+    lines = text.splitlines()
+    first = [i for i, l in enumerate(lines) if l.startswith(start)]
+    if len(first) != 1:
+        return None
+    last = [i for i, l in enumerate(lines) if l.startswith(end) and i > first[0]]
+    if not last:
+        return None
+    return tuple(l.strip() for l in lines[first[0] + (0 if inclusive else 1):last[0]] if l.strip())
+
+
+def _i59_units(text: str) -> list[list[tuple[int, str]]]:
+    """Bullets and paragraphs with their wrapped lines joined, as (index, stripped line) runs."""
+    units: list[list[tuple[int, str]]] = []
+    in_fence = False
+    for i, raw in enumerate(text.splitlines()):
+        line = raw.strip()
+        fence = line.startswith("```")
+        joins = (units and not in_fence and not fence and line and units[-1][-1][1]
+                 and not _I59_ITEM_START.match(line) and units[-1][-1][0] == i - 1
+                 and not units[-1][-1][1].startswith(("```", "#", "|")))
+        if fence:
+            in_fence = not in_fence
+        if not line:
+            continue
+        if joins:
+            units[-1].append((i, line))
+        else:
+            units.append([(i, line)])
+    return units
+
+
+def _i59_violations(text: str) -> list[str]:
+    """Every rule #59 states, as `<tag>: <detail>` findings; empty when the document holds."""
+    found: list[str] = []
+    lines = [l.strip() for l in text.splitlines()]
+
+    if [l for l in lines if l.startswith("description:")] != [_I59_DESCRIPTION]:
+        found.append("description: the description is not the pinned contract")
+    section = _i59_region(text, _I59_SECTION_HEADING, "## Preserved State After Interruption")
+    if section != _I59_SECTION:
+        found.append("canon-section: the conditions section changed, moved or is missing")
+    phase1 = _i59_region(text, "3. **User confirmation**: show the plan summary", "### Phase 2:", inclusive=True)
+    if phase1 != _I59_PHASE1_APPROVAL:
+        found.append("golden-phase1: the plan approval block changed")
+    phase3 = _i59_region(text, "### Phase 3:", "### Phase 4:")
+    if phase3 != _G_PHASE3:
+        found.append("golden-phase3: Phase 3 changed")
+    phase4 = _i59_region(text, "### Phase 4:", _I59_SECTION_HEADING)
+    if phase4 != _I59_PHASE4:
+        found.append("golden-phase4: Phase 4 changed")
+
+    # Each no-ask rule outside the section points at it.
+    confirm = [l for l in phase3 or () if l.startswith("3. ")]
+    if len(confirm) != 1 or _I59_SECTION_REF not in confirm[0]:
+        found.append("section-ref: Phase 3's confirmation step does not point at the conditions")
+    carry = [l for l in phase4 or () if _I59_NO_ASK.search(l)]
+    if not carry or any(_I59_SECTION_REF not in l for l in carry):
+        found.append("section-ref: Phase 4 carries on without pointing at the conditions")
+
+    allowed = set(_I59_PINNED + _I59_LEGACY_NO_ASK + _G_USAGE + _G_REENTRY + _G_INSTRUCTIONS_HEAD
+                  + _G_PHASE3 + _G_PRESERVED)
+    used: Counter[str] = Counter()
+    heading = [i for i, l in enumerate(lines) if l == _I59_SECTION_HEADING]
+    ends = [i for i, l in enumerate(lines) if l.startswith("## ") and heading and i > heading[0]]
+    inside = range(heading[0], ends[0]) if len(heading) == 1 and ends else range(0)
+    for unit in _i59_units(text):
+        joined = " ".join(l for _, l in unit)
+        if _I59_NO_ASK.search(joined):
+            if all(l in allowed for _, l in unit):
+                used.update(l for _, l in unit)
+            else:
+                found.append(f"vocab: {joined}")
+        if _I59_CONDITION_WORDS.search(joined) and not all(i in inside for i, _ in unit):
+            found.append(f"canon-copy: {joined}")
+    found += [f"vocab: pinned line repeated elsewhere: {l}" for l, n in used.items() if n > 1]
+    return found
+
+
+def _i59_insert_after(text: str, anchor: str, new: str) -> str:
+    lines = text.splitlines(keepends=True)
+    at = [i for i, l in enumerate(lines) if l.rstrip("\n") == anchor]
+    assert len(at) == 1, f"mutant anchor not found once: {anchor!r}"
+    lines.insert(at[0] + 1, new + "\n")
+    return "".join(lines)
+
+
+def _i59_replace(text: str, old: str, new: str) -> str:
+    assert text.count(old) == 1, f"mutant target not found once: {old[:60]!r}"
+    return text.replace(old, new)
+
+
+_I59_PHASE3_STEP = (
+    "3. **Confirm only on a listed condition**: once the implementation and its review are done, check "
+    "the conditions in `## Questions After Plan Approval`.\n"
+)
+_I59_PHASE2_ANCHOR = "   - rename the draft plan to `plan-<id>.md`"
+
+
+def _i59_into_phase2(new: str):
+    return lambda t: _i59_insert_after(t, _I59_PHASE2_ANCHOR, new)
+
+
+_I59_MUTANTS = {
+    **{
+        f"drop-condition-{n}": (lambda t, c=c: _i59_replace(t, c + "\n", ""))
+        for n, c in enumerate(_I59_CONDITIONS, 1)
+    },
+    "description-reverted": lambda t: _i59_replace(
+        t, "Asks for plan approval; after it, asks only on a condition the skill lists under Questions "
+        "After Plan Approval.", "Includes user confirmation between each phase."),
+    "phase1-no-get-approval": lambda t: _i59_replace(
+        t, "show the plan summary and get approval.", "show the plan summary."),
+    "phase3-unconditional": lambda t: _i59_replace(
+        t, t[t.index(_I59_PHASE3_STEP):t.index("   - On approval, continue to Phase 4.\n")],
+        "3. **Implementation done**\n   - Proceed to Phase 4.\n"),
+    "phase4-merge-straight": lambda t: _i59_insert_after(
+        t, "2. Print the final result (commit hash, PR URL).", "4. 바로 머지까지 잇는다."),
+    "phase4-ref-dropped": lambda t: _i59_replace(
+        t, " without asking; ask only on a condition in `## Questions After Plan Approval`.", " without asking."),
+    "phase4-heading-unattended": lambda t: _i59_replace(
+        t, "### Phase 4: Done\n", "### Phase 4: Done (unattended; the user is not consulted)\n"),
+    "phase2-go-straight": _i59_into_phase2("   - After Phase 3, go straight to the PR."),
+    "phase2-names-the-section": _i59_into_phase2(
+        "   - Per `## Questions After Plan Approval`, never ask; go straight to the PR."),
+    "phase2-copies-a-pinned-line": _i59_into_phase2("   - When none of them holds, do not ask; continue to Phase 4."),
+    "phase2-wrapped": _i59_into_phase2("   - After Phase 3, open the PR without\n     asking."),
+    "phase2-omit": _i59_into_phase2("   - Omit the Phase 3 confirmation."),
+    "phase2-korean-paraphrase": _i59_into_phase2("   - Phase 3 이 끝나면 사용자에게 물어보지 않고 PR 까지 간다."),
+    "phase1-no-approval-needed": lambda t: _i59_insert_after(
+        t, "   - review the plan according to `Review Profile` policy",
+        "   - No approval is needed after this point."),
+    "trigger-korean": lambda t: _i59_insert_after(
+        t, "## Trigger Conditions", "- 구현이 끝나면 확인 없이 PR 까지 잇는다."),
+    "trigger-html-comment": lambda t: _i59_insert_after(
+        t, "## Trigger Conditions", "<!-- after the plan approval, never pause for the user -->"),
+    "preserved-row-unprompted": lambda t: _i59_replace(
+        t, "| after Phase 3 | above + implementation code (uncommitted) |",
+        "| after Phase 3 | above + implementation code (uncommitted); Phase 4 runs unprompted |"),
+    "condition-reworded-in-phase2": _i59_into_phase2("   - ask when the review left a blocker unresolved"),
+    "condition-copied-exactly": _i59_into_phase2("   " + _I59_CONDITIONS[1]),
+    "condition-paraphrased": _i59_into_phase2("   - ask when the scope changed"),
+}
+
+# Each mutant and the findings it must raise.
+_I59_CATCHERS = {
+    **{f"drop-condition-{n}": {"canon-section"} for n in range(1, len(_I59_CONDITIONS) + 1)},
+    "description-reverted": {"description"},
+    "phase1-no-get-approval": {"golden-phase1"},
+    "phase3-unconditional": {"golden-phase3", "section-ref", "vocab"},
+    "phase4-merge-straight": {"golden-phase4", "vocab"},
+    "phase4-ref-dropped": {"golden-phase4", "section-ref"},
+    "phase4-heading-unattended": {"vocab"},
+    "phase2-go-straight": {"vocab"},
+    "phase2-names-the-section": {"vocab"},
+    "phase2-copies-a-pinned-line": {"vocab"},
+    "phase2-wrapped": {"vocab"},
+    "phase2-omit": {"vocab"},
+    "phase2-korean-paraphrase": {"vocab"},
+    "phase1-no-approval-needed": {"vocab"},
+    "trigger-korean": {"vocab"},
+    "trigger-html-comment": {"vocab"},
+    "preserved-row-unprompted": {"vocab"},
+    "condition-reworded-in-phase2": {"canon-copy"},
+    "condition-copied-exactly": {"canon-copy"},
+    "condition-paraphrased": {"canon-copy"},
+}
+
+
+def test_i59_iterate_holds_the_conditional_contract() -> None:
+    assert _i59_violations(_iterate_skill()) == []
+
+
+def test_i59_the_conditions_live_in_one_section_after_phase_4() -> None:
+    text = _iterate_skill()
+    assert [l for l in text.splitlines() if l.startswith("## ")].count(_I59_SECTION_HEADING) == 1
+    assert len(_I59_CONDITIONS) == 6
+    for condition in _I59_CONDITIONS:
+        assert_whole_line(text, condition)
+    # The pinned no-ask lines outside the section name it; the section cannot name itself.
+    assert _I59_SECTION_REF in _G_PHASE3[_G_PHASE3.index(_I59_PHASE3_STEP.strip())]
+    assert _I59_SECTION_REF in _I59_PHASE4_NO_ASK
+    assert "between each phase" not in text
+
+
+def test_i59_units_join_wrapped_lines_only() -> None:
+    units = _i59_units("- a\n  b\n- c\n\npara one\npara two\n```\n- x\ny\n```\n")
+    assert [[l for _, l in u] for u in units] == [
+        ["- a", "b"], ["- c"], ["para one", "para two"], ["```"], ["- x"], ["y"], ["```"],
+    ]
+
+
+@pytest.mark.parametrize("mutant", sorted(_I59_MUTANTS))
+def test_i59_each_mutant_raises_the_rule_meant_for_it(mutant: str) -> None:
+    assert set(_I59_MUTANTS) == set(_I59_CATCHERS)
+    text = _iterate_skill()
+    mutated = _I59_MUTANTS[mutant](text)
+    assert mutated != text, f"mutant {mutant!r} did not change the document"
+    tags = {finding.split(":", 1)[0] for finding in _i59_violations(mutated)}
+    missing = _I59_CATCHERS[mutant] - tags
+    assert not missing, f"mutant {mutant!r} did not raise {sorted(missing)}; raised {sorted(tags)}"
+
+
+def test_i59_readme_row_drops_the_per_phase_confirmation() -> None:
+    row = [l for l in read_skill("README.md").splitlines() if l.startswith("| `project-iterate` |")]
+    assert len(row) == 1 and "단계 사이 사용자 확인" not in row[0] and _I59_SECTION_REF in row[0]
