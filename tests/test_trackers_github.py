@@ -2234,11 +2234,18 @@ def test_list_query_variables_sent_are_all_declared(monkeypatch, capsys, state) 
     assert sent <= set(_declared(github._LIST_ISSUES_QUERY)), sent
 
 
-def _by_root(organization: dict, user: dict):
-    """Answer the organization and the user lookups differently."""
+def _by_root(organization: dict | Exception, user: dict | Exception):
+    """Answer the organization and the user lookups differently.
+
+    An exception is raised instead of answered: that is how the runner reports a
+    non-zero ``gh`` exit, which ``FakeGh.fail`` cannot aim at one root.
+    """
 
     def answer(fake, argv, stdin):
-        return organization if "organization(login" in " ".join(argv) else user
+        chosen = organization if "organization(login" in " ".join(argv) else user
+        if isinstance(chosen, Exception):
+            raise chosen
+        return chosen
 
     return answer
 
@@ -2465,3 +2472,375 @@ def test_mismatches_names_a_missing_label_once_whatever_its_spellings() -> None:
     assert github._mismatches({"labels": ["be", "BE"]}, {"labels": []}) == [
         "labels requested but not applied: ['be']"
     ]
+
+
+# ── #36: "could not read" is not "nothing there" ────────────────────────────
+#
+# Every test named `i36` either reproduces one of the three defects #26 left
+# behind — red against the code before #36 — or pins a boundary the fix must
+# keep. The preservation tests say so in their docstrings.
+
+
+def _meta_kwargs() -> dict:
+    return {"project_number": 4, "project_owner": "<owner>", "field_names": FIELD_NAMES}
+
+
+@pytest.mark.parametrize(
+    "repository", [None, "x", [1], {}], ids=["null", "str", "list", "no-issue-key"]
+)
+def test_i36_read_issue_meta_refuses_an_unreadable_repository(repository) -> None:
+    fake = FakeGh(read_issue={"data": {"repository": repository}})
+    with pytest.raises(github.GraphQLError) as exc:
+        github.read_issue_meta("<owner>", "<repo>", 7, run=fake, **_meta_kwargs())
+    assert "not found" not in str(exc.value), "an unread repository was reported as a missing issue"
+    assert "repository object" in str(exc.value)
+
+
+@pytest.mark.parametrize("issue", [{}, "x", [1]], ids=["empty", "str", "list"])
+def test_i36_read_issue_meta_refuses_an_unreadable_issue(issue) -> None:
+    """Only null is the repository saying "no such issue"; any other falsy or odd value is not."""
+    fake = FakeGh(read_issue={"data": {"repository": {"issue": issue}}})
+    with pytest.raises(github.GraphQLError, match="unreadable issue field"):
+        github.read_issue_meta("<owner>", "<repo>", 7, run=fake, **_meta_kwargs())
+
+
+def test_i36_an_explicit_null_issue_is_still_not_found() -> None:
+    """Preservation: a repository that answered, with no such issue, *is* "not found"."""
+    fake = FakeGh(read_issue={"data": {"repository": {"issue": None}}})
+    with pytest.raises(LookupError) as exc:
+        github.read_issue_meta("<owner>", "<repo>", 9999, run=fake, **_meta_kwargs())
+    assert not isinstance(exc.value, github.GhError)
+
+
+def test_i36_get_issue_says_not_found_for_an_explicit_null_issue(monkeypatch, capsys) -> None:
+    """Preservation: the handler-level half of the boundary above."""
+    fake = FakeGh(read_issue={"data": {"repository": {"issue": None}}})
+    code = _run(monkeypatch, fake, ["get-issue", "9999"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "not found" in captured.err
+
+
+def test_i36_get_issue_does_not_call_an_unread_repository_not_found(monkeypatch, capsys) -> None:
+    fake = FakeGh(read_issue={"data": {"repository": None}})
+    code = _run(monkeypatch, fake, ["get-issue", "7"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert "not found" not in captured.err
+    assert "repository" in captured.err
+
+
+@pytest.mark.parametrize("repository", [None, "x"], ids=["null", "str"])
+def test_i36_create_read_back_of_an_unread_repository_exits_three(
+    monkeypatch, capsys, body_file, repository
+) -> None:
+    """Past the create, so the number must survive — and not as a missing issue."""
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(number=43),
+        add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue={"data": {"repository": repository}},
+    )
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 3
+    assert out["number"] == 43
+    assert "not found" not in out["error"]
+
+
+def test_i36_set_fields_read_back_of_an_unread_repository_exits_three(monkeypatch, capsys) -> None:
+    """The write has happened; a traceback here hid that from the caller."""
+    responses = iter([_issue_response(), {"data": {"repository": "x"}}])
+    fake = FakeGh(
+        fields=_fields_response(),
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue=lambda *_: json.dumps(next(responses)),
+    )
+    code = _run(monkeypatch, fake, ["set-fields", "7", "--priority", PRIORITY_OPTIONS[1]])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 3
+    assert out["applied"] == ["priority"]
+
+
+def test_i36_iter_issue_meta_refuses_an_unread_first_page() -> None:
+    fake = FakeGh(list_issues={"data": {"repository": None}})
+    with pytest.raises(github.GraphQLError, match="page 1"):
+        github.iter_issue_meta("<owner>", "<repo>", run=fake, **_meta_kwargs())
+
+
+def test_i36_iter_issue_meta_refuses_an_unread_later_page() -> None:
+    pages = iter(
+        [
+            _issue_list_page(range(1, 101), has_next=True, cursor="cursor-1"),
+            {"data": {"repository": None}},
+        ]
+    )
+    fake = FakeGh(list_issues=lambda *_: json.dumps(next(pages)))
+    with pytest.raises(github.GraphQLError, match="page 2"):
+        github.iter_issue_meta("<owner>", "<repo>", run=fake, **_meta_kwargs())
+
+
+_PAGE_INFO_DONE = {"hasNextPage": False, "endCursor": None}
+
+_UNREADABLE_LISTS = {
+    "repository-null": None,
+    "repository-empty": {},
+    "repository-str": "x",
+    "issues-null": {"issues": None},
+    "issues-empty": {"issues": {}},
+    "issues-list": {"issues": [1]},
+    "nodes-str": {"issues": {"nodes": "x", "pageInfo": _PAGE_INFO_DONE}},
+    "page-info-null": {"issues": {"nodes": [], "pageInfo": None}},
+    "has-next-missing": {"issues": {"nodes": [], "pageInfo": {}}},
+    "has-next-null": {"issues": {"nodes": [], "pageInfo": {"hasNextPage": None}}},
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_UNREADABLE_LISTS))
+def test_i36_audit_exits_two_when_the_list_cannot_be_read(monkeypatch, capsys, shape) -> None:
+    """Each shape used to be an empty page: `scanned: 0`, rc 0 — or a traceback."""
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues={"data": {"repository": _UNREADABLE_LISTS[shape]}},
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == "", "an unread list printed an audit"
+    assert "could not list the issues" in captured.err
+
+
+def test_i36_audit_exits_two_when_a_later_page_cannot_be_read(monkeypatch, capsys) -> None:
+    pages = iter(
+        [
+            _issue_list_page(range(1, 101), has_next=True, cursor="cursor-1"),
+            {"data": {"repository": None}},
+        ]
+    )
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=lambda *_: json.dumps(next(pages)),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == "", "the first 100 issues were reported as the repository's audit"
+    assert fake.kinds().count("list_issues") == 2
+
+
+@pytest.mark.parametrize("cursor", [None, "", 5], ids=["null", "empty", "int"])
+def test_i36_audit_exits_two_when_a_next_page_has_no_cursor(monkeypatch, capsys, cursor) -> None:
+    """`hasNextPage` with no cursor to fetch it by is a list that stops early.
+
+    An empty one did worse than stop: `if cursor:` dropped it and fetched page one again.
+    """
+    pages = iter([_issue_list_page([1, 2], has_next=True, cursor=cursor)] * 3)
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=lambda *_: json.dumps(next(pages)),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert fake.kinds().count("list_issues") == 1
+
+
+def test_i36_audit_exits_two_when_the_cursor_does_not_advance(monkeypatch, capsys) -> None:
+    """The same cursor back again would fetch the same page for ever."""
+    pages = iter(
+        [
+            _issue_list_page(range(1, 101), has_next=True, cursor="cursor-1"),
+            _issue_list_page(range(1, 101), has_next=True, cursor="cursor-1"),
+            _issue_list_page(range(1, 101), has_next=False),
+        ]
+    )
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=lambda *_: json.dumps(next(pages)),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert "did not advance" in captured.err
+    assert fake.kinds().count("list_issues") == 2
+
+
+def test_i36_audit_with_a_limit_still_refuses_an_unread_list(monkeypatch, capsys) -> None:
+    """`--limit` cuts the list short on purpose; it does not excuse reading it."""
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues={"data": {"repository": None}},
+    )
+    code = _run(monkeypatch, fake, ["audit-fields", "--limit", "5"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+
+
+_ADD_ITEM_UNUSABLE = {
+    "list": ["x"],
+    "str": "x",
+    "null": None,
+    "empty": {},
+    "item-null": {"item": None},
+    "item-empty": {"item": {}},
+    "item-str": {"item": "x"},
+    "item-list": {"item": ["x"]},
+    "id-empty": {"item": {"id": ""}},
+    "id-blank": {"item": {"id": " "}},
+    "id-int": {"item": {"id": 5}},
+}
+
+
+@pytest.mark.parametrize("answer", sorted(_ADD_ITEM_UNUSABLE))
+def test_i36_ensure_project_item_refuses_an_unconfirmed_add(answer) -> None:
+    fake = FakeGh(add_item={"data": {"addProjectV2ItemById": _ADD_ITEM_UNUSABLE[answer]}})
+    with pytest.raises(github.GraphQLError, match="addProjectV2ItemById"):
+        github.ensure_project_item(PROJECT_ID, "issue-node-7", run=fake)
+
+
+@pytest.mark.parametrize("answer", sorted(_ADD_ITEM_UNUSABLE))
+def test_i36_create_exits_three_when_the_add_is_not_confirmed(
+    monkeypatch, capsys, body_file, answer
+) -> None:
+    """Scripted through to a clean create, so a red here is the add and nothing else."""
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        add_item={"data": {"addProjectV2ItemById": _ADD_ITEM_UNUSABLE[answer]}},
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue=_issue_response(labels=(), issue_type=None, field_values={STATUS_FIELD: STATUS_OPTIONS[0]}),
+    )
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file])
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+
+    assert code == 3, "an add nobody confirmed was reported as a clean create"
+    assert "addProjectV2ItemById" in out["error"]
+    assert "set-fields 7" in captured.err
+
+
+@pytest.mark.parametrize("answer", ["list", "str"])
+def test_i36_set_fields_exits_three_when_the_add_is_not_confirmed(
+    monkeypatch, capsys, answer
+) -> None:
+    fake = FakeGh(
+        fields=_fields_response(),
+        read_issue=_issue_response(project_number=None),
+        add_item={"data": {"addProjectV2ItemById": _ADD_ITEM_UNUSABLE[answer]}},
+    )
+    code = _run(monkeypatch, fake, ["set-fields", "7", "--priority", PRIORITY_OPTIONS[1]])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 3
+    assert out["applied"] == []
+    assert "addProjectV2ItemById" in out["error"]
+
+
+_SCOPE_ERROR = (
+    "INSUFFICIENT_SCOPES: Your token has not been granted the required scopes\n"
+    "to execute this query. ['project']"
+)
+_NO_USER = "Could not resolve to a User with the login of '<owner>'."
+
+
+def _load_message(organization, user) -> str:
+    with pytest.raises(github.FieldNotFoundError) as exc:
+        github.ProjectFields.load("<owner>", 4, run=FakeGh(fields=_by_root(organization, user)))
+    return str(exc.value)
+
+
+def _gh_error(stderr: str) -> github.GhError:
+    return github.GhError(["api", "graphql"], 1, stderr)
+
+
+def test_i36_load_keeps_the_organization_error_ahead_of_the_user_one() -> None:
+    message = _load_message(_gh_error(_SCOPE_ERROR), _gh_error(_NO_USER))
+
+    # One line: the message is quoted into audit JSON and issue comments.
+    assert "scopes to execute this query" in message
+    assert _NO_USER in message
+    assert message.index("organization:") < message.index("user:")
+    assert message.index("INSUFFICIENT_SCOPES") < message.index(_NO_USER)
+    # Neither root answered, so nothing was judged absent.
+    assert "could not be resolved" in message
+    assert "not found for owner" not in message
+
+
+def test_i36_load_keeps_an_organization_error_beside_a_user_that_is_absent() -> None:
+    organization = _partial({"organization": None}, "INSUFFICIENT_SCOPES: missing ['project']")
+    message = _load_message(organization, {"data": {"user": None}})
+
+    assert message.index("organization: INSUFFICIENT_SCOPES") < message.index("user: no user object")
+    assert "not found for owner" in message
+
+
+def test_i36_load_names_a_board_the_organization_does_not_have() -> None:
+    message = _load_message({"data": {"organization": {"projectV2": None}}}, _gh_error(_NO_USER))
+
+    assert message.index("organization: no project #4") < message.index(_NO_USER)
+    assert "not found for owner" in message
+
+
+def test_i36_load_says_something_when_gh_says_nothing() -> None:
+    message = _load_message(
+        github.GhError(["api", "graphql"], 4, ""), github.GraphQLError(["api", "graphql"], "")
+    )
+
+    assert "organization: gh exited 4 with no message" in message
+    # Not "exited 0": a GraphQLError is an answer that could not be used, not a success.
+    assert "user: gh returned an unusable response with no message" in message
+
+
+def test_i36_load_does_not_count_a_garbled_account_as_an_answer() -> None:
+    """An account of the wrong shape is no more an answer than `repository: "x"`."""
+    message = _load_message(_gh_error(_SCOPE_ERROR), {"data": {"user": "x"}})
+
+    assert "user: no user object" in message
+    assert "could not be resolved" in message
+
+
+def test_i36_audit_warning_carries_the_organization_error(monkeypatch, capsys) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_by_root(_gh_error(_SCOPE_ERROR), _gh_error(_NO_USER)),
+        list_issues=_issue_list_page([1], has_next=False),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 3
+    assert any("INSUFFICIENT_SCOPES" in warning for warning in out["warnings"])
+
+
+def test_i36_create_refusal_carries_the_organization_error(monkeypatch, capsys, body_file) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_by_root(_gh_error(_SCOPE_ERROR), _gh_error(_NO_USER)),
+    )
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "create" not in fake.kinds()
+    assert "INSUFFICIENT_SCOPES" in captured.err
