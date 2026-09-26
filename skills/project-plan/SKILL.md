@@ -67,9 +67,17 @@ Filename rules:
   - Example: `plan-draft-jwt-auth-lambda-2.md`
 - For compatibility with the existing harness, `/issue` still recognizes `plan-<uuid>.md` drafts, but new plans should be created as `plan-draft-<slug>.md`.
 
+The ignore check is the same fence as `project-done` Step 5, which says why each part of it is there: ask git, not `.gitignore`'s text, and append only on exit 1. **Run this fence as one shell invocation** — later lines read `rc`, `SLUG` and `PLAN_FILE` from earlier ones. Any exit other than 0 or 1 means git could not answer, and the fence then exits 1: stop and report it before writing any plan.
+
 ```bash
 mkdir -p .task/plan
-grep -q "^\.task/plan/" .gitignore || echo ".task/plan/" >> .gitignore
+git check-ignore -q --no-index .task/plan/ && rc=0 || rc=$?
+case "$rc" in
+  0) ;;
+  1) if [ -s .gitignore ] && [ -n "$(tail -c 1 .gitignore)" ]; then echo >> .gitignore; fi
+     echo ".task/plan/" >> .gitignore ;;
+  *) echo "stop: git check-ignore exited $rc; .gitignore not touched" >&2; exit 1 ;;
+esac
 SLUG="<convert-task-description-to-3-5-word-english-slug>"
 PLAN_FILE=".task/plan/plan-draft-${SLUG}.md"
 # Add a suffix on collision
