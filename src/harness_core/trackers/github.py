@@ -447,28 +447,51 @@ class ProjectFields:
             return _FIELDS_CACHE[key]
 
         project = None
-        last_error: GhError | None = None
+        # Why each root missed, in the order tried. A login that is not an
+        # organization is expected to fail there — but a missing `project` token
+        # scope fails there too and needs a completely different fix, and the
+        # user root then fails with "Could not resolve to a User". Keeping only
+        # the last error, which this did, reported that and dropped the scope.
+        misses: list[tuple[str, str]] = []
+        answered = False
         for root in ("organization", "user"):
             try:
                 data = _graphql(
                     cls._QUERY % root, {"owner": owner, "number": int(number)}, run=run
                 )
             except GhError as exc:
-                # A login that is not an organization is expected to fail here;
-                # keep the error anyway, because a missing `project` token scope
-                # fails identically and needs a completely different fix.
-                last_error = exc
+                # One line: this lands in audit JSON and in issue comments.
+                reason = " ".join(exc.stderr.split())
+                if not reason:
+                    # Not "exited 0" for a GraphQLError: that reads as a success.
+                    reason = (
+                        "gh returned an unusable response with no message"
+                        if isinstance(exc, GraphQLError)
+                        else f"gh exited {exc.returncode} with no message"
+                    )
+                misses.append((root, reason))
                 continue
             account = data.get(root)
-            project = account.get("projectV2") if isinstance(account, dict) else None
+            if not isinstance(account, dict):
+                # A null account is an answer — no such account. Anything else
+                # in its place is not one, the same as `repository: "x"`.
+                answered = answered or account is None
+                misses.append((root, f"no {root} object"))
+                continue
+            answered = True
+            project = account.get("projectV2")
             if project:
                 break
+            misses.append((root, f"no project #{number}"))
         if not project:
             _FIELDS_CACHE.pop(key, None)
-            detail = f" (last gh error: {last_error.stderr})" if last_error else ""
+            detail = "; ".join(f"{root}: {reason}" for root, reason in misses)
+            # "Not found" is a judgement, and with no root answering there was
+            # nobody to make it.
+            verdict = "not found" if answered else "could not be resolved"
             raise FieldNotFoundError(
-                f"project #{number} not found for owner {owner!r} as an organization "
-                f"or a user{detail}"
+                f"project #{number} {verdict} for owner {owner!r} as an organization "
+                f"or a user ({detail})"
             )
 
         # A project that came back in the wrong shape is a project whose fields
@@ -646,15 +669,39 @@ def read_issue_meta(
         ``{number, title, node_id, url, type, labels, project}`` where ``project``
         is ``None`` when the issue is in no matching project, and otherwise
         ``{item_id, fields, <slot>: <option name or None>, ...}``.
+
+    Raises:
+        LookupError: the repository answered and has no such issue.
+        GraphQLError: the repository did not answer. That is not the same fact:
+            reading ``repository: null`` as "no such issue" told the caller
+            something about the issue that nobody had read.
     """
     data = _graphql(
         _ISSUE_META_QUERY,
         {"owner": owner, "repo": repo, "number": int(number)},
         run=run,
     )
-    issue = (data.get("repository") or {}).get("issue")
-    if not issue:
+    repository = data.get("repository")
+    if not isinstance(repository, dict):
+        raise GraphQLError(
+            ["api", "graphql"], f"the response carries no repository object for {owner}/{repo}"
+        )
+    if "issue" not in repository:
+        raise GraphQLError(
+            ["api", "graphql"],
+            f"the repository object for {owner}/{repo} carries no issue field",
+        )
+    # An explicit null is the repository's own answer: no such issue — or not
+    # yet, for one created a moment ago. Only null: `{}` or `"x"` in its place
+    # is an issue nobody could read, not one that is missing.
+    issue = repository["issue"]
+    if issue is None:
         raise LookupError(f"{owner}/{repo}#{number} not found")
+    if not (isinstance(issue, dict) and issue):
+        raise GraphQLError(
+            ["api", "graphql"],
+            f"the repository object for {owner}/{repo} carries an unreadable issue field",
+        )
     return _shape_issue_node(
         issue,
         project_number=project_number,
@@ -716,6 +763,12 @@ def iter_issue_meta(
 
     ``project_number``, ``project_owner`` and ``field_names`` select and shape
     each issue's project item exactly as in :func:`read_issue_meta`.
+
+    A page that cannot be read is a :class:`GraphQLError`, on any page, and the
+    pages before it are dropped with it. Read as an empty last page, which is
+    what this did, ``repository: null`` on page one was ``scanned: 0`` — a clean
+    audit of nothing — and on page two it was the first hundred issues passing
+    for the whole repository.
     """
     if limit is not None and limit <= 0:
         return []
@@ -729,15 +782,17 @@ def iter_issue_meta(
     wanted_state = None if state == "all" else state.upper()
     collected: list[dict] = []
     cursor: str | None = None
+    page_number = 0
     while True:
+        page_number += 1
         variables: dict[str, object] = {"owner": owner, "repo": repo}
         if cursor:
             variables["cursor"] = cursor
         if wanted_state:
             variables["states"] = [wanted_state]
         data = _graphql(_LIST_ISSUES_QUERY, variables, run=run)
-        issues = ((data.get("repository") or {}).get("issues")) or {}
-        for node in issues.get("nodes") or []:
+        nodes, next_cursor = _read_list_page(data, page_number, owner, repo, after=cursor)
+        for node in nodes:
             if node:
                 collected.append(
                     _shape_issue_node(
@@ -749,12 +804,49 @@ def iter_issue_meta(
                 )
                 if limit is not None and len(collected) >= limit:
                     return collected
-        page = issues.get("pageInfo") or {}
-        if not page.get("hasNextPage"):
+        if next_cursor is None:
             return collected
-        cursor = page.get("endCursor")
-        if not cursor:
-            return collected
+        cursor = next_cursor
+
+
+def _read_list_page(
+    data: Mapping, page_number: int, owner: str, repo: str, *, after: str | None
+) -> tuple[list, str | None]:
+    """``(nodes, next cursor)`` of one list page, or a :class:`GraphQLError`.
+
+    The next cursor is ``None`` on the last page and a non-empty string
+    otherwise. Every container on the way down is checked, not only the first:
+    checking ``repository`` alone moves the empty page one level down, to
+    ``issues: {}``. A next page with no cursor to fetch it by is the same list
+    cut short, and a cursor that does not move past ``after`` fetches the same
+    page for ever.
+    """
+
+    def refuse(what: str) -> GraphQLError:
+        return GraphQLError(
+            ["api", "graphql"], f"issue list page {page_number} of {owner}/{repo}: {what}"
+        )
+
+    repository = data.get("repository")
+    if not isinstance(repository, dict):
+        raise refuse("the response carries no repository object")
+    issues = repository.get("issues")
+    if not isinstance(issues, dict):
+        raise refuse("the repository object carries no issues connection")
+    nodes = issues.get("nodes")
+    if not isinstance(nodes, list):
+        raise refuse("issues.nodes is not a list")
+    page = issues.get("pageInfo")
+    if not isinstance(page, dict) or not isinstance(page.get("hasNextPage"), bool):
+        raise refuse("issues.pageInfo carries no hasNextPage")
+    if not page["hasNextPage"]:
+        return nodes, None
+    cursor = page.get("endCursor")
+    if not (isinstance(cursor, str) and cursor):
+        raise refuse("hasNextPage is true but there is no endCursor to fetch it by")
+    if cursor == after:
+        raise refuse("endCursor did not advance past the page it was read from")
+    return nodes, cursor
 
 
 def _is_configured_board(
@@ -890,11 +982,27 @@ def ensure_project_item(
     ``addProjectV2ItemById`` returns the existing item when the issue is already
     on the board, so this is safe to call on an issue a project automation has
     already picked up.
+
+    An answer without the item's id is an add that cannot be shown to have
+    happened. It used to escape as an ``AttributeError`` — after the issue had
+    been created, past every handler — or as a ``KeyError`` whose whole message
+    was ``'id'``; an empty id went on to be written against.
     """
     data = _graphql(
         _ADD_ITEM_MUTATION, {"project": project_id, "content": content_node_id}, run=run
     )
-    return ((data.get("addProjectV2ItemById") or {}).get("item") or {})["id"]
+    result = data.get("addProjectV2ItemById")
+    item = result.get("item") if isinstance(result, dict) else None
+    item_id = item.get("id") if isinstance(item, dict) else None
+    # Stricter than `set_single_select`, which only needs its answer to exist:
+    # this id is sent on as the next mutation's variable.
+    if not (isinstance(item_id, str) and item_id.strip()):
+        raise GraphQLError(
+            ["api", "graphql"],
+            "addProjectV2ItemById returned no item id; the issue was not confirmed "
+            "added to the project",
+        )
+    return item_id
 
 
 def set_single_select(
@@ -1489,7 +1597,7 @@ def _audit_fields_handler(args) -> int:
     found nothing — "no drift on the axes that could be read" is not "no drift":
 
     - **0** — every axis was read; stdout carries the findings, drift or not.
-    - **2** — the issue list could not be read; stdout is empty.
+    - **2** — the issue list could not be read, on any page; stdout is empty.
     - **3** — an axis could not be read; stdout still carries the audit of the
       axes that could, and ``warnings`` names the ones that were not. Unlike
       ``create-issue``'s 3 this is not a repair instruction: nothing was
