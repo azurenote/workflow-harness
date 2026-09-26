@@ -9124,11 +9124,16 @@ def test_i74_exit_code_rows_name_the_new_outcomes() -> None:
         "push-branch": {"OK", "REFUSED", "UNKNOWN"},
         "clean-up": {"OK", "REFUSED", "INCOMPLETE"},
     }
+    # #75: a row states what happened; what the caller does is its skill's
+    # (_I74_BEHAVIOUR holds those lines: push once more in project-done Step 6,
+    # rerun-safe in project-clean, a person looks first in project-start).
     push = rule_line(text, "| `push-branch` |")
-    assert "한 번 더 push 해도 된다" in push and "두 번째도 `UNKNOWN` 이면 멈춘다" in push
+    assert "한 번 더 push 해도 된다" not in push and "이면 멈춘다" not in push
     assert "`LC_ALL=C`" in push
     clean = rule_line(text, "| `clean-up` |")
-    assert "다시 실행해도 안전하다" in clean
+    assert "다시 실행해도 안전하다" not in clean
+    for command in ("create-branch", "create-worktree"):
+        assert "사람이 확인한다" not in rule_line(text, f"| `{command}` |"), command
 
 
 # --------------------------------------------------------------------------
@@ -9154,7 +9159,11 @@ _I75_CREATE_ROW = (
     "말하지 않고 실패했다 — 서버가 연결이 끊기기 전에 만들었을 수 있다 |"
 )
 # A caller's action, in any of the verbs it was or could be written with.
-_I75_ACTION = re.compile(r"부른다|호출|실행|돌린다|처리한다|다시 만들|검색")
+_I75_ACTION = re.compile(r"부른다|호출|실행|돌린다|돌려|처리한다|다시 만들|검색|확인한다|멈춘다|도 된다|안전하다")
+# The rows #75 took the caller's actions out of: create-issue, and the four git
+# commands #74 had written them into. Other rows keep what they say (get-issue's
+# rerun advice is the enum table's general rule, not a skill's).
+_I75_MEANING_ROWS = ("create-branch", "create-worktree", "push-branch", "clean-up", "create-issue")
 
 _I75_STEP6_START = "### GitHub (`issue_tracker: github`)"
 _I75_STEP6_END = "`add-backlog` is not part of this path"
@@ -9257,3 +9266,13 @@ def test_i75_harness_rc_prose_uses_names() -> None:
     flat = " ".join(fields.split())  # the paragraph wraps; the pointer may break across lines
     for name in ("`REFUSED`", "`UNKNOWN`", "exit-codes.md` 의 `create-issue` 행"):
         assert name in flat, name
+
+
+def test_i75_git_command_rows_are_meaning_only() -> None:
+    table = read_skill("skills/_shared/references/exit-codes.md")
+    for command in _I75_MEANING_ROWS:
+        rows = [l for l in table.splitlines() if l.startswith(f"| `{command}` |")]
+        assert len(rows) == 1, command
+        meaning = rows[0].rstrip("|").rsplit("|", 1)[1]
+        found = _I75_ACTION.search(meaning)
+        assert not found, f"{command}: a caller's action is back in the row ({found[0]!r}); it belongs in the skill"
