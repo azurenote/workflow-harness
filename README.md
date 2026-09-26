@@ -20,7 +20,7 @@ Claude Code 워크플로우 자동화(plan → issue → start → done → clea
 
 | 스킬 | 역할 |
 |------|------|
-| `project-plan` | 플랜 문서 작성(frontmatter 선언 포함) |
+| `project-plan` | 플랜 문서 작성(frontmatter 선언 포함). 초안은 main checkout 의 `.task/plan/` 에 생기고(어느 CWD 에서 불러도 같다), 3단계가 그 절대 경로를 `PLAN_FILE=` 로 출력한다. 규칙(소문자·숫자로 된 3-5 단어, 하이픈 구분)을 벗어난 slug 는 아무것도 만들기 전에 거부한다 |
 | `project-issue` | 플랜을 이슈 트래커에 등록. GitHub 은 단일 `create-issue` 호출로 type·label·priority·size·초기 Status 를 함께 적용한다. `--issue <id>` 면 새 티켓 없이 기존 이슈에 연결한다 |
 | `project-start` | 브랜치/워크트리 생성 + 이슈 In Progress + 구현 시작. 기본은 main checkout 아래에 워크트리를 만들고(어느 CWD 에서 불러도 같다), `in-place` 를 붙이면 main checkout 에서 제자리 분기한다. 로컬 `plan-<id>.md` 가 없으면 브랜치를 만들기 전에 멈춘다 |
 | `project-done` | PR 생성 + 리뷰 상태 전환 |
