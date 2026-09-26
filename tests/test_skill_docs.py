@@ -2689,8 +2689,9 @@ def test_project_issue_documents_the_issue_argument() -> None:
         starts_with="- **Given** — link mode",
     )
     assert_whole_line(text, (
-        "- With `--issue`, `<plan-path>` is required: stop before Step 1 if it is missing, "
-        "because discovery would take whatever single draft is there, and nothing in a draft names its issue."
+        "- With `--issue` and no `<plan-path>`, discovery never runs: when `plan-<id>.md` already exists "
+        "this is revision mode, and otherwise stop before Step 1, because discovery would take whatever "
+        "single draft is there, and nothing in a draft names its issue."
     ))
     description = rule_line(text, "description:")
     assert "--issue <id>" in description, "the skill description does not mention link mode"
@@ -2873,14 +2874,24 @@ def test_step_8_revalidates_and_refuses_to_overwrite() -> None:
     ))
 
 
-def test_link_mode_comment_needs_its_own_yes_after_step_8() -> None:
+def test_link_mode_comment_follows_the_tracker_row() -> None:
+    """#45: a tracker with a Plan Body Rules row posts on Step 2's yes; one without asks on its own."""
     section = _link_mode()
-    offer = section.index("5. **After Step 8, offer the plan as a comment.**")
+    offer = section.index("5. **After Step 8, post the plan as a comment.**")
     assert offer > section.index("4. **Confirm, then rename.**"), "the comment is offered before the rename"
 
     assert_whole_line(section, (
-        "- The comment is posted only on its own yes; a no is not an error, because the local "
-        "`plan-<id>.md` is the canonical plan either way."
+        "- On a tracker with a row in `## Plan Body Rules`, Step 2's yes already covers the comment: run "
+        "that section's post fence with `<rev>` — the `REV=` value on the screen that received the yes, "
+        "never a new run of item 4 — and report the `COMMENT=` line it prints. Nothing is asked again."
+    ))
+    assert_whole_line(section, (
+        "- On a tracker without a row, ask on its own — `Post plan-<id>.md to #<id> as a comment? [yes/no]` "
+        "— separately from Step 2."
+    ))
+    assert_whole_line(section, (
+        "- On a tracker without a row, the comment is posted only on its own yes; a no is not an error, "
+        "because the local `plan-<id>.md` is the canonical plan either way."
     ))
     assert_whole_line(section, (
         "- If the issue body read in item 3 is the same text as the draft, the body already is "
@@ -2889,18 +2900,13 @@ def test_link_mode_comment_needs_its_own_yes_after_step_8() -> None:
     ))
 
     lines = [l.strip() for l in section[offer:].splitlines()]
-    assert "gh issue comment \"<id>\" --body-file '<plan-file>'" in lines
     assert "jira issue comment add \"<id>\" --template '<plan-file>' --no-input" in lines
-
-    forgejo = section.split("- **Forgejo** — comments are part of the `fj` write contract", 1)
-    assert len(forgejo) == 2, "the Forgejo comment branch is gone"
-    assert "미반영" in forgejo[1] and "`comments` surface" in forgejo[1], (
-        "the Forgejo comment is no longer read back, or a missing one is no longer reported"
-    )
-    # The one measured form: repository in the issue argument, body from the file.
-    assert (
-        "fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file '<plan-file>'" in lines
-    ), "the Forgejo comment is not posted through the measured fj form"
+    # The row trackers post through the Plan Body Rules fences, never a bare comment call here.
+    for bare in ("gh issue comment", "fj -H <forgejo_host> issue comment"):
+        assert not any(bare in l for l in lines), f"link mode posts outside the Plan Body Rules fence: {bare}"
+    rules = _i45_rules()
+    assert "gh issue comment \"<id>\" --body-file \"$BODY_FILE\"" in rules
+    assert "fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file \"$BODY_FILE\"" in rules
 
 
 def test_link_mode_changes_the_confirmation_and_the_output() -> None:
@@ -3131,15 +3137,32 @@ _GOLDEN_DONE_STEP11_FORGEJO = (
 )
 
 _GOLDEN_ISSUE_LINK_FORGEJO = (
-    '- **Forgejo** — comments are part of the `fj` write contract in `~/.claude/skills/SKILL-CONFIG.md`.',
-    'The repository goes in the issue argument: this command takes no `-r`, and its `-R` names a git',
-    'remote, not `owner/repo`. Success prints nothing, so read it back with the `comments` surface and',
-    "look for the plan's title line, quoted as `> # Plan: <title>`; if it is not there, report the",
-    'comment as 미반영 (`project-done` Step 9 applies the same read-back to its own comment):',
+    '**Forgejo** check:',
     '```bash',
-    "fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file '<plan-file>'",
-    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments > "<log-file>" 2>&1',
+    'SEEN="$(mktemp)" || exit 1',
+    'trap \'rm -f "$SEEN"\' EXIT',
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }',
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }',
+    'python -m harness_core.plan_body forgejo --issue \'<id>\' --seen "$SEEN" --dry-run',
     '```',
+    '**Forgejo** post:',
+    '```bash',
+    'SEEN="$(mktemp)" || exit 1',
+    'BODY_FILE="$(mktemp)" || exit 1',
+    'trap \'rm -f "$SEEN" "$BODY_FILE"\' EXIT',
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }',
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }',
+    'python -m harness_core.plan_body forgejo --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --out "$BODY_FILE"',
+    'RC=$?',
+    '[ "$RC" = 3 ] && { echo "COMMENT=skipped"; exit 0; }',
+    '[ "$RC" = 0 ] || { echo "COMMENT=미반영 (no body)"; exit 1; }',
+    'fj -H <forgejo_host> issue comment \'<forgejo_repo>#<id>\' --body-file "$BODY_FILE"',
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >| "$SEEN" || { echo "COMMENT=미반영 (read-back failed)"; exit 1; }',
+    'python -m harness_core.plan_body forgejo --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --dry-run > /dev/null',
+    '[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }',
+    '```',
+    '- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.',
+    "- `fj` quotes every line of a body or comment with `> ` and wraps the lines between them in U+2068/U+2069; the module splits a Forgejo read into one entry per run of quoted lines, and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.",
 )
 
 _GOLDEN_DONE_STEP8_FORGEJO = '**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Review 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이다.'
@@ -3154,7 +3177,7 @@ _GOLDEN_CONFIG_WRITE_FAILURE = '**이슈 생성은 `fj` 가 1순위이고, 웹 U
 
 _GOLDEN_CONFIG_UNCONSUMED = '결과를 아무도 입력으로 쓰지 않는 쓰기 — 이슈 코멘트, 그리고 위 줄의 상태 전환 — 가 되지 않았으면 미반영으로 보고하고 계속한다.'
 
-_GOLDEN_ISSUE_OUTPUT_COMMENT = '- the comment result from Step 1-L: posted (with where it can be seen), declined, skipped for a recovery run, or 미반영 when the posted comment could not be read back. For every result but posted, include the Step 1-L command that would post `plan-<id>.md` later.'
+_GOLDEN_ISSUE_OUTPUT_COMMENT = '- the comment result from Step 1-L, on a tracker without a row: posted (with where it can be seen), declined, skipped for a recovery run, or 미반영 when the posted comment could not be read back. For every result but posted, include the Step 1-L command that would post `plan-<id>.md` later.'
 
 
 def _done_skill() -> str:
@@ -3281,8 +3304,7 @@ def test_done_forgejo_prose_and_fences_are_pinned_whole() -> None:
         text, "- **PR path (Forgejo)**", "- **Branch-merge path"
     )) == _GOLDEN_DONE_STEP11_FORGEJO
     assert tuple(_stripped_lines(
-        _issue_skill(), "- **Forgejo** — comments are part of the `fj` write contract",
-        "**2. User Confirmation**",
+        _issue_skill(), "**Forgejo** check:", "## Instructions",
     )) == _GOLDEN_ISSUE_LINK_FORGEJO
 
     config = read_skill("skills/SKILL-CONFIG.md")
@@ -4615,16 +4637,20 @@ _I40_CREATE_DIRECTIVE = (
 _I40_TITLE = "TITLE=\"$(sed -n 's/^# Plan: //p' \"$DRAFT_PLAN\" | head -1)\""
 _I40_TITLE_GUARD = '[ -n "$TITLE" ] || { echo "no \'# Plan: \' title line in $DRAFT_PLAN"; exit 1; }'
 _I40_CREATE_FENCE = (
-    'DRAFT_PLAN="<draft-plan-path>"',
+    # #45: single-quoted draft path, and the body file the Plan Body Rules choose.
+    "DRAFT_PLAN='<draft-plan-path>'",
     "# Repo targeting: -r <forgejo_repo> as below, or -R <forgejo_remote> when the project",
     "# declares a remote that actually exists locally. Both are accepted by create/search/edit.",
     _I40_TITLE,
     _I40_TITLE_GUARD,
-    'CREATED="$(fj -H <forgejo_host> issue create "$TITLE" --body-file "$DRAFT_PLAN" -r <forgejo_repo> --no-template)" || CREATE_FAILED=1',
+    'BODY_FILE="$(mktemp)" || exit 1',
+    "trap 'rm -f \"$BODY_FILE\"' EXIT",
+    'BODY="$(python -m harness_core.plan_body forgejo "$DRAFT_PLAN" --out "$BODY_FILE")" || { echo "BODY_FAILED=1"; exit 1; }',
+    'CREATED="$(fj -H <forgejo_host> issue create "$TITLE" --body-file "$BODY_FILE" -r <forgejo_repo> --no-template)" || CREATE_FAILED=1',
     'ISSUE_NUMBER="$(printf \'%s\\n\' "$CREATED" \\',
     '  | python3 -c \'import sys; sys.stdout.write(sys.stdin.read().replace("\\u2068", "").replace("\\u2069", ""))\' \\',
     "  | sed -n 's/^created issue #\\([0-9][0-9]*\\).*/\\1/p')\"",
-    'printf \'CREATE_FAILED=%s\\nISSUE_NUMBER=%s\\n\' "${CREATE_FAILED:-0}" "$ISSUE_NUMBER"',
+    'printf \'CREATE_FAILED=%s\\nISSUE_NUMBER=%s\\n%s\\n\' "${CREATE_FAILED:-0}" "$ISSUE_NUMBER" "$BODY"',
     'printf \'%s\\n\' "$CREATED"',
 )
 _I40_SEARCH_DIRECTIVE = (
@@ -4633,7 +4659,7 @@ _I40_SEARCH_DIRECTIVE = (
     "아무 열린 이슈나 잡는다:"
 )
 _I40_SEARCH_FENCE = (
-    'DRAFT_PLAN="<draft-plan-path>"',
+    "DRAFT_PLAN='<draft-plan-path>'",
     _I40_TITLE,
     _I40_TITLE_GUARD,
     'fj -H <forgejo_host> --style minimal issue search -r <forgejo_repo> "$TITLE"',
@@ -4660,7 +4686,8 @@ _I40_STEP2_SUBSTITUTE = (
     "the screen showed, the Step 1-L read returns a title or state other than the screen's, this run had "
     "no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run "
     "either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step "
-    "1-L comment question is still asked on its own."
+    "1-L comment follows the screen: posted on that yes where the screen carried the comment line, and "
+    "asked on its own where it did not."
 )
 _I40_STEP2_KEPT = (
     "Do not create an issue without confirmation. This checkpoint is not just filename/title "
@@ -4737,12 +4764,16 @@ def _i40_fake_env(tmp_path: Path, mode: str) -> tuple[dict[str, str], Path]:
     fj.write_text(
         "#!/bin/sh\n"
         'for a in "$@"; do printf \'%s\\n\' "$a"; done > "$FJ_LOG"\n'
+        # #45: the body file is a temp file the fence removes on exit, so keep a copy.
+        'prev=; for a in "$@"; do [ "$prev" = --body-file ] && cat "$a" > "$FJ_LOG.body"; prev=$a; done\n'
         'if [ "$FAKE_MODE" = fail ]; then echo "Error: boom" >&2; exit 1; fi\n'
         "printf 'created issue #\\342\\201\\25041\\342\\201\\251: \\342\\201\\250t\\342\\201\\251\\n'\n"
     )
     python3 = bin_dir / "python3"
     python3.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
-    for path in (fj, python3):
+    python = bin_dir / "python"  # #45: the create fence runs `python -m harness_core.plan_body`
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    for path in (fj, python3, python):
         path.chmod(0o755)
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "FJ_LOG": str(log), "FAKE_MODE": mode, "HOME": str(tmp_path)}
     return env, log
@@ -4775,11 +4806,14 @@ def test_i40_create_fence_runs_against_a_fake_fj(shell: str, tmp_path: Path) -> 
     out = ran.stdout.splitlines()
     assert ran.returncode == 0, ran.stderr
     assert out[:2] == ["CREATE_FAILED=0", "ISSUE_NUMBER=41"], f"the fence printed {out}"
+    assert out[2].startswith("KIND=full "), f"the body kind is not printed after the number: {out}"
     assert any(l.startswith("created issue #") for l in out), "the raw create output is not printed"
-    assert log.read_text().splitlines() == [
-        "-H", "forge.test", "issue", "create", _I40_HOSTILE_TITLE,
-        "--body-file", str(draft), "-r", "o/r", "--no-template",
+    args = log.read_text().splitlines()
+    body = args.index("--body-file")
+    assert args[:body] + args[body + 2:] == [
+        "-H", "forge.test", "issue", "create", _I40_HOSTILE_TITLE, "-r", "o/r", "--no-template",
     ]
+    assert Path(f"{log}.body").read_bytes() == draft.read_bytes(), "the body within the limit is not the draft"
     assert not (tmp_path / "pwned").exists(), "the title ran as a command"
 
     env, log = _i40_fake_env(tmp_path, "fail")
@@ -6056,3 +6090,630 @@ def test_i43_surfaces_name_the_new_default() -> None:
     done = read_skill("skills/project-done/SKILL.md")
     assert "after `project-start` in worktree mode (the default) every step runs with a linked worktree as CWD" in done
     assert "project-start … worktree" not in done
+
+
+# --------------------------------------------------------------------------
+# #45 — the plan on the tracker: a character limit with a fixed-format
+# summary, link mode posting on Step 2's yes, and a revision path
+#
+# `project-issue` posts a plan three ways — a create body, a link-mode
+# comment, a revision comment — and `## Plan Body Rules` is the one rule for
+# all three, applied to a tracker only when it has a row in that table. The
+# numbers live in `harness_core.plan_body.LIMITS` too, and the first test
+# here holds the two together. The fences run against a fake tracker that
+# keeps state: a post adds a comment and a read prints what is there, so a
+# fence that skips its read-back cannot report "posted" by accident.
+#
+# The Jira paths are sunset and stay byte-for-byte as 6359fd4 had them.
+# Helpers carry an `_i45_` prefix (see the #40 name-uniqueness test).
+# --------------------------------------------------------------------------
+
+_I45_RULES_INTRO = "A plan reaches the tracker three ways: as a new issue's body (Step 6), as a comment on the issue it is linked to (Step 1-L item 5), and as a revision comment later (Step 1-R). One rule covers all three, and it applies only to a tracker with a row in this table:"
+_I45_ROW_GITHUB = '| GitHub | 65,536 | Documented: the API refuses an issue or comment body over 65,536 characters. Not measured here, and whether GitHub counts code points or UTF-16 units is unverified. |'
+_I45_ROW_FORGEJO = "| Forgejo | 65,536 | Measured on a Forgejo 15 instance (2026-09-26): a 65,536-character comment was accepted and read back intact. The server's own ceiling was not probed; this is the cap the rule sets. |"
+_I45_RULE_CONSTANT = '- `harness_core.plan_body.LIMITS` holds the same numbers, and a test compares the two.'
+_I45_RULE_NO_ROW = '- A tracker without a row has no plan body rules: its create body, its link-mode comment question and its comment command stay as they were, and Step 1-R stops.'
+_I45_RULE_UNIT = '- Length is counted in characters of the UTF-8 text, never in bytes. A Korean plan is about three bytes a character, so a byte count would send a plan well inside the limit to the summary.'
+_I45_RULE_BODY = '- A body within the limit is the plan file itself, byte for byte. A body over it is a fixed-format summary: the frontmatter, the title, a line saying it is a summary, `Intent Summary` in full, the first line of each `Non-Goals` and `Drift Guards` item, the `Task Cards` titles, the `Definition of Done` checklist, and a last line naming the local file with the full plan and its size. The summary is extracted mechanically, so the same plan always gives the same bytes.'
+_I45_RULE_NO_CUT = '- A summary that is itself over the limit is never cut to fit: nothing is posted, and the step reports why.'
+_I45_RULE_MARKER = "- Every comment starts with a marker line, `<!-- plan-<id> rev:<rev> -->`, where `<rev>` is the first 8 hex digits of the plan file's sha1, and the marker counts toward the limit. A create-mode body carries no marker, because it is the plan as written."
+_I45_RULE_ONCE = '- The same content is never posted twice. Before posting, the issue body and comments are read, and the post is skipped when one of them starts with this marker line, or is this plan (or its create-mode summary) as a whole — an issue created from this plan. Each body and comment is compared on its own and in full, so a revision that only drops lines from the end is still posted.'
+_I45_RULE_READ = '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence, measured on Forgejo: an issue with no comments prints nothing and exits 0, and an issue that does not exist exits 1. Whether `gh issue view --json comments` returns every comment of a long thread is unverified.'
+_I45_RULES_FENCES = 'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 3 when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.'
+_I45_INSTRUCTIONS_REVISION = '- With `--issue <id>` and no `<plan-path>`, go straight to Step 1-R: Steps 1, 1-L and 2–8 do not run, and the flow ends at Step 9.'
+_I45_USAGE_REVISION = '- **Given alone, when `plan-<id>.md` already exists** — revision mode: that plan is posted to `<id>` again as a new comment; Step 1-R below runs.'
+_I45_L2_POINTER = '- On a tracker with a row in `## Plan Body Rules`, to post that existing plan to `<id>` again instead, run `project-issue --issue <id>` with no plan path (Step 1-R).'
+_I45_L4_SCREEN = "- On a tracker with a row in `## Plan Body Rules`, first print the comment line for Step 2's screen, and for any screen that carries Step 2's screen in its place. `<draft-plan-path>` is the path Step 1 printed, and the `REV=` value is the `<rev>` item 5 posts:"
+_I45_L4_ONELINER = "python -m harness_core.plan_body '<issue_tracker>' '<draft-plan-path>' --issue '<id>' --dry-run"
+_I45_L4_REFUSED = '- If it refuses because even the summary is over the limit, the screen carries that refusal as its comment line, the question is the link-only form, and item 5 reports the comment as 미반영.'
+_I45_STEP2_ROW = 'On a tracker with a row in `## Plan Body Rules`, the link screen also carries the comment line Step 1-L item 4 printed, and one yes answers both:'
+_I45_STEP2_COMMENT = 'comment: plan-<id>.md after the rename — <KIND>, <CHARS>/<LIMIT> characters, rev <REV>'
+_I45_STEP2_QUESTION = 'Are the Intent Summary and base branch correct? Link this file to #<id> and post it as a comment? [yes/no]'
+_I45_STEP2_FRONTMATTER = '> Plan frontmatter (`base_branch`/`parent_issue`) is propagated to the issue without any extra work: Step 6 uploads the entire plan file as the issue body with `--body-file` — or, over the limit, a summary that keeps the frontmatter (`## Plan Body Rules`) — and Step 8 renames without changing content, preserving frontmatter. Title inference (`--title`) and type/label inference use a frontmatter-aware parser, so the leading `---` block does not affect them.'
+_I45_R_INTRO = 'Posts `plan-<id>.md` to issue `<id>` again, as a new comment, after the plan changed. Nothing is created or renamed, and the issue body stays as it is.'
+_I45_R_1 = "1. Validate the id with Step 1-L item 1's command."
+_I45_R_2 = "2. Stop when there is no `plan-<id>.md`, as `## Usage` says. Step 1-L item 2's command exits non-zero exactly when the plan exists, so here its exit 0 is the stop."
+_I45_R_3 = '3. Stop when the tracker has no row in `## Plan Body Rules`: revision mode is those rules and nothing else.'
+_I45_R_4 = "4. Read the issue with Step 1-L item 3's command, and judge it by the same content rule."
+_I45_R_7 = '7. On yes, run the post fence with `<rev>` from the screen and report its `COMMENT=` line, then go to Step 9.'
+_I45_R_SEEN = '- `SEEN=` means this revision, or this plan as the issue body, is already there: post nothing, and report the comment as skipped.'
+_I45_R_TOO_LARGE = '- A refusal because even the summary is over the limit is reported as 미반영.'
+_I45_R_5 = '5. Run the check fence in `## Plan Body Rules`.'
+_I45_R_REVISION = 'revision: plan-<id>.md rev <REV> — <KIND>, <CHARS>/<LIMIT> characters'
+_I45_R_QUESTION = 'Post this revision of plan-<id>.md to #<id> as a comment? [yes/no]'
+_I45_R_6 = '6. Otherwise show the screen and ask:'
+_I45_CREATE_QUOTE = "- The GitHub and Forgejo create fences take `<draft-plan-path>` in single quotes, as Step 1 requires: inside double quotes a `$(...)` or backtick in the path would run. A path that contains `'` is not substituted at all — stop and report it."
+_I45_CREATE_BODY = '- On those two trackers the fence writes the body `## Plan Body Rules` chooses to `BODY_FILE` — the plan itself within the limit, else the summary — and prints its `KIND=` line for Step 9. `BODY_FAILED=1` means nothing was created: even the summary is over the limit, or the module could not run. It is not a failed create, so no create recovery applies; report it and stop.'
+_I45_FORGEJO_BODY_FAILED = '- `BODY_FAILED=1` — 생성 호출 전에 멈췄으니 이슈는 **만들어지지 않았다**. 요약조차 한도를 넘었거나 모듈이 돌지 않은 것이다. 생성 실패가 아니므로 아래 두 복구를 타지 않고, 원인을 보고하고 멈춘다.'
+_I45_OUT_BODY = '- the body, on a tracker with a row in `## Plan Body Rules`: the plan in full, or the summary put in its place with the full size and the limit — the `KIND=` line the create fence printed'
+_I45_OUT_COMMENT_ROW = '- the comment result from Step 1-L, on a tracker with a row in `## Plan Body Rules`: the `COMMENT=` line of the post fence — posted (full or summary, with where it can be seen), skipped because this revision or this plan was already there, or 미반영 with its reason. For 미반영, include `project-issue --issue <id>`, which posts it later — except when even the summary is over the limit, which no later run posts until the plan is shorter.'
+_I45_OUT_REVISION = 'In revision mode the output is the existing issue with the word "revision", the revision and its body kind (`KIND=`, `CHARS=`, `LIMIT=`), and the comment result — posted, skipped with its reason, or 미반영 with its reason and `project-issue --issue <id>` to post it later (not for a summary over the limit).'
+_I45_LANG_GUARD = "The one exception is a plan over the tracker's limit: `## Plan Body Rules` puts a fixed-format summary in its place, extracted from the plan's own words."
+_I45_TRIGGER = '- The user invokes `project-issue --issue <id>` with no plan path, or asks to post a revised `plan-<id>.md` to its issue'
+_I45_DESCRIPTION = 'description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as a ticket in the issue tracker, then rename it to `plan-<id>.md`. With `--issue <id>`, link the draft to an issue that already exists instead of creating one; with `--issue <id>` alone, post a revised `plan-<id>.md` to its issue as a new comment.'
+_I45_GITHUB_CHECK = (
+    'SEEN="$(mktemp)" || exit 1',
+    'trap \'rm -f "$SEEN"\' EXIT',
+    'gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }',
+    'python -m harness_core.plan_body github --issue \'<id>\' --seen "$SEEN" --dry-run',
+)
+_I45_GITHUB_POST = (
+    'SEEN="$(mktemp)" || exit 1',
+    'BODY_FILE="$(mktemp)" || exit 1',
+    'trap \'rm -f "$SEEN" "$BODY_FILE"\' EXIT',
+    'gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }',
+    'python -m harness_core.plan_body github --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --out "$BODY_FILE"',
+    'RC=$?',
+    '[ "$RC" = 3 ] && { echo "COMMENT=skipped"; exit 0; }',
+    '[ "$RC" = 0 ] || { echo "COMMENT=미반영 (no body)"; exit 1; }',
+    'gh issue comment "<id>" --body-file "$BODY_FILE"',
+    'gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read-back failed)"; exit 1; }',
+    'python -m harness_core.plan_body github --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --dry-run > /dev/null',
+    '[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }',
+)
+_I45_GITHUB_HARNESS_CREATE = (
+    "DRAFT_PLAN='<draft-plan-path>'",
+    'BODY_FILE="$(mktemp)" || exit 1',
+    'trap \'rm -f "$BODY_FILE"\' EXIT',
+    'BODY="$(python -m harness_core.plan_body github "$DRAFT_PLAN" --out "$BODY_FILE")" || { echo "BODY_FAILED=1"; exit 1; }',
+    'printf \'%s\\n\' "$BODY"',
+    '<harness_cli> create-issue \\',
+    '  --title "<plan title>" \\',
+    '  --body-file "$BODY_FILE" \\',
+    '  --type "<Type>" \\',
+    '  --label "<area tag>" \\',
+    '  --priority "<Priority option>" \\',
+    '  --size "<Size option>"',
+)
+_I45_GITHUB_GH_CREATE = (
+    "DRAFT_PLAN='<draft-plan-path>'",
+    'BODY_FILE="$(mktemp)" || exit 1',
+    'trap \'rm -f "$BODY_FILE"\' EXIT',
+    'BODY="$(python -m harness_core.plan_body github "$DRAFT_PLAN" --out "$BODY_FILE")" || { echo "BODY_FAILED=1"; exit 1; }',
+    'printf \'%s\\n\' "$BODY"',
+    'gh issue create \\',
+    '  --title "<plan title>" \\',
+    '  --body-file "$BODY_FILE" \\',
+    '  --type "<Type>" \\',
+    '  --label "<area tag>"',
+)
+# Byte-for-byte what 6359fd4 carried: the Jira paths are sunset, and #45 leaves them alone.
+_I45_JIRA_CREATE = (
+    '### Jira (`issue_tracker: jira`)',
+    '```bash',
+    'DRAFT_PLAN="<draft-plan-path>"',
+    'jira issue create \\',
+    '--project "<jira_project>" \\',
+    '--type "<Type>" \\',
+    '--summary "<plan title>" \\',
+    '--template "$DRAFT_PLAN" \\',
+    '--no-input \\',
+    '--raw',
+    '```',
+    '- **`jira issue create` has no `--description` flag.** Measured against the installed CLI (1.7.0): the body flags it accepts are `-b,--body` and `-T,--template`. Cobra aborts on an unknown flag, so a `--description` form does not degrade — it dies on the first call.',
+    '- **`--template` closes a second problem at the same time**: it hands over the file instead of expanding the plan body on a command line, and plan bodies are full of backticks and `$`.',
+    "- ★ **`-b/--body` wins over `--template`** (the CLI's own `EXAMPLES` say so). If someone later adds `-b` for convenience, the template is ignored **without a word** — the same silent precedence this skill guards against elsewhere.",
+    '- **Pass the type inferred in Step 3.** The keyword matching in that step reads the plan, not the tracker, so running it on this path is sound even though its heading says "GitHub only". What is *not* portable is the vocabulary it emits: `Bug` / `Feature` / `Task` are GitHub\'s names, and Jira issue types are defined per project — `Feature` is not one of Jira\'s defaults. Map the inferred name onto a type the target project actually defines, the same way the GitHub path requires a type the repository defines. Do not hardcode a type in this call, and do not send an unmapped one.',
+    '- **`--raw` returns the API response as JSON.** Read the issue key out of that response — for example `SYN-42`. Which field carries it is **not verified here** (see the limitation below), so do not write a field name into this document as though it were confirmed.',
+    '- **`--no-input` is the flag that keeps this call unattended, and it is required.** It suppresses the prompts for non-required fields, the description editor among them; drop it and `--template` alone still opens `$EDITOR` pre-filled with the file, which blocks an unattended run indefinitely. Both flags are load-bearing and neither substitutes for the other.',
+    'Then read the issue back before reporting anything about it, using the key from that response as `<TICKET_ID>` — the same name Step 8 consumes:',
+    '```bash',
+    'jira issue view "<TICKET_ID>" --raw',
+    '```',
+    'Compare the summary, type and project on the response with what was sent. This read-back stays **inside this section** — Step 7 is the GitHub path and is not generalized to cover other trackers.',
+    "> Limitation: this skillset's own repo has no Jira project. Both calls above were checked against the installed CLI's flag surface and this document's internal consistency, and neither has been executed against a live Jira. Anything reported from this path should carry that qualification rather than read as verified.",
+)
+_I45_JIRA_COMMENT = (
+    '- **Jira** — a positional body argument would silently win over `--template`, so never add one.',
+    'Not executed against a live Jira, like every Jira call in this skill:',
+    '```bash',
+    'jira issue comment add "<id>" --template \'<plan-file>\' --no-input',
+    '```',
+)
+# The #40 substitution paragraph as 6359fd4 had it; #45 rewrote only its last clause.
+_I45_STEP2_BEFORE = "From `project-iterate`, Phase 1's approval is this step's confirmation only when that same run's Phase 1 screen carried this step's screen as written above — the create or link form that matches the mode, down to its question line — and the user answered yes; ask this step again instead if the plan file was edited after that yes (review fixes included), Step 1 resolved a different path than the screen showed, the Step 1-L read returns a title or state other than the screen's, this run had no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step 1-L comment question is still asked on its own."
+_I45_L5_ROW = "- On a tracker with a row in `## Plan Body Rules`, Step 2's yes already covers the comment: run that section's post fence with `<rev>` — the `REV=` value on the screen that received the yes, never a new run of item 4 — and report the `COMMENT=` line it prints. Nothing is asked again."
+_I45_L5_ASK = '- On a tracker without a row, ask on its own — `Post plan-<id>.md to #<id> as a comment? [yes/no]` — separately from Step 2.'
+_I45_L5_OWN_YES = '- On a tracker without a row, the comment is posted only on its own yes; a no is not an error, because the local `plan-<id>.md` is the canonical plan either way.'
+_I45_L5_RECOVERY = '- If the issue body read in item 3 is the same text as the draft, the body already is this plan (a create-mode Step 8 failure being recovered): do not ask, and report the comment as skipped.'
+_I45_FJ_REPO = '- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.'
+_I45_FJ_QUOTING = "- `fj` quotes every line of a body or comment with `> ` and wraps the lines between them in U+2068/U+2069; the module splits a Forgejo read into one entry per run of quoted lines, and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made."
+
+
+import json
+
+_I45_DRAFT = "DRAFT_PLAN='<draft-plan-path>'"
+_I45_BODY_FILE = 'BODY_FILE="$(mktemp)" || exit 1'
+_I45_BODY_TRAP = "trap 'rm -f \"$BODY_FILE\"' EXIT"
+_I45_BODY = 'BODY="$(python -m harness_core.plan_body {tracker} "$DRAFT_PLAN" --out "$BODY_FILE")" || {{ echo "BODY_FAILED=1"; exit 1; }}'
+
+# Every line of project-issue that names Jira, exactly as 6359fd4 had them.
+_I45_JIRA_LINES = (
+    '- Keywords such as "register issue", "create ticket", "upload to GitHub", or "upload to Jira"',
+    '"jira": r"[A-Z][A-Z0-9_]*-[1-9][0-9]*",',
+    '- **Jira**:',
+    'jira issue view "<id>" --raw',
+    '- **Jira** — a positional body argument would silently win over `--template`, so never add one.',
+    'Not executed against a live Jira, like every Jira call in this skill:',
+    'jira issue comment add "<id>" --template \'<plan-file>\' --no-input',
+    '### Jira (`issue_tracker: jira`)',
+    'jira issue create \\',
+    '--project "<jira_project>" \\',
+    '- **`jira issue create` has no `--description` flag.** Measured against the installed CLI (1.7.0): the body flags it accepts are `-b,--body` and `-T,--template`. Cobra aborts on an unknown flag, so a `--description` form does not degrade — it dies on the first call.',
+    '- **Pass the type inferred in Step 3.** The keyword matching in that step reads the plan, not the tracker, so running it on this path is sound even though its heading says "GitHub only". What is *not* portable is the vocabulary it emits: `Bug` / `Feature` / `Task` are GitHub\'s names, and Jira issue types are defined per project — `Feature` is not one of Jira\'s defaults. Map the inferred name onto a type the target project actually defines, the same way the GitHub path requires a type the repository defines. Do not hardcode a type in this call, and do not send an unmapped one.',
+    'jira issue view "<TICKET_ID>" --raw',
+    "> Limitation: this skillset's own repo has no Jira project. Both calls above were checked against the installed CLI's flag surface and this document's internal consistency, and neither has been executed against a live Jira. Anything reported from this path should carry that qualification rather than read as verified.",
+    '`<ISSUE_NUMBER>` on GitHub and Forgejo, `<TICKET_ID>` on Jira (for example `plan-SYN-42.md`). Do not',
+    '- issue number / URL, or Jira ticket ID',
+)
+
+_I45_FAKE_TRACKER = r'''
+import json, os, sys
+from pathlib import Path
+tool, args = sys.argv[1], sys.argv[2:]
+store = Path(os.environ["STORE"])
+(store / "comments").mkdir(parents=True, exist_ok=True)
+with open(store / "calls", "a", encoding="utf-8") as log:
+    log.write(json.dumps([tool, *args]) + "\n")
+comments = sorted((store / "comments").iterdir(), key=lambda p: int(p.name))
+def read(p):
+    return p.read_text(encoding="utf-8")
+def quoted(text):
+    return "".join(("> " + l if l else "> ") + "\n" for l in text.rstrip("\n").split("\n"))
+if "--body-file" in args:
+    body = Path(args[args.index("--body-file") + 1]).read_text(encoding="utf-8")
+    if "create" in args:
+        (store / "created").write_text(body, encoding="utf-8")
+        print("https://github.test/o/r/issues/41")
+    elif os.environ.get("FAKE_POST") != "drop":
+        (store / "comments" / str(len(comments))).write_text(body, encoding="utf-8")
+    sys.exit(0)
+if "view" in args:
+    # FAKE_READ: "fail" fails every read; "fail-comments" only Forgejo's comments
+    # surface; "fail-after-post" every read once a comment was posted.
+    mode = os.environ.get("FAKE_READ", "")
+    posted = any("--body-file" in json.loads(c) for c in (store / "calls").read_text(encoding="utf-8").splitlines())
+    if mode == "fail" or (mode == "fail-comments" and args[-1] == "comments") or (mode == "fail-after-post" and posted):
+        print("Error: not found", file=sys.stderr)
+        sys.exit(1)
+    body = read(store / "body") if (store / "body").exists() else "사람이 쓴 본문\n"
+    if tool == "gh":
+        assert args[args.index("--json") + 1] == "body,comments" and "--jq" not in args, args
+        print(json.dumps({"body": body, "comments": [{"body": read(c)} for c in comments]}))
+    elif args[-1] == "comments":
+        for c in comments:
+            sys.stdout.write("⁨⁩⁨W⁩⁨⁩ said:\n" + quoted(read(c)) + "\n\n")
+    else:
+        sys.stdout.write("⁨t⁩ #⁨45⁩\nBy ⁨me⁩ — Open\n\n" + quoted(body) + "\n")
+    sys.exit(0)
+sys.exit("fake %s: unexpected call %r" % (tool, args))
+'''
+
+_I45_PLAN = "# Plan: 작은 플랜\n\n## Intent Summary\n의도.\n\n## Definition of Done\n- [ ] 된다\n"
+
+# Tokens #50 keeps to the canonical main-checkout block; no #45 fence resolves it itself.
+_I45_MAIN_TOKENS = (
+    "worktree list", "rev-parse", "show-toplevel", "git -C", "main_worktree_root",
+    ".task/plan", '".task" / "plan"',
+)
+
+
+def _i45_rules() -> str:
+    text = _issue_skill()
+    assert text.count("\n## Plan Body Rules\n") == 1, "project-issue has no single Plan Body Rules section"
+    return text.split("\n## Plan Body Rules\n", 1)[1].split("\n## Instructions\n", 1)[0]
+
+
+def _i45_fences() -> dict[str, list[str]]:
+    rules = _i45_rules()
+    return {
+        (tracker, kind): _i40_fence_after(rules, f"**{label}** {kind}:")
+        for tracker, label in (("github", "GitHub"), ("forgejo", "Forgejo"))
+        for kind in ("check", "post")
+    }
+
+
+def _i45_env(tmp_path: Path, **extra: str) -> tuple[dict[str, str], Path, Path]:
+    """Fake `fj` and `gh` over one store, a `python` for the module, and a main checkout.
+
+    The store is state, not a script: a post adds a comment and a read prints
+    what is there, so "posted" is true only when the read-back finds the post.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    fake = tmp_path / "fake_tracker.py"
+    fake.write_text(_I45_FAKE_TRACKER, encoding="utf-8")
+    for tool in ("fj", "gh"):
+        shim = bin_dir / tool
+        shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" {tool} "$@"\n')
+        shim.chmod(0o755)
+    for name in ("python", "python3"):
+        shim = bin_dir / name
+        shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        shim.chmod(0o755)
+    main = tmp_path / "main"
+    (main / ".task" / "plan").mkdir(parents=True, exist_ok=True)
+    store = tmp_path / "store"
+    (store / "comments").mkdir(parents=True, exist_ok=True)
+    tmp = tmp_path / "tmp"  # mktemp writes here, so a leaked temp file is visible to the test
+    tmp.mkdir(exist_ok=True)
+    # macOS mktemp with no template ignores TMPDIR, so the fences' mktemp is a shim.
+    shim = bin_dir / "mktemp"
+    shim.write_text(f'#!/bin/sh\nexec /usr/bin/mktemp "{tmp}/tmp.XXXXXXXX"\n')
+    shim.chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path), "STORE": str(store), "TMPDIR": str(tmp), **extra}
+    return env, main, store
+
+
+def _i45_script(fence: list[str], **values: str) -> str:
+    script = "\n".join(fence)
+    for placeholder, value in {
+        "<forgejo_host>": "forge.test", "<forgejo_repo>": "o/r", "<id>": "45", **values,
+    }.items():
+        script = script.replace(placeholder, value)
+    assert not re.search(r"<[^<>\n]*>", script), f"a placeholder is left for the shell to parse:\n{script}"
+    return script
+
+
+def _i45_run(shell: str, script: str, env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run([shell, "-c", script], cwd=cwd, env=env, capture_output=True, text=True)
+
+
+def _i45_calls(store: Path) -> list[list[str]]:
+    calls = store / "calls"
+    return [json.loads(c) for c in calls.read_text(encoding="utf-8").splitlines()] if calls.exists() else []
+
+
+def _i45_posts(store: Path) -> list[list[str]]:
+    return [c for c in _i45_calls(store) if "comment" in c and "--body-file" in c]
+
+
+# The one post each tracker makes, as argv, with the body file masked.
+_I45_POST_ARGV = {
+    "github": ["gh", "issue", "comment", "45", "--body-file", "<body>"],
+    "forgejo": ["fj", "-H", "forge.test", "issue", "comment", "o/r#45", "--body-file", "<body>"],
+}
+
+
+def _i45_plan(main: Path, text: str = _I45_PLAN) -> str:
+    from harness_core.plan_body import revision
+    plan = main / ".task" / "plan" / "plan-45.md"
+    plan.write_text(text, encoding="utf-8")
+    return revision(plan.read_bytes())
+
+
+def test_i45_rules_table_matches_the_module() -> None:
+    from harness_core.plan_body import LIMITS
+    rules = _i45_rules()
+    rows = [l.strip() for l in rules.splitlines() if l.startswith("| ") and not l.startswith("| Tracker")]
+    assert rows == [_I45_ROW_GITHUB, _I45_ROW_FORGEJO], f"the limit table changed: {rows}"
+    table = {r.split("|")[1].strip().lower(): int(r.split("|")[2].strip().replace(",", "")) for r in rows}
+    assert table == LIMITS, f"the table and harness_core.plan_body.LIMITS disagree: {table} vs {LIMITS}"
+    assert "jira" not in table
+
+
+def test_i45_rules_lines_are_pinned() -> None:
+    rules = _i45_rules()
+    for line in (
+        _I45_RULES_INTRO, _I45_RULE_CONSTANT, _I45_RULE_NO_ROW, _I45_RULE_UNIT, _I45_RULE_BODY,
+        _I45_RULE_NO_CUT, _I45_RULE_MARKER, _I45_RULE_ONCE, _I45_RULE_READ, _I45_RULES_FENCES,
+        _I45_FJ_REPO, _I45_FJ_QUOTING,
+    ):
+        assert_whole_line(rules, line)
+    assert not [l for l in rules.splitlines() if l.startswith("#")], (
+        "a heading inside Plan Body Rules — a `### Forgejo` here moves every _forgejo_section() slice"
+    )
+    order = [l.strip() for l in _issue_skill().splitlines() if l.startswith("## ")]
+    assert order.index("## Plan Body Rules") == order.index("## Instructions") - 1
+
+
+def test_i45_no_second_limit_number() -> None:
+    """A second limit written anywhere else in the skill would drift from the table."""
+    number = re.compile(r"\b\d{1,3}(?:,\d{3})+\b|\b\d{5,}\b|KiB|MiB", re.I)
+    context = re.compile(r"limit|한도|character|문자|KiB|MiB", re.I)
+    stray = [
+        l.strip() for l in _issue_skill().splitlines()
+        if number.search(l) and context.search(l) and l.strip() not in (_I45_ROW_GITHUB, _I45_ROW_FORGEJO)
+    ]
+    assert not stray, "a limit is stated outside the Plan Body Rules table:\n" + "\n".join(stray)
+
+
+def test_i45_rules_fences_are_pinned() -> None:
+    fences = _i45_fences()
+    assert tuple(fences["github", "check"]) == _I45_GITHUB_CHECK
+    assert tuple(fences["github", "post"]) == _I45_GITHUB_POST
+    forgejo = tuple(_GOLDEN_ISSUE_LINK_FORGEJO)
+    assert tuple(fences["forgejo", "check"]) == forgejo[2:forgejo.index("```", 2)]
+    # The two trackers differ only in their read and post commands.
+    for kind in ("check", "post"):
+        gh = [l for l in fences["github", kind] if not l.startswith(("gh ", "fj "))]
+        fj = [l for l in fences["forgejo", kind] if not l.startswith(("gh ", "fj "))]
+        assert [l.replace(" github ", " forgejo ") for l in gh] == fj, f"the {kind} fences drifted apart"
+
+
+_I45_SCENARIOS = {
+    # scenario: (env, last line, exit code, posts)
+    "empty": ({}, "COMMENT=posted", 0, 1),
+    "older": ({}, "COMMENT=posted", 0, 1),
+    "shorter": ({}, "COMMENT=posted", 0, 1),
+    "same": ({}, "COMMENT=skipped", 0, 0),
+    "body": ({}, "COMMENT=skipped", 0, 0),
+    "read_fail": ({"FAKE_READ": "fail"}, "COMMENT=미반영 (read failed)", 1, 0),
+    "readback_fail": ({"FAKE_READ": "fail-after-post"}, "COMMENT=미반영 (read-back failed)", 1, 1),
+    "drop": ({"FAKE_POST": "drop"}, "COMMENT=미반영", 1, 1),
+    "rev": ({}, "COMMENT=미반영 (no body)", 1, 0),
+}
+
+
+@pytest.mark.parametrize("tracker", ["github", "forgejo"])
+@pytest.mark.parametrize("scenario", list(_I45_SCENARIOS))
+def test_i45_post_fence_against_a_stateful_tracker(tracker: str, scenario: str, tmp_path: Path) -> None:
+    from harness_core.plan_body import marker
+    extra, expected, code, n_posts = _I45_SCENARIOS[scenario]
+    env, main, store = _i45_env(tmp_path, **extra)
+    plan = _I45_PLAN + "\n## Validation Plan\n- 끝에 붙은 절\n" if scenario == "shorter" else _I45_PLAN
+    rev = _i45_plan(main)
+    if scenario == "same":
+        (store / "comments" / "0").write_text(f"{marker('45', rev)}\n\n{_I45_PLAN}", encoding="utf-8")
+    if scenario == "older":
+        (store / "comments" / "0").write_text(f"{marker('45', '00000000')}\n\n옛 플랜\n", encoding="utf-8")
+    if scenario == "shorter":  # the posted revision had one more section; this one only drops it
+        (store / "comments" / "0").write_text(f"{marker('45', '00000000')}\n\n{plan}", encoding="utf-8")
+    if scenario == "body":
+        (store / "body").write_text(_I45_PLAN, encoding="utf-8")
+    before = len(list((store / "comments").iterdir()))
+
+    fence = _i45_fences()[tracker, "post"]
+    ran = _i45_run("bash", _i45_script(fence, **{"<rev>": "deadbeef" if scenario == "rev" else rev}), env, main)
+    last = ran.stdout.strip().splitlines()[-1] if ran.stdout.strip() else ""
+    assert (last, ran.returncode) == (expected, code), f"{scenario}: {ran.stdout!r} {ran.stderr!r}"
+    posts = _i45_posts(store)
+    assert len(posts) == n_posts, f"{scenario}: expected {n_posts} posts, got {posts}"
+    for post in posts:
+        assert post[:-1] + ["<body>"] == _I45_POST_ARGV[tracker], f"the post argv changed: {post}"
+    if expected == "COMMENT=posted":
+        new = sorted((store / "comments").iterdir(), key=lambda p: int(p.name))[before]
+        assert new.read_text(encoding="utf-8") == f"{marker('45', rev)}\n\n{_I45_PLAN}"
+    assert not list((tmp_path / "tmp").iterdir()), "a temp file outlived the fence"
+
+
+@pytest.mark.parametrize("scenario", ["fail-comments"])
+def test_i45_forgejo_post_fence_needs_both_reads(scenario: str, tmp_path: Path) -> None:
+    env, main, store = _i45_env(tmp_path, FAKE_READ=scenario)
+    rev = _i45_plan(main)
+    ran = _i45_run("bash", _i45_script(_i45_fences()["forgejo", "post"], **{"<rev>": rev}), env, main)
+    assert ran.stdout.strip().splitlines()[-1] == "COMMENT=미반영 (read failed)" and ran.returncode == 1
+    assert not _i45_posts(store), "a failed comments read was taken for an empty one"
+
+
+@pytest.mark.parametrize("shell", _i40_shells())
+@pytest.mark.parametrize("tracker", ["github", "forgejo"])
+def test_i45_post_then_repost_in_every_shell(shell: str, tracker: str, tmp_path: Path) -> None:
+    env, main, store = _i45_env(tmp_path)
+    rev = _i45_plan(main)
+    script = _i45_script(_i45_fences()[tracker, "post"], **{"<rev>": rev})
+    first = _i45_run(shell, script, env, main)
+    second = _i45_run(shell, script, env, main)
+    assert first.stdout.strip().splitlines()[-1] == "COMMENT=posted", first.stdout + first.stderr
+    assert second.stdout.strip().splitlines()[-1] == "COMMENT=skipped", second.stdout + second.stderr
+    assert len(_i45_posts(store)) == 1, "the same revision was posted twice"
+
+
+@pytest.mark.parametrize("tracker", ["github", "forgejo"])
+def test_i45_check_fence_posts_nothing(tracker: str, tmp_path: Path) -> None:
+    from harness_core.plan_body import marker
+    env, main, store = _i45_env(tmp_path)
+    rev = _i45_plan(main)
+    script = _i45_script(_i45_fences()[tracker, "check"])
+    ran = _i45_run("bash", script, env, main)
+    assert ran.returncode == 0 and ran.stdout == f"KIND=full CHARS={len(marker('45', rev)) + 2 + len(_I45_PLAN)} LIMIT=65536 REV={rev}\n"
+    (store / "comments" / "0").write_text(f"{marker('45', rev)}\n\nx\n", encoding="utf-8")
+    ran = _i45_run("bash", script, env, main)
+    assert ran.returncode == 3 and ran.stdout == f"SEEN=revision REV={rev}\n"
+    assert not _i45_posts(store)
+
+
+def test_i45_create_fences_share_the_body_lines() -> None:
+    text = _issue_skill()
+    forgejo = _i40_fence_after(_forgejo_section(), _I40_CREATE_DIRECTIVE)
+    blocks = _fence_blocks(text)
+    assert [b for b in blocks if "<harness_cli> create-issue \\" in b] == [list(_I45_GITHUB_HARNESS_CREATE)]
+    assert [b for b in blocks if "gh issue create \\" in b] == [list(_I45_GITHUB_GH_CREATE)]
+    for fence, tracker in ((_I45_GITHUB_HARNESS_CREATE, "github"), (_I45_GITHUB_GH_CREATE, "github"), (forgejo, "forgejo")):
+        for line in (_I45_DRAFT, _I45_BODY_FILE, _I45_BODY_TRAP, _I45_BODY.format(tracker=tracker)):
+            assert fence.count(line) == 1, f"a create fence lost or doubled: {line}"
+        assert sum('--body-file "$BODY_FILE"' in l for l in fence) == 1
+        assert not any("--body-file \"$DRAFT_PLAN\"" in l for l in fence), "a create fence still posts the draft directly"
+    assert_whole_line(text, _I45_CREATE_QUOTE)
+    assert_whole_line(text, _I45_CREATE_BODY)
+    assert_whole_line(_forgejo_section(), _I45_FORGEJO_BODY_FAILED)
+
+
+def test_i45_double_quoted_draft_path_is_left_only_in_jira() -> None:
+    text = _issue_skill()
+    jira = "\n".join(_stripped_lines(text, "### Jira (`issue_tracker: jira`)", "### Forgejo"))
+    everywhere = [l.strip() for l in text.splitlines() if '="<draft-plan-path>"' in l]
+    in_jira = [l for l in jira.splitlines() if '="<draft-plan-path>"' in l]
+    assert everywhere == in_jira == ['DRAFT_PLAN="<draft-plan-path>"'], everywhere
+
+
+def _i45_over_limit(intent: str = "의도.") -> str:
+    return (
+        "# Plan: 큰 플랜\n\n## Intent Summary\n" + intent + "\n\n## Task Cards\n\n### Task 1: 큰 태스크\n"
+        + ("가나다라마바사 " * 10 + "\n") * 900
+    )
+
+
+@pytest.mark.parametrize("shell", _i40_shells())
+def test_i45_forgejo_create_fence_posts_the_summary_over_the_limit(shell: str, tmp_path: Path) -> None:
+    from harness_core.plan_body import LIMITS, create_summary
+    fence = _i40_fence_after(_forgejo_section(), _I40_CREATE_DIRECTIVE)
+    draft = tmp_path / "plan-draft-big.md"
+    draft.write_text(_i45_over_limit(), encoding="utf-8")
+    assert len(draft.read_text(encoding="utf-8")) > LIMITS["forgejo"]
+    env, log = _i40_fake_env(tmp_path, "ok")
+    ran = subprocess.run([shell, "-c", _i40_script(fence, draft)], cwd=tmp_path, env=env, capture_output=True, text=True)
+    out = ran.stdout.splitlines()
+    assert ran.returncode == 0, ran.stderr
+    assert out[:2] == ["CREATE_FAILED=0", "ISSUE_NUMBER=41"] and out[2].startswith("KIND=summary "), out
+    assert Path(f"{log}.body").read_text(encoding="utf-8") == create_summary(draft.read_text(encoding="utf-8"), "forgejo")
+
+
+@pytest.mark.parametrize("case", ["summary_too_large", "module_fails"])
+def test_i45_forgejo_create_fence_stops_before_create(case: str, tmp_path: Path) -> None:
+    fence = _i40_fence_after(_forgejo_section(), _I40_CREATE_DIRECTIVE)
+    draft = tmp_path / "plan-draft-big.md"
+    draft.write_text(_i45_over_limit("가" * 70000 if case == "summary_too_large" else "의도."), encoding="utf-8")
+    env, log = _i40_fake_env(tmp_path, "ok")
+    if case == "module_fails":
+        (tmp_path / "bin" / "python").write_text("#!/bin/sh\necho 'No module named harness_core.plan_body' >&2\nexit 1\n")
+    ran = subprocess.run(["bash", "-c", _i40_script(fence, draft)], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert ran.returncode != 0 and not log.exists(), "fj issue create ran without a body"
+    assert "BODY_FAILED=1" in ran.stdout.splitlines()
+    assert not any(l.startswith(("CREATE_FAILED=", "ISSUE_NUMBER=")) for l in ran.stdout.splitlines()), (
+        "a body failure printed create-failure lines, which send the agent to the create recovery"
+    )
+
+
+def test_i45_gh_create_fence_uploads_the_draft_bytes(tmp_path: Path) -> None:
+    env, main, store = _i45_env(tmp_path)
+    draft = main / ".task" / "plan" / "plan-draft-x.md"
+    draft.write_text(f"# Plan: {_I40_HOSTILE_TITLE}\n\n본문\n", encoding="utf-8")
+    script = _i45_script(list(_I45_GITHUB_GH_CREATE), **{
+        "<draft-plan-path>": str(draft), "<plan title>": "t", "<Type>": "Task", "<area tag>": "BE",
+    })
+    ran = _i45_run("bash", script, env, main)
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.splitlines()[0].startswith("KIND=full ")
+    assert (store / "created").read_bytes() == draft.read_bytes()
+    assert str(draft) not in (store / "calls").read_text(encoding="utf-8"), "gh received the draft path, not the body file"
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_i45_link_mode_screen_and_post() -> None:
+    link = _link_mode()
+    for line in (_I45_L2_POINTER, _I45_L4_SCREEN, _I45_L4_REFUSED, _I45_L5_ROW, _I45_L5_ASK, _I45_L5_OWN_YES, _I45_L5_RECOVERY):
+        assert_whole_line(link, line)
+    assert _I45_L4_ONELINER in [l.strip() for l in _fenced(link).splitlines()], "item 4 lost its screen command"
+    step2 = skill_section(_issue_skill(), "**2. User Confirmation**")
+    for line in (_I45_STEP2_ROW, _I45_STEP2_COMMENT, _I45_STEP2_QUESTION):
+        assert_whole_line(step2, line)
+    lines = [l.strip() for l in step2.splitlines()]
+    assert lines.count("Are the Intent Summary and base branch correct? Link this file to #<id>? [yes/no]") == 1, (
+        "the link-only question for a tracker without a row is gone"
+    )
+    assert lines.index(_I45_STEP2_ROW) < lines.index(_I45_STEP2_COMMENT) < lines.index(_I45_STEP2_QUESTION)
+    everywhere = [l for l in _issue_skill().splitlines() if "Post plan-<id>.md to #<id> as a comment? [yes/no]" in l]
+    assert [l.strip() for l in everywhere] == [_I45_L5_ASK], f"the separate comment question escaped its row-less scope: {everywhere}"
+
+
+def test_i45_revision_mode() -> None:
+    text = _issue_skill()
+    order = _step_order(text)
+    heads = [h.split(".", 1)[0] for h in order]
+    assert heads[:4] == ["**1", "**1-L", "**1-R", "**2"], order
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    assert lines.index(_I45_INSTRUCTIONS_REVISION) == lines.index("## Instructions") + 1, (
+        "the revision branch is not the first thing Instructions says, so Step 1 discovery runs first"
+    )
+    section = skill_section(text, "**1-R.")
+    for line in (_I45_R_INTRO, _I45_R_1, _I45_R_2, _I45_R_3, _I45_R_4, _I45_R_5, _I45_R_SEEN,
+                 _I45_R_TOO_LARGE, _I45_R_6, _I45_R_REVISION, _I45_R_QUESTION, _I45_R_7):
+        assert_whole_line(section, line)
+    for command in _CREATE_COMMANDS + ("rename_plan_to_issue", "gh issue comment", "issue comment '"):
+        assert command not in section, f"revision mode names {command}"
+    for line in (_I45_USAGE_REVISION, _I45_TRIGGER, _I45_DESCRIPTION, _I45_LANG_GUARD, _I45_STEP2_FRONTMATTER):
+        assert_whole_line(text, line)
+
+
+def test_i45_step2_substitution_changed_only_its_last_clause() -> None:
+    cut = _I45_STEP2_BEFORE.index("and the Step 1-L comment")
+    assert _I40_STEP2_SUBSTITUTE[:cut] == _I45_STEP2_BEFORE[:cut], "the #40 conditions changed"
+    assert _I40_STEP2_SUBSTITUTE[cut:] == (
+        "and the Step 1-L comment follows the screen: posted on that yes where the screen carried the "
+        "comment line, and asked on its own where it did not."
+    )
+
+
+def test_i45_output_lines() -> None:
+    step9 = skill_section(_issue_skill(), "**9. Output**")
+    for line in (_I45_OUT_BODY, _I45_OUT_COMMENT_ROW, _GOLDEN_ISSUE_OUTPUT_COMMENT, _I45_OUT_REVISION):
+        assert_whole_line(step9, line)
+
+
+def test_i45_jira_is_untouched() -> None:
+    text = _issue_skill()
+    jira = tuple(_stripped_lines(text, "### Jira (`issue_tracker: jira`)", "### Forgejo"))
+    assert jira == _I45_JIRA_CREATE, "the Jira create section changed"
+    bullet = tuple(_stripped_lines(text, "- **Jira** — a positional body argument", "**1-R."))
+    assert bullet == _I45_JIRA_COMMENT, "the Jira comment bullet changed"
+    for block in (jira, bullet):
+        for token in ("plan_body", "BODY_FILE", "rev:", "Plan Body Rules"):
+            assert not any(token in l for l in block), f"a Jira path gained {token}"
+    new_text = [_i45_rules(), skill_section(text, "**1-R."), *[
+        v for k, v in globals().items() if k.startswith("_I45_") and isinstance(v, str)
+        and k not in ("_I45_STEP2_BEFORE", "_I45_FAKE_TRACKER")
+    ]]
+    assert not [t for t in new_text if re.search(r"jira", t, re.I)], "a line #45 added names Jira"
+
+
+def test_i45_new_fences_leave_the_main_checkout_to_the_module() -> None:
+    fences = [*_i45_fences().values(), list(_I45_GITHUB_HARNESS_CREATE), list(_I45_GITHUB_GH_CREATE),
+              _i40_fence_after(_forgejo_section(), _I40_CREATE_DIRECTIVE),
+              _i40_fence_after(_forgejo_section(), _I40_SEARCH_DIRECTIVE), [_I45_L4_ONELINER]]
+    for fence in fences:
+        assert fence, "a #45 fence went missing"
+        found = [(t, l) for l in fence for t in _I45_MAIN_TOKENS if t in l]
+        assert not found, f"a #45 fence resolves the main checkout itself: {found}"
+
+
+def test_i45_no_escape_clause_about_posting() -> None:
+    """Every prose line that talks about a comment together with skipping or asking is pinned."""
+    pinned = {
+        _I45_TRIGGER, _I45_RULE_ONCE, _I45_RULES_FENCES, _I45_L5_ROW, _I45_L5_ASK, _I45_L5_RECOVERY,
+        _I45_R_SEEN, _I40_STEP2_SUBSTITUTE, _I45_OUT_COMMENT_ROW, _GOLDEN_ISSUE_OUTPUT_COMMENT, _I45_OUT_REVISION,
+    }
+    words = re.compile(r"comment|코멘트|게시|post", re.I)
+    escape = re.compile(r"skip|건너|생략|declin|묻|ask|no need|unless|optional|선택", re.I)
+    stray = [
+        line.strip() for line, in_fence in _outside_fences(_issue_skill())
+        if not in_fence and words.search(line) and escape.search(line) and line.strip() not in pinned
+    ]
+    assert not stray, "a posting rule was stated outside the pinned lines:\n" + "\n".join(stray)
+
+
+def test_i45_every_line_naming_jira_is_as_6359fd4_had_it() -> None:
+    """Jira is sunset: no line of project-issue that names it is added, dropped or changed."""
+    lines = tuple(l.strip() for l in _issue_skill().splitlines() if re.search(r"jira", l, re.I))
+    assert lines == _I45_JIRA_LINES, "a line naming Jira changed"
+
+
+@pytest.mark.parametrize("shell", [s for s in ("bash", "zsh") if shutil.which(s)])
+@pytest.mark.parametrize("tracker", ["github", "forgejo"])
+def test_i45_post_fence_survives_noclobber(shell: str, tracker: str, tmp_path: Path) -> None:
+    """A user shell with `noclobber` set must not turn every post into 미반영."""
+    env, main, store = _i45_env(tmp_path)
+    rev = _i45_plan(main)
+    script = "set -o noclobber\n" + _i45_script(_i45_fences()[tracker, "post"], **{"<rev>": rev})
+    ran = _i45_run(shell, script, env, main)
+    assert ran.stdout.strip().splitlines()[-1] == "COMMENT=posted" and ran.returncode == 0, ran.stdout + ran.stderr
