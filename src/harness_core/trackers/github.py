@@ -64,12 +64,18 @@ class GhError(RuntimeError):
 
     Carries the command and stderr so a handler can report *what* failed, which
     is the difference between "retry the fields" and "the issue was never made".
+    ``stdout`` is kept too: ``gh`` exits 1 on a GraphQL error but still writes the
+    response — ``errors[].type`` and ``path`` included — there, and that
+    structure is the only way to tell one error from another without reading
+    GitHub's wording. It is for reading, never for quoting: it is not in the
+    message.
     """
 
-    def __init__(self, argv: Sequence[str], returncode: int, stderr: str) -> None:
+    def __init__(self, argv: Sequence[str], returncode: int, stderr: str, stdout: str = "") -> None:
         self.argv = list(argv)
         self.returncode = returncode
         self.stderr = stderr.strip()
+        self.stdout = stdout
         # Name the command, not the payload. argv for a GraphQL call carries the
         # whole mutation document plus every node ID, and this string is echoed
         # into the JSON that impl-reports and issue comments quote verbatim.
@@ -88,11 +94,15 @@ class GraphQLError(GhError):
 
     ``stderr`` holds the reason — the server's ``errors[].message`` where there
     are any — because :meth:`ProjectFields.load` quotes that attribute. Only the
-    reason: the query and its variables are not assembled into it.
+    reason: the query and its variables are not assembled into it. ``errors``
+    holds the server's ``errors`` as they came when that is why the response
+    was refused, and is ``None`` otherwise — kept for the same reason
+    :class:`GhError` keeps ``stdout`` and, like it, not in the message.
     """
 
-    def __init__(self, argv: Sequence[str], reason: str) -> None:
+    def __init__(self, argv: Sequence[str], reason: str, *, errors: object = None) -> None:
         super().__init__(argv, 0, reason)
+        self.errors = errors
         # The inherited message says "exited 0", which reads as a success.
         self.args = (f"gh {' '.join(self.argv[:2])} returned an unusable response: {self.stderr}",)
 
@@ -296,7 +306,7 @@ def run_gh(argv: Sequence[str], *, stdin: str | None = None) -> str:
         # A raw FileNotFoundError traceback tells the caller nothing actionable.
         raise GhError(argv, 127, "gh is not installed or not on PATH") from exc
     if proc.returncode != 0:
-        raise GhError(argv, proc.returncode, proc.stderr)
+        raise GhError(argv, proc.returncode, proc.stderr, proc.stdout)
     return proc.stdout
 
 
@@ -348,7 +358,7 @@ def _graphql(
         raise GraphQLError(argv, f"expected a JSON object, got {type(payload).__name__}")
     errors = payload.get("errors")
     if errors:
-        raise GraphQLError(argv, _graphql_error_text(errors))
+        raise GraphQLError(argv, _graphql_error_text(errors), errors=errors)
     data = payload.get("data")
     if not isinstance(data, dict):
         raise GraphQLError(argv, "the response carries no data object")
@@ -368,6 +378,24 @@ def _graphql_error_text(errors: object) -> str:
         message = entry.get("message") if isinstance(entry, dict) else None
         messages.append(message if isinstance(message, str) and message else repr(entry))
     return "; ".join(messages)
+
+
+def _graphql_errors(exc: GhError) -> list[object] | None:
+    """The server's ``errors`` behind a failed call, as structure, or ``None``.
+
+    From a :class:`GraphQLError` they are the ones :func:`_graphql` refused;
+    from any other :class:`GhError` they are in the response ``gh`` still wrote
+    to stdout when it exited 1. A body that is missing or unreadable is
+    ``None``, never an exception: this is read while reporting a failure.
+    """
+    if isinstance(exc, GraphQLError) and isinstance(exc.errors, list):
+        return exc.errors
+    try:
+        body = json.loads(exc.stdout)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    errors = body.get("errors") if isinstance(body, dict) else None
+    return errors if isinstance(errors, list) else None
 
 
 # ── Layer 3: name resolution and observation ─────────────────────────────────
@@ -439,9 +467,15 @@ class ProjectFields:
 
         A project owner may be either kind of account and the GraphQL entry
         points are different, so a failed ``organization`` lookup — or one whose
-        board came back as neither null nor a board — is a signal to try
-        ``user``, not an error. Results are cached per process: a command
-        that writes two fields resolves the project once.
+        board did not come back — is a signal to try ``user``, not an error.
+        Results are cached per process: a command that writes two fields
+        resolves the project once.
+
+        "Not found" needs a root that said so: an account that is not there, or
+        a NOT_FOUND error on the board itself. A board that comes back null
+        with no error says nothing about whether it exists — the one place it
+        has been seen is a user's own board hidden from a fine-grained token
+        (2026-09-26).
         """
         key = (owner, int(number))
         if use_cache and key in _FIELDS_CACHE:
@@ -461,6 +495,12 @@ class ProjectFields:
                     cls._QUERY % root, {"owner": owner, "number": int(number)}, run=run
                 )
             except GhError as exc:
+                # A NOT_FOUND on the board is GitHub's own "no such board" — or
+                # one this token may not see: another organization's private
+                # board answers the same way (measured). What an organization
+                # board read without the token's Projects permission answers
+                # was not measured. Keep asking: the other root may have it.
+                answered = answered or _is_board_not_found(exc, root)
                 # One line: this lands in audit JSON and in issue comments.
                 reason = " ".join(exc.stderr.split())
                 if not reason:
@@ -475,21 +515,31 @@ class ProjectFields:
             account = data.get(root)
             if not isinstance(account, dict):
                 # A null account is an answer — no such account. Anything else
-                # in its place is not one, the same as `repository: "x"`.
+                # in its place is not one, the same as `repository: "x"`. (Real
+                # `gh` sends a missing account as a NOT_FOUND error at [root],
+                # which the handler above does not count; an errorless null
+                # account comes only from other runners.)
                 answered = answered or account is None
                 misses.append((root, f"no {root} object"))
                 continue
-            # Only an explicit null is the account saying it has no such board.
-            # Anything else that is not a board — `"x"`, `{}`, the key missing —
-            # judged nothing, like an account of the wrong shape above, and must
-            # not end the loop before the other root is asked. (A missing
-            # *account* key still reads as null through `data.get` above and
-            # counts as an answer: a known asymmetry, left as it was.)
+            # No value here is the account saying it has no such board. A null
+            # with no error is how GitHub hides a board from this token (a
+            # user's own board, measured 2026-09-26) — a board that does not
+            # exist comes with a NOT_FOUND error instead, handled above. And
+            # `"x"`, `{}` or the key missing judged nothing either, like an
+            # account of the wrong shape. (A missing *account* key still reads
+            # as null through `data.get` above and counts as an answer: a known
+            # asymmetry, left as it was.)
             present = "projectV2" in account
             candidate = account.get("projectV2")
             if present and candidate is None:
-                answered = True
-                misses.append((root, f"no project #{number}"))
+                misses.append(
+                    (
+                        root,
+                        f"project #{number} not visible (null without an error — "
+                        "check that the token can read this account's projects)",
+                    )
+                )
                 continue
             if not (isinstance(candidate, dict) and candidate):
                 shape = _describe(candidate) if present else "missing"
@@ -501,8 +551,8 @@ class ProjectFields:
         if project is None:
             _FIELDS_CACHE.pop(key, None)
             detail = "; ".join(f"{root}: {reason}" for root, reason in misses)
-            # "Not found" is a judgement, and with no root answering there was
-            # nobody to make it.
+            # "Not found" is a judgement: a root had to say it — an account that
+            # is not there, or a board NOT_FOUND. With none, nobody made it.
             verdict = "not found" if answered else "could not be resolved"
             raise FieldNotFoundError(
                 f"project #{number} {verdict} for owner {owner!r} as an organization "
@@ -888,6 +938,24 @@ def _describe(value: object) -> str:
     if value == {}:
         return "empty object"
     return type(value).__name__
+
+
+def _is_board_not_found(exc: GhError, root: str) -> bool:
+    """Whether every error behind ``exc`` is a NOT_FOUND on ``root``'s board.
+
+    Read from ``type`` and ``path``, not from the message: GitHub rewording
+    "Could not resolve to a ProjectV2 …" must not quietly turn "not found" back
+    into "could not be resolved". The path keeps the account's own NOT_FOUND
+    (``[root]`` — not an organization, not a user) out; any other error beside
+    it makes the answer something else, and no structure at all is no answer.
+    """
+    errors = _graphql_errors(exc)
+    return bool(errors) and all(
+        isinstance(error, dict)
+        and error.get("type") == "NOT_FOUND"
+        and error.get("path") == [root, "projectV2"]
+        for error in errors
+    )
 
 
 def _is_configured_board(

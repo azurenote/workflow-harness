@@ -2795,11 +2795,18 @@ def test_i36_load_keeps_an_organization_error_beside_a_user_that_is_absent() -> 
     assert "not found for owner" in message
 
 
-def test_i36_load_names_a_board_the_organization_does_not_have() -> None:
+def test_i52_load_does_not_judge_an_errorless_null_board_at_the_organization() -> None:
+    """Moved from #36, which read this null as "no such board" (#52).
+
+    GitHub answers a board that does not exist with a NOT_FOUND error. A null
+    with no error is a board the token cannot see — at either root.
+    """
     message = _load_message({"data": {"organization": {"projectV2": None}}}, _gh_error(_NO_USER))
 
-    assert message.index("organization: no project #4") < message.index(_NO_USER)
-    assert "not found for owner" in message
+    assert f"organization: {_NOT_VISIBLE}" in message
+    assert message.index("organization: project #4 not visible") < message.index(_NO_USER)
+    assert "could not be resolved" in message
+    assert "not found for owner" not in message
 
 
 def test_i36_load_says_something_when_gh_says_nothing() -> None:
@@ -3039,12 +3046,17 @@ def test_i49_load_names_an_unusable_board_at_the_user_root() -> None:
     assert "came back malformed" not in message
 
 
-def test_i49_load_still_judges_a_null_board_at_the_user_root() -> None:
-    """Preservation: an explicit null is an answer at either root."""
+def test_i52_load_does_not_judge_an_errorless_null_board_at_the_user_root() -> None:
+    """Moved from #49, which kept this null as an answer at the user root (#52).
+
+    This is the shape of a user's own board hidden from a fine-grained token:
+    measured on 2026-09-26 as `projectV2: null` with no `errors` at all.
+    """
     message = _load_message(_gh_error(_SCOPE_ERROR), {"data": {"user": {"projectV2": None}}})
 
-    assert "user: no project #4" in message
-    assert "not found for owner" in message
+    assert f"user: {_NOT_VISIBLE}" in message
+    assert "could not be resolved" in message
+    assert "not found for owner" not in message
 
 
 def test_i49_audit_reads_the_user_board_after_an_unusable_organization_one(
@@ -3060,3 +3072,294 @@ def test_i49_audit_reads_the_user_board_after_an_unusable_organization_one(
 
     assert code == 0
     assert out["warnings"] == []
+
+
+# ── #52: which answer is "no such board" ─────────────────────────────────────
+#
+# Measured on 2026-09-26: GitHub answers a board that does not exist — or one
+# this token cannot see — with a NOT_FOUND error at path [<root>, "projectV2"],
+# and a user's own board hidden from a fine-grained token with `projectV2: null`
+# and no error. `gh` exits 1 on the error and keeps the whole response on
+# stdout; the fixtures below are that shape. They are built inside each test:
+# before #52 `GhError` took no `stdout`, and a module-level one would stop the
+# whole file from collecting.
+
+_BOARD_GONE = "Could not resolve to a ProjectV2 with the number 4."
+_NO_ORG = "Could not resolve to an Organization with the login of '<owner>'."
+_NOT_VISIBLE = (
+    "project #4 not visible (null without an error — "
+    "check that the token can read this account's projects)"
+)
+
+
+def _errors_body(root: str, errors: list[dict]) -> dict:
+    """A GraphQL response whose `errors` are ``errors``, with the null they leave behind."""
+    board_level = all(error.get("path") == [root, "projectV2"] for error in errors)
+    return {"data": {root: {"projectV2": None} if board_level else None}, "errors": errors}
+
+
+def _not_found(root: str, path: list[str], message: str) -> dict:
+    return {
+        "type": "NOT_FOUND",
+        "path": path,
+        "locations": [{"line": 1, "column": 3}],
+        "message": message,
+    }
+
+
+def _gh_failed(root: str, *errors: dict, stderr: str | None = None) -> github.GhError:
+    """What real `gh` raises through `run_gh`.
+
+    Exit 1, the first message on stderr, the whole response body on stdout.
+    """
+    body = _errors_body(root, list(errors))
+    return github.GhError(
+        ["api", "graphql"],
+        1,
+        stderr if stderr is not None else f"gh: {errors[0]['message']}",
+        stdout=json.dumps(body),
+    )
+
+
+def _board_gone(root: str) -> github.GhError:
+    return _gh_failed(root, _not_found(root, [root, "projectV2"], _BOARD_GONE))
+
+
+def _account_gone(root: str) -> github.GhError:
+    message = _NO_ORG if root == "organization" else _NO_USER
+    return _gh_failed(root, _not_found(root, [root], message))
+
+
+def test_i52_a_missing_user_board_is_not_found() -> None:
+    """A user's login: not an organization, and no such board of theirs."""
+    message = _load_message(_account_gone("organization"), _board_gone("user"))
+
+    assert "not found for owner" in message
+    assert f"user: gh: {_BOARD_GONE}" in message
+
+
+def test_i52_a_hidden_user_board_is_not_a_judgement() -> None:
+    """A user's own board that exists, hidden from a fine-grained token."""
+    message = _load_message(_account_gone("organization"), {"data": {"user": {"projectV2": None}}})
+
+    assert "could not be resolved" in message
+    assert "not found for owner" not in message
+    assert f"user: {_NOT_VISIBLE}" in message
+    assert message.count("user: ") == 1, "the root was given a second reason"
+    assert "\n" not in message
+
+
+def test_i52_the_hidden_board_names_the_board_asked_for() -> None:
+    hidden = {"data": {"user": {"projectV2": None}}}
+    fake = FakeGh(fields=_by_root(_account_gone("organization"), hidden))
+    with pytest.raises(github.FieldNotFoundError) as exc:
+        github.ProjectFields.load("<owner>", 7, run=fake)
+
+    assert "user: project #7 not visible" in str(exc.value)
+
+
+def test_i52_a_missing_organization_board_is_not_found() -> None:
+    """An organization without that board number — and the user root is still asked."""
+    message = _load_message(_board_gone("organization"), _account_gone("user"))
+
+    assert "not found for owner" in message
+    assert f"organization: gh: {_BOARD_GONE}" in message
+    assert f"user: gh: {_NO_USER}" in message
+
+
+def test_i52_a_not_found_board_is_read_from_a_graphql_error_too() -> None:
+    """`data` and `errors` with exit 0 reach `load` as a GraphQLError, not a GhError."""
+    organization = _errors_body(
+        "organization", [_not_found("organization", ["organization", "projectV2"], _BOARD_GONE)]
+    )
+    message = _load_message(organization, _gh_error(_NO_USER))
+
+    assert "not found for owner" in message
+
+
+def test_i52_a_not_found_board_does_not_end_the_search() -> None:
+    fake = FakeGh(fields=_by_root(_board_gone("organization"), _USER_BOARD))
+    loaded = github.ProjectFields.load("<owner>", 4, run=fake)
+
+    assert loaded.project_id == "user-project"
+    assert fake.kinds().count("fields") == 2
+
+
+@pytest.mark.parametrize("stderr", ["gh: No board here, reworded.", ""], ids=["reworded", "silent"])
+def test_i52_the_judgement_does_not_read_the_wording(stderr) -> None:
+    """GitHub rewording its message must not turn "not found" back into a guess."""
+    organization = _gh_failed(
+        "organization",
+        _not_found("organization", ["organization", "projectV2"], "No board here, reworded."),
+        stderr=stderr,
+    )
+    message = _load_message(organization, _account_gone("user"))
+
+    assert "not found for owner" in message
+
+
+def test_i52_the_wording_alone_is_not_a_judgement() -> None:
+    """No structure, no judgement: the exact message without the response body."""
+    message = _load_message(_gh_error(f"gh: {_BOARD_GONE}"), _gh_error(_NO_USER))
+
+    assert "could not be resolved" in message
+
+
+def test_i52_an_account_level_not_found_is_not_a_board_judgement() -> None:
+    message = _load_message(_account_gone("organization"), _account_gone("user"))
+
+    assert "could not be resolved" in message
+    assert "not found for owner" not in message
+
+
+_OTHER_ERROR = {
+    "type": "INSUFFICIENT_SCOPES",
+    "path": None,
+    "message": "Your token has not been granted the required scopes",
+}
+
+
+def test_i52_a_not_found_board_mixed_with_another_error_is_not_a_judgement() -> None:
+    board = _not_found("organization", ["organization", "projectV2"], _BOARD_GONE)
+    through_gh = _gh_failed("organization", board, _OTHER_ERROR)
+    through_runner = {
+        "data": {"organization": {"projectV2": None}},
+        "errors": [board, _OTHER_ERROR],
+    }
+
+    for organization in (through_gh, through_runner):
+        message = _load_message(organization, _gh_error(_NO_USER))
+        assert "could not be resolved" in message
+
+
+@pytest.mark.parametrize(
+    "error_type", ["FORBIDDEN", "INSUFFICIENT_SCOPES", None], ids=["forbidden", "scopes", "no-type"]
+)
+def test_i52_another_error_on_the_board_is_not_a_judgement(error_type) -> None:
+    """The board's path is not enough: a refusal there is not "no such board"."""
+    error = _not_found("organization", ["organization", "projectV2"], _BOARD_GONE)
+    if error_type is None:
+        del error["type"]
+    else:
+        error["type"] = error_type
+    message = _load_message(_gh_failed("organization", error), _gh_error(_NO_USER))
+
+    assert "could not be resolved" in message
+
+
+@pytest.mark.parametrize(
+    "path",
+    [["organization", "projectV2", "fields"], ["user", "projectV2"], ["projectV2"]],
+    ids=["deeper", "other-root", "no-root"],
+)
+def test_i52_a_not_found_elsewhere_is_not_this_board(path) -> None:
+    organization = _gh_failed("organization", _not_found("organization", path, _BOARD_GONE))
+    message = _load_message(organization, _gh_error(_NO_USER))
+
+    assert "could not be resolved" in message
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "not json",
+        "[]",
+        json.dumps({"data": {}}),
+        json.dumps({"errors": "x"}),
+        json.dumps({"errors": []}),
+        json.dumps({"errors": [None]}),
+        json.dumps({"errors": ["x"]}),
+    ],
+    ids=[
+        "empty",
+        "not-json",
+        "list",
+        "no-errors",
+        "errors-str",
+        "errors-empty",
+        "errors-null",
+        "errors-strs",
+    ],
+)
+def test_i52_an_unreadable_body_is_not_a_judgement(stdout) -> None:
+    organization = github.GhError(["api", "graphql"], 1, f"gh: {_BOARD_GONE}", stdout=stdout)
+    message = _load_message(organization, _gh_error(_NO_USER))
+
+    assert "could not be resolved" in message
+
+
+@pytest.mark.parametrize("stdout", [None, "[" * 100_000], ids=["none", "too-deep"])
+def test_i52_a_body_that_cannot_be_parsed_does_not_raise(stdout) -> None:
+    """The body is read while reporting a failure; reading it must not become the failure."""
+    organization = github.GhError(["api", "graphql"], 1, f"gh: {_BOARD_GONE}", stdout=stdout)
+    message = _load_message(organization, _gh_error(_NO_USER))
+
+    assert "could not be resolved" in message
+
+
+@pytest.mark.parametrize("errors", [{"type": "NOT_FOUND"}, "NOT_FOUND"], ids=["dict", "str"])
+def test_i52_a_graphql_error_of_the_wrong_shape_is_not_a_judgement(errors) -> None:
+    organization = github.GraphQLError(["api", "graphql"], _BOARD_GONE, errors=errors)
+    message = _load_message(organization, _gh_error(_NO_USER))
+
+    assert "could not be resolved" in message
+
+
+def test_i52_the_audit_warns_about_a_hidden_board(monkeypatch, capsys) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_by_root(_account_gone("organization"), {"data": {"user": {"projectV2": None}}}),
+        list_issues=_issue_list_page([1], has_next=False),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 3
+    assert any("not visible" in w and "could not be resolved" in w for w in out["warnings"])
+
+
+def test_i52_create_refuses_a_hidden_board(monkeypatch, capsys, body_file) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_by_root(_account_gone("organization"), {"data": {"user": {"projectV2": None}}}),
+    )
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "create" not in fake.kinds()
+    assert "not visible" in captured.err
+
+
+@pytest.mark.parametrize("code", [1, 4])
+def test_i52_run_gh_keeps_stdout_when_gh_fails(tmp_path, monkeypatch, code) -> None:
+    """`gh` exits 1 on a GraphQL error and still writes the response to stdout."""
+    TestRunGh._stub(
+        tmp_path,
+        f'echo \'{{"errors":[{{"type":"NOT_FOUND"}}]}}\'\necho "gh: boom" >&2\nexit {code}\n',
+    )
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(github.GhError) as exc:
+        github.run_gh(["api", "graphql"])
+
+    assert json.loads(exc.value.stdout)["errors"][0]["type"] == "NOT_FOUND"
+    assert exc.value.stderr == "gh: boom"
+
+
+def test_i52_graphql_keeps_the_errors_it_refuses() -> None:
+    errors = [_not_found("organization", ["organization", "projectV2"], _BOARD_GONE)]
+    payload = {"data": {"organization": {"projectV2": None}}, "errors": errors}
+    with pytest.raises(github.GraphQLError) as exc:
+        github._graphql("query{x}", {}, run=lambda argv, **_: json.dumps(payload))
+
+    assert exc.value.errors == errors
+
+
+def test_i52_the_kept_body_is_not_in_the_message() -> None:
+    """stdout and errors are for reading, not for quoting into reports and comments."""
+    failed = github.GhError(["api", "graphql"], 1, "e", stdout="PVTI_secret")
+    refused = github.GraphQLError(["api", "graphql"], "r", errors=[{"message": "PVTI_secret"}])
+
+    assert "PVTI_secret" not in str(failed)
+    assert "PVTI_secret" not in str(refused)
