@@ -23,6 +23,7 @@ That document holds the common contract only. This skill additionally reads:
 - `~/.claude/skills/_shared/references/hooks.md` — lifecycle hook points and failure policy
 - `~/.claude/skills/_shared/references/worktree.md` — worktree CWD caveats
 - `~/.claude/skills/_shared/references/github-issue-fields.md` — GitHub issue metadata contract (`issue_tracker: github` only)
+- `~/.claude/skills/_shared/references/forgejo.md` — `fj` surface facts (`issue_tracker: forgejo` only)
 
 Read nothing else from the reference set; the rest does not apply here.
 
@@ -258,7 +259,7 @@ jira issue view "<ticket-id>" --raw      # read the status field out of this res
 backward compatibility but are no-ops — no branch-notification comment is
 posted.)
 
-**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Progress 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이다.
+**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Progress 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이고, `fj` 에 상태 명령이 없다는 사실은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.
 
 **4. ADR (conditional)**
 

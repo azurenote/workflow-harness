@@ -1040,15 +1040,15 @@ REFERENCE_DIR = "skills/_shared/references"
 SKILL_REFERENCE_NEEDS = {
     "project-adr": {"worktree"},
     "project-clean": {"base-branch", "worktree"},
-    "project-done": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields"},
+    "project-done": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields", "forgejo"},
     "project-harness-init": {"base-branch"},
     "project-harness-update": set(),
-    "project-issue": {"base-branch", "github-issue-fields"},
+    "project-issue": {"base-branch", "github-issue-fields", "forgejo"},
     "project-iterate": set(),
     "project-plan": {"review-guidelines", "base-branch"},
     "project-release": {"release", "base-branch"},
     "project-release-doc": {"release"},
-    "project-start": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields"},
+    "project-start": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields", "forgejo"},
 }
 
 
@@ -3070,8 +3070,8 @@ _REDIRECTED = re.compile(r'>\s*"<[^"]+>"\s+2>&1$')
 
 _GOLDEN_DONE_FORGEJO = (
     '### Forgejo (`issue_tracker: forgejo`)',
-    '**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다 — 조회가 증거다.** `project-issue` 의 Forgejo 절이 이슈 생성에 세운 원칙과 같은 원칙이고, 이 절은 그것을 PR 생성에 적용한다.',
-    'harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 무관하게 `fj` 직접 호출이 유일한 경로다. 전역 옵션(`-H`)은 서브커맨드 앞에 온다. 이 경로는 디렉터리를 바꾸지 않는다 — GitHub 경로처럼 작업 CWD 그대로 8단계로 간다.',
+    '**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다 — 조회가 증거다.** `project-issue` 의 Forgejo 절이 이슈 생성에 세운 원칙과 같은 원칙이고, 이 절은 그것을 PR 생성에 적용한다. 원칙의 근거와 이 절이 기대는 `fj` 표면은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.',
+    'harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 무관하게 `fj` 직접 호출이 유일한 경로다. 이 경로는 디렉터리를 바꾸지 않는다 — GitHub 경로처럼 작업 CWD 그대로 8단계로 간다.',
     'Forgejo 는 PR 이 있으므로 위 Jira 의 직접 병합 경로로 보내지 않는다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:',
     '```bash',
     'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
@@ -3091,16 +3091,16 @@ _GOLDEN_DONE_FORGEJO = (
     'printf \'%s\\n\' "$CREATED"',
     '```',
     '- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 해석 네 줄은 1단계 fallback 펜스와 바이트까지 같고(정본: `worktree.md`), `plan-file` 도 같은 규칙이라, 4단계가 쓴 `<report-path>` 가 여기서 그대로 나온다 — 파일이 없으면 PR 을 만들지 않고 멈추고, 4단계가 어디에 썼는지 확인한다.',
-    '- **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합 시 Forgejo 가 `Closes` 로 이슈를 닫는 것은 실측 네 건에서 확인됐다. 네 건 모두 본문과 커밋 트레일러 양쪽에 줄이 있었으므로, 어느 쪽이 닫았는지는 **가르지 못했다** — 그래서 둘 다 둔다.',
+    '- **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합이 `Closes` 로 이슈를 닫게 하는 줄이 본문과 커밋 트레일러 중 어느 쪽인지 가려지지 않았다(`~/.claude/skills/_shared/references/forgejo.md`) — 그래서 둘 다 둔다.',
     '- **서브-PR 의 본문에는 `Closes #<id>` 가 없어야 한다.** 보고서에 습관처럼 그 줄이 남아 있으면 지운 뒤 펜스를 실행한다 — 5단계가 서브-PR 에서 `Closes` 를 뺀 이유가 본문에서 되살아나지 않게 한다.',
-    '- **`--base`/`--head` 를 명시한다.** GitHub 절과 같은 이유다 — 세 계층이 한 출처에 합의해야 한다. 저장소는 `-r <forgejo_repo>` 로만 준다. 이 리프 명령에는 `-R` 이 없다.',
-    '- **제목은 보고서 첫 줄 한 곳에서 읽어 변수로 넘긴다.** 리터럴로 붙여넣으면 백틱이 명령 치환으로 실행된다. 그 줄이 없으면(영어 보고서 등) 빈 제목으로 PR 을 만들지 않고 멈춘다. 제목이 `WIP: ` 로 시작하면 Forgejo 는 draft PR 로 만든다.',
-    '- **본문을 대신 채우는 플래그를 쓰지 않는다.** 이 명령의 `-A`(`--autofill`)는 커밋에서 본문을 만들어 impl-report 를 버린다. `-a` 는 라벨이 아니라 `--agit` 이고, `-w` 는 `--web` 이다 — 셋 다 이 경로에서 쓰지 않는다.',
-    '- **격리 제거는 추출보다 앞에 둔다.** 생성 출력은 `issue create` 와 같은 모양(`created pull request #N: <title>`)이고 번호가 양방향 격리 문자로 감싸여 있다. 빼거나 뒤로 옮기면 추출이 에러 없이 빈 문자열을 돌려준다.',
+    '- **`--base`/`--head` 를 명시한다.** GitHub 절과 같은 이유다 — 세 계층이 한 출처에 합의해야 한다. 저장소는 `-r <forgejo_repo>` 로만 준다(이 명령의 저장소 플래그: `~/.claude/skills/_shared/references/forgejo.md`).',
+    '- **제목은 보고서 첫 줄 한 곳에서 읽어 변수로 넘긴다.** 리터럴로 붙여넣으면 백틱이 명령 치환으로 실행된다. 그 줄이 없으면(영어 보고서 등) 빈 제목으로 PR 을 만들지 않고 멈춘다. 제목의 머리말이 PR 의 종류를 바꾸는 경우는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.',
+    '- **본문을 대신 채우는 플래그를 쓰지 않는다.** `-A`·`-a`·`-w` 는 셋 다 이 경로에서 쓰지 않는다 — 각 글자의 뜻은 `~/.claude/skills/_shared/references/forgejo.md` 에 있고, 그중 하나는 impl-report 를 버린다.',
+    '- **격리 제거는 추출보다 앞에 둔다.** 생성 출력의 모양과 번호를 감싼 격리 문자는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다. 빼거나 뒤로 옮기면 추출이 에러 없이 빈 문자열을 돌려준다.',
     '두 실패의 복구가 다르다. 생성과 추출을 한 파이프라인으로 합치지 않은 이유가 이것이다:',
     '- `CREATE_FAILED` 가 `1` — PR 은 **만들어지지 않았다**(같은 head 의 PR 이 이미 열려 있는 경우 포함). 웹 UI 에서 사람이 `<branch-name>` 의 PR 을 확인하거나 만들어 번호를 돌려받는다. 검색으로 번호를 추측하지 않는다.',
     '- 생성은 됐는데 `PR_NUMBER` 가 비었다 — 펜스가 출력한 생성 출력 원문에서 번호를 읽는다. 읽을 수 없으면 웹 UI 에서 `<branch-name>` 의 열린 PR 을 찾는다. 제목 검색은 쓰지 않는다 — 결과를 좁히지 못하고 출력에 head 브랜치가 없어 같은 제목의 다른 PR 과 가를 수 없다.',
-    'PR URL 은 `https://<forgejo_host>/<forgejo_repo>/pulls/<PR_NUMBER>` 로 조립한다 — `pr view` 출력에는 URL 이 없다. 읽기 확인:',
+    'PR URL 은 `https://<forgejo_host>/<forgejo_repo>/pulls/<PR_NUMBER>` 로 조립한다 — 읽기 확인 출력에서 가져오지 않는다(`~/.claude/skills/_shared/references/forgejo.md`). 읽기 확인:',
     '```bash',
     'fj -H <forgejo_host> pr view "<forgejo_repo>#<PR_NUMBER>" > "<log-file>" 2>&1',
     'python3 -c \'import sys; sys.stdout.write(sys.stdin.read().replace("\\u2068", "").replace("\\u2069", ""))\' < "<log-file>"',
@@ -3110,29 +3110,29 @@ _GOLDEN_DONE_FORGEJO = (
 
 _GOLDEN_DONE_STEP9_FORGEJO = (
     'Forgejo 에서는 `harness_enabled` 와 무관하게 위 Forgejo 줄로 게시한다 — forgejo 어댑터가 없으므로 첫 줄의 `add-comment` 는 부르지 않는다.',
-    "- **저장소는 이슈 인자에 넣는다.** 이 명령은 `-r` 을 받지 않는다(`unexpected argument '-r'`). `-R` 은 저장소가 아니라 로컬 git remote 이름이라, owner/repo 를 넣으면 `no repo info specified` 로 실패한다. remote 이름으로 게시하는 형태는 실측되지 않았으므로 쓰지 않는다. 형제 명령(`pr create` 는 `-r` 을 받는다)과 표면이 다르다 — 한쪽에 맞춰 통일하지 않는다.",
-    '- **성공이 조용하다 — 게시 여부는 조회로만 확인한다.** 성공 시 stdout 이 0 바이트이므로 종료코드와 출력으로는 알 수 없다:',
+    '- **저장소는 이슈 인자에 넣는다.** `-r`·`-R` 로 지정하지 않고, remote 이름으로 게시하는 형태도 쓰지 않는다. 형제 명령(`pr create`)과 저장소 지정 표면이 다르다 — 한쪽에 맞춰 통일하지 않는다. 표면표는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.',
+    '- **게시 여부는 조회로만 확인한다.** 성공이 조용해서 종료코드와 출력으로는 알 수 없다(`~/.claude/skills/_shared/references/forgejo.md`):',
     '```bash',
     'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments > "<log-file>" 2>&1',
     '```',
-    '- 로그에서 방금 쓴 PR URL 을 찾는다. 코멘트 본문 줄은 `> ` 로 시작하는 평문이다(격리 문자는 작성자 줄에만 있다).',
-    '- **코멘트 개수 비교로 게시를 확인하지 않는다 — 기본 `issue view` 표면은 개수만 보여 주고 본문이 없다.**',
+    '- 로그에서 방금 쓴 PR URL 을 찾는다(코멘트 표면의 모양: `~/.claude/skills/_shared/references/forgejo.md`).',
+    '- **코멘트 개수 비교로 게시를 확인하지 않는다 — 기본 `issue view` 표면으로는 본문을 볼 수 없다(`~/.claude/skills/_shared/references/forgejo.md`).**',
     '- 찾지 못하면 코멘트를 **미반영**으로 보고하고 웹 UI 게시를 안내한다.',
     '- 본문에 백틱이나 따옴표가 들어가면 위치 인자 대신 절대 경로 `--body-file` 로 넘긴다.',
 )
 
 _GOLDEN_DONE_STEP11_FORGEJO = (
-    '- **PR path (Forgejo)**: `gh pr checks` 의 대응물은 `fj pr status` 다. 저장소의 작업 목록과 함께 파일로 받아 읽는다. `--wait` 는 끝이 없으므로 쓰지 않는다:',
+    '- **PR path (Forgejo)**: `gh pr checks` 의 대응물은 `fj pr status` 다. 저장소의 작업 목록과 함께 파일로 받아 읽는다. `--wait` 는 쓰지 않는다(`~/.claude/skills/_shared/references/forgejo.md`):',
     '```bash',
     'fj -H <forgejo_host> pr status "<forgejo_repo>#<PR_NUMBER>" > "<log-file>" 2>&1',
     'fj -H <forgejo_host> actions tasks -r <forgejo_repo> > "<tasks-log-file>" 2>&1',
     '```',
-    '- 판정은 로그의 체크 줄이 한다. `pr status` 는 체크가 Pending 이어도 종료코드 0 으로 끝나므로 종료코드 0 은 통과의 증거가 아니다.',
-    '- 종료코드가 0 이 아니거나(병합된 PR 에서 이 명령은 패닉한다) 로그를 읽을 수 없으면 CI 상태를 unknown 으로 보고한다.',
+    '- 판정은 로그의 체크 줄이 한다. 종료코드 0 은 통과의 증거가 아니다(`pr status` 의 종료코드: `~/.claude/skills/_shared/references/forgejo.md`).',
+    '- 종료코드가 0 이 아니거나 로그를 읽을 수 없으면 CI 상태를 unknown 으로 보고한다(이 명령이 0 이 아닌 코드로 끝나는 알려진 경우: `~/.claude/skills/_shared/references/forgejo.md`).',
     '- 체크 줄에 실패가 하나라도 있으면 실패로, 모두 성공이면 통과로 보고한다.',
     '- Pending 이고 `actions tasks` 가 총 0건이면 러너가 작업을 받지 않은 것이다 — "no checks ran" 발견사항으로 보고하고 통과로 세지 않는다.',
-    '- `actions tasks` 는 저장소 전체의 작업 이력이다. 과거에 작업이 한 번이라도 돌았다면 총 0건 분기는 나오지 않고 아래 1건 이상 분기로 간다.',
-    '- Pending 이고 `actions tasks` 가 1건 이상이면 그 작업이 이 PR 의 것인지 가를 수 없다(목록은 저장소 전체다) — "CI pending" 으로 보고하고 한도를 두고 다시 읽는다.',
+    '- 과거에 작업이 한 번이라도 돌았다면 총 0건 분기는 나오지 않고 아래 1건 이상 분기로 간다(`actions tasks` 의 범위: `~/.claude/skills/_shared/references/forgejo.md`).',
+    '- Pending 이고 `actions tasks` 가 1건 이상이면 그 작업이 이 PR 의 것인지 가를 수 없다 — "CI pending" 으로 보고하고 한도를 두고 다시 읽는다.',
     '- 체크가 돌지 않았으면 CI 가 돌렸어야 할 스위트를 로컬에서 돌린 결과를 함께 적는다 — 대체 게이트일 뿐 CI 결과를 대신하지 않는다.',
 )
 
@@ -3161,17 +3161,17 @@ _GOLDEN_ISSUE_LINK_FORGEJO = (
     'python -m harness_core.plan_body forgejo --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --dry-run > /dev/null',
     '[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }',
     '```',
-    '- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.',
-    "- `fj` quotes every line of a body or comment with `> ` and wraps the lines between them in U+2068/U+2069; the module splits a Forgejo read into one entry per run of quoted lines, and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.",
+    '- The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.',
+    "- The module splits a Forgejo read into one entry per run of quoted lines — how `fj` prints bodies and comments is in `~/.claude/skills/_shared/references/forgejo.md` — and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.",
 )
 
-_GOLDEN_DONE_STEP8_FORGEJO = '**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Review 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이다.'
+_GOLDEN_DONE_STEP8_FORGEJO = '**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Review 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이고, `fj` 에 상태 명령이 없다는 사실은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.'
 
 _GOLDEN_DONE_STEP8_FENCE = '# fallback (Forgejo): none - see the Forgejo paragraph at the end of this step'
 
 _GOLDEN_DONE_STEP10_FORGEJO = 'Forgejo 에서는 프로젝트 harness 가 `clean-temp` 를 노출할 때만 실행한다. 없으면 이 단계를 건너뛰고 건너뛴 사실을 보고한다.'
 
-_GOLDEN_CONFIG_CONTRACT = '`forgejo` 는 조회(read) 전체와, 쓰기(write) 중 **이슈 생성·이슈 코멘트·PR 생성**이 계약이다. 이슈 생성의 상세 절차 — 필수 플래그, 이슈 번호 추출, 라벨 적용과 읽기 확인 — 는 `project-issue` 본문의 `### Forgejo` 절에, 이슈 코멘트와 PR 생성의 상세 절차 — 저장소 지정 형태, 조용한 성공과 조회 확인 — 는 `project-done` 의 7·9단계에 있다. 여기에 복제하지 않고 가리킨다.'
+_GOLDEN_CONFIG_CONTRACT = '`forgejo` 는 조회(read) 전체와, 쓰기(write) 중 **이슈 생성·이슈 코멘트·PR 생성**이 계약이다. 이슈 생성의 상세 절차 — 필수 플래그, 이슈 번호 추출, 라벨 적용과 읽기 확인 — 는 `project-issue` 본문의 `### Forgejo` 절에, 이슈 코멘트와 PR 생성의 상세 절차 — 조회 확인 — 는 `project-done` 의 7·9단계에, `fj` 표면 사실 — 저장소 지정 형태, 조용한 성공, 격리 문자 — 은 `_shared/references/forgejo.md` 에 있다. 여기에 복제하지 않고 가리킨다.'
 
 _GOLDEN_CONFIG_WRITE_FAILURE = '**이슈 생성은 `fj` 가 1순위이고, 웹 UI 수동 처리는 그 뒤의 마지막 단**이다. 계약이 있는 쓰기에서 `fj` 경로가 실패하면 웹 UI 수동 처리를 안내한다. 뒤 단계가 결과를 입력으로 쓰는 쓰기(이슈 번호·PR 번호)는 수동 결과를 받아 이후 단계를 진행한다 — 읽기 실패는 "미확인" 으로 넘길 수 있지만 이 쓰기의 실패는 그럴 수 없다. 번호는 로컬에서 합성할 수 없고 `project-start` 와 `project-done` 의 뒷단계가 그것을 입력으로 요구한다.'
 
@@ -4643,7 +4643,8 @@ _I40_CREATE_FENCE = (
     # #45: single-quoted draft path, and the body file the Plan Body Rules choose.
     "DRAFT_PLAN='<draft-plan-path>'",
     "# Repo targeting: -r <forgejo_repo> as below, or -R <forgejo_remote> when the project",
-    "# declares a remote that actually exists locally. Both are accepted by create/search/edit.",
+    # #41: the old comment said edit took both; `issue edit` has no repo flag but -R.
+    "# declares a remote that actually exists locally. create and search take both; edit takes -R only.",
     _I40_TITLE,
     _I40_TITLE_GUARD,
     'BODY_FILE="$(mktemp)" || exit 1',
@@ -6125,7 +6126,7 @@ _I45_RULE_BODY = '- A body within the limit is the plan file itself, byte for by
 _I45_RULE_NO_CUT = '- A summary that is itself over the limit is never cut to fit: nothing is posted, and the step reports why.'
 _I45_RULE_MARKER = "- Every comment starts with a marker line, `<!-- plan-<id> rev:<rev> -->`, where `<rev>` is the first 8 hex digits of the plan file's sha1, and the marker counts toward the limit. A create-mode body carries no marker, because it is the plan as written."
 _I45_RULE_ONCE = '- The same content is never posted twice. Before posting, the issue body and comments are read, and the post is skipped when one of them starts with this marker line, or is this plan (or its create-mode summary) as a whole — an issue created from this plan. Each body and comment is compared on its own and in full, so a revision that only drops lines from the end is still posted.'
-_I45_RULE_READ = '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence, measured on Forgejo: an issue with no comments prints nothing and exits 0, and an issue that does not exist exits 1. Whether `gh issue view --json comments` returns every comment of a long thread is unverified.'
+_I45_RULE_READ = '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.'
 _I45_RULES_FENCES = 'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 3 when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.'
 _I45_INSTRUCTIONS_REVISION = '- With `--issue <id>` and no `<plan-path>`, go straight to Step 1-R: Steps 1, 1-L and 2–8 do not run, and the flow ends at Step 9.'
 _I45_USAGE_REVISION = '- **Given alone, when `plan-<id>.md` already exists** — revision mode: that plan is posted to `<id>` again as a new comment; Step 1-R below runs.'
@@ -6243,8 +6244,8 @@ _I45_L5_ROW = "- On a tracker with a row in `## Plan Body Rules`, Step 2's yes a
 _I45_L5_ASK = '- On a tracker without a row, ask on its own — `Post plan-<id>.md to #<id> as a comment? [yes/no]` — separately from Step 2.'
 _I45_L5_OWN_YES = '- On a tracker without a row, the comment is posted only on its own yes; a no is not an error, because the local `plan-<id>.md` is the canonical plan either way.'
 _I45_L5_RECOVERY = '- If the issue body read in item 3 is the same text as the draft, the body already is this plan (a create-mode Step 8 failure being recovered): do not ask, and report the comment as skipped.'
-_I45_FJ_REPO = '- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.'
-_I45_FJ_QUOTING = "- `fj` quotes every line of a body or comment with `> ` and wraps the lines between them in U+2068/U+2069; the module splits a Forgejo read into one entry per run of quoted lines, and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made."
+_I45_FJ_REPO = '- The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.'
+_I45_FJ_QUOTING = "- The module splits a Forgejo read into one entry per run of quoted lines — how `fj` prints bodies and comments is in `~/.claude/skills/_shared/references/forgejo.md` — and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made."
 
 
 import json
@@ -6724,7 +6725,6 @@ def test_i45_post_fence_survives_noclobber(shell: str, tracker: str, tmp_path: P
     script = "set -o noclobber\n" + _i45_script(_i45_fences()[tracker, "post"], **{"<rev>": rev})
     ran = _i45_run(shell, script, env, main)
     assert ran.stdout.strip().splitlines()[-1] == "COMMENT=posted" and ran.returncode == 0, ran.stdout + ran.stderr
-
 
 
 # ---------------------------------------------------------------------------
@@ -7635,3 +7635,790 @@ def test_i53_step3_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
     assert failures, f"the {row!r} row does not reject the {mutant!r} mutant under {' '.join(shell)}"
     # dash reports "Syntax error", bash and zsh "syntax error".
     assert not any("syntax error" in f.lower() for f in failures), f"the {mutant!r} mutant does not parse: {failures}"
+
+
+# --------------------------------------------------------------------------
+# #41 — the `fj` surface in one place: `_shared/references/forgejo.md`
+#
+# `project-issue`, `project-done` and `project-start` each restated what `fj`
+# does — isolates, `-r`/`-R`, silent success, the `comments` subcommand, the
+# `pr status` panic — and #28/#32 showed how one copy drifts while another is
+# fixed. The facts now live in the reference; the skills keep the procedure and
+# point there. Every fence stayed as it was except two comment lines that
+# stated a wrong fact (`issue edit` takes `-R` only).
+#
+# The registry below ties each fact to the sentence it replaced, as the file
+# stood at efec97f, so a signature cannot be tuned to miss the duplicate it is
+# meant to catch: it must match that sentence, exactly one line of its section
+# in forgejo.md, and nothing else under `skills/`. A vocabulary scan catches a
+# fact restated in new words, and the prohibitions that shared a sentence with
+# a moved fact are pinned where the call is made.
+# --------------------------------------------------------------------------
+
+_I41_REF = "skills/_shared/references/forgejo.md"
+_I41_POINTER = "_shared/references/forgejo.md"
+_I41_BASE = "efec97f"
+_I41_SKILLS = (
+    "skills/project-issue/SKILL.md", "skills/project-done/SKILL.md",
+    "skills/project-start/SKILL.md", "skills/SKILL-CONFIG.md",
+)
+
+
+# (key, forgejo.md section, signatures, the sentences they replaced as efec97f had them)
+_I41_FACTS = (
+    ('asymmetry-write', '원칙과 조용한 실패', (
+        '실패 가운데에도 종료코드 0',
+    ), (
+    )),
+    ('asymmetry-read', '원칙과 조용한 실패', (
+        '읽기의 0 이 아닌 종료코드는',
+    ), (
+    )),
+    ('empty-number', '원칙과 조용한 실패', (
+        '순진한 파싱이 에러 없이',
+    ), (
+        '1. **빈 이슈 번호** — 생성 성공 출력의 번호가 양방향 격리 문자로 감싸여 있어, 순진한 파싱이 에러 없이 **빈 문자열**을 돌려준다.',
+    )),
+    ('unknown-label', '원칙과 조용한 실패', (
+        'stderr \\**0 바이트',
+    ), (
+        '2. **적용되지 않은 라벨** — 존재하지 않는 라벨은 종료코드 **0**, stderr **0 바이트**로 끝나고 경고는 stdout 으로만 나간다. 성공이 침묵하고 실패가 말하므로 `$?` 로도, "출력이 있었나" 로도 가를 수 없다 — 후자는 판정이 아예 뒤집힌다.',
+    )),
+    ('silent-comment', '원칙과 조용한 실패', (
+        'stdout (이 )?0 바이트',
+        '[Ss]uccess prints nothing',
+    ), (
+        '- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.',
+        '- **성공이 조용하다 — 게시 여부는 조회로만 확인한다.** 성공 시 stdout 이 0 바이트이므로 종료코드와 출력으로는 알 수 없다:',
+    )),
+    ('isolate-fields', '격리 문자', (
+        '번호·제목·작성자·상태',
+    ), (
+        '- 격리 제거를 라벨 줄에까지 확장하지 마라. 라벨은 자기 줄에 **평문**으로 찍힌다. 격리 제거는 감싸인 필드(번호·제목·작성자·상태)에만 쓰는 **국소 처리**이지 모든 `fj` 출력에 거는 일괄 처리가 아니다. 반대로 라벨이 평문인 것을 보고 "fj 출력에는 격리 문자가 없다" 고 일반화해서도 안 된다. 두 과잉 적용이 모두 틀렸다.',
+    )),
+    ('style-minimal', '격리 문자', (
+        'Always used in non-terminal contexts',
+    ), (
+        '- `--style minimal` 이 격리 문자를 없애줄 것이라고 기대하지 마라. 도움말의 "Always used in non-terminal contexts (i.e. pipes)" 가 그렇게 읽히지만, 파이프 출력에도 격리 문자는 **그대로 있다**.',
+    )),
+    ('create-output-shape', '격리 문자', (
+        '`#` 와 첫 숫자 사이에 격리',
+        '`created pull request #N: <title>`',
+    ), (
+        '- 격리 제거(`\\u2068`/`\\u2069`)는 군더더기가 아니다. 파이프 한 단으로 두고 **추출보다 앞에** 둔다 — 뒤에 두면 추출이 영영 매치하지 않는다. 빼면 `#` 와 첫 숫자 사이에 격리 문자가 끼어 추출이 **에러 없이 빈 문자열**을 돌려주고, 그 빈 값이 8단계로 흘러든다. 8단계의 id 검사가 `plan-.md` 는 막지만, 그때는 이미 만들어진 이슈의 번호를 잃은 채 멈추는 것이다. 실패가 조용하다는 것이 이 단계를 지켜야 하는 이유다.',
+        '- **격리 제거는 추출보다 앞에 둔다.** 생성 출력은 `issue create` 와 같은 모양(`created pull request #N: <title>`)이고 번호가 양방향 격리 문자로 감싸여 있다. 빼거나 뒤로 옮기면 추출이 에러 없이 빈 문자열을 돌려준다.',
+    )),
+    ('view-shape', '격리 문자', (
+        '격리 문자가 중첩되거나 빈 채로',
+    ), (
+        '- create 용 번호 파서를 이 확인에 재사용하지 않는다. view 는 번호가 제목 **뒤**에 오고 격리 문자가 중첩되거나 빈 채로 섞인다. 하나의 파서로 둘을 다루면 둘 다 부서진다 — 여기서는 번호를 다시 파싱하는 것이 목적이 아니므로 격리 문자에 관대하게 읽는다.',
+    )),
+    ('label-plain', '격리 문자', (
+        '자기 줄에 \\**평문',
+    ), (
+        '- 격리 제거를 라벨 줄에까지 확장하지 마라. 라벨은 자기 줄에 **평문**으로 찍힌다. 격리 제거는 감싸인 필드(번호·제목·작성자·상태)에만 쓰는 **국소 처리**이지 모든 `fj` 출력에 거는 일괄 처리가 아니다. 반대로 라벨이 평문인 것을 보고 "fj 출력에는 격리 문자가 없다" 고 일반화해서도 안 된다. 두 과잉 적용이 모두 틀렸다.',
+    )),
+    ('global-options', '전역 옵션', (
+        '서브커맨드 \\**앞\\**에(만)? 온다',
+    ), (
+        'harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 **무관하게** `fj` 직접 호출이 유일한 경로다. 전역 옵션(`-H`, `-C`, `--style`)은 서브커맨드 **앞**에 온다. 버전 확인 명령(`fj version`)과 최소 버전은 `~/.claude/skills/dependencies.yaml` 이 선언한다 — 여기서 추측하지 않는다.',
+        'harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 무관하게 `fj` 직접 호출이 유일한 경로다. 전역 옵션(`-H`)은 서브커맨드 앞에 온다. 이 경로는 디렉터리를 바꾸지 않는다 — GitHub 경로처럼 작업 CWD 그대로 8단계로 간다.',
+    )),
+    ('remote-flag', '저장소 지정 표면표', (
+        'no repo info specified',
+        'its `-R` names a git remote',
+    ), (
+        '- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.',
+        "- **저장소는 이슈 인자에 넣는다.** 이 명령은 `-r` 을 받지 않는다(`unexpected argument '-r'`). `-R` 은 저장소가 아니라 로컬 git remote 이름이라, owner/repo 를 넣으면 `no repo info specified` 로 실패한다. remote 이름으로 게시하는 형태는 실측되지 않았으므로 쓰지 않는다. 형제 명령(`pr create` 는 `-r` 을 받는다)과 표면이 다르다 — 한쪽에 맞춰 통일하지 않는다.",
+    )),
+    ('comment-no-r', '저장소 지정 표면표', (
+        'unexpected argument',
+        'has no `-r`',
+    ), (
+        '- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.',
+        "- **저장소는 이슈 인자에 넣는다.** 이 명령은 `-r` 을 받지 않는다(`unexpected argument '-r'`). `-R` 은 저장소가 아니라 로컬 git remote 이름이라, owner/repo 를 넣으면 `no repo info specified` 로 실패한다. remote 이름으로 게시하는 형태는 실측되지 않았으므로 쓰지 않는다. 형제 명령(`pr create` 는 `-r` 을 받는다)과 표면이 다르다 — 한쪽에 맞춰 통일하지 않는다.",
+    )),
+    ('labels-rm', '저장소 지정 표면표', (
+        '`-r` 은 `--rm`',
+    ), (
+        '- 대상 저장소는 이슈를 `<forgejo_repo>#<N>` 형태로 주어 지정한다. `fj issue edit ... labels` 에는 `--repo` 가 **없고**, 거기서 `-r` 은 `--rm`(라벨 제거)이다. `create` 의 `-r`(`--repo`)과 같은 글자가 반대 의도를 갖는다 — 저장소 지정으로 잘못 쓰면 라벨이 조용히 지워진다.',
+    )),
+    ('pr-create-no-R', '저장소 지정 표면표', (
+        '리프 명령에는 `-R`',
+        '^\\| `pr create` \\| `--repo` \\| 없음',
+    ), (
+        '- **`--base`/`--head` 를 명시한다.** GitHub 절과 같은 이유다 — 세 계층이 한 출처에 합의해야 한다. 저장소는 `-r <forgejo_repo>` 로만 준다. 이 리프 명령에는 `-R` 이 없다.',
+    )),
+    ('remote-post-unmeasured', '저장소 지정 표면표', (
+        'remote 이름으로 게시하는 형태는 실측되지 않았',
+    ), (
+        "- **저장소는 이슈 인자에 넣는다.** 이 명령은 `-r` 을 받지 않는다(`unexpected argument '-r'`). `-R` 은 저장소가 아니라 로컬 git remote 이름이라, owner/repo 를 넣으면 `no repo info specified` 로 실패한다. remote 이름으로 게시하는 형태는 실측되지 않았으므로 쓰지 않는다. 형제 명령(`pr create` 는 `-r` 을 받는다)과 표면이 다르다 — 한쪽에 맞춰 통일하지 않는다.",
+    )),
+    ('create-no-label', '이슈 생성과 검색', (
+        'create`? ?에는 라벨 플래그가 없',
+    ), (
+        '라벨은 4단계에서 이미 추론한 area 태그를 재사용한다. `fj` 의 create 에는 라벨 플래그가 없으므로 생성 후 두 번째 호출로 적용한다 — GitHub 절이 한 번의 호출을 고집하는 것과 갈리는 이유는 도구 표면의 차이이지 절차 설계의 선택이 아니다:',
+    )),
+    ('body-file-editor', '이슈 생성과 검색', (
+        '헤드리스(에서| 실행이) 멈',
+    ), (
+        '- `--body-file` 은 선택이 아니다. `--body` 와 함께 빠지면 `$EDITOR` 가 열려 헤드리스에서 멈춘다. 한국어 플랜을 있는 그대로 올린다는 계약도 이 플래그가 지킨다.',
+    )),
+    ('web-browser', '이슈 생성과 검색', (
+        '브라우저를 여는',
+    ), (
+        '- `--web` 은 브라우저를 여는 플래그다. 자동 경로에서 쓰지 않는다 — "웹에서 확인하려면" 같은 안내로도 넣지 않는다.',
+    )),
+    ('no-template', '이슈 생성과 검색', (
+        'blank issue 를 막은 저장소에서는',
+    ), (
+        '- `--no-template` 은 템플릿 선택 상호작용을 막는다. blank issue 를 막은 저장소에서는 이 형태가 실패하므로, 그때 `fj issue templates` 로 목록을 얻어 `--template <T>` 로 재시도한다. **이 재시도 경로는 미검증이다** — 실측한 저장소에 템플릿이 없어 겪지 못했다.',
+    )),
+    ('search-open', '이슈 생성과 검색', (
+        '기본이 `-s open`',
+    ), (
+        '`issue search` 는 기본이 `-s open` 인 자유 텍스트 검색이다. 제목이 비슷한 기존 열린 이슈가 있으면 **엉뚱한 번호가 잡힌다** — 생성 실패 경로에서 이걸 쓰면 안 되는 이유이고, 여기서도 잡힌 번호의 제목을 눈으로 대조한 뒤 쓴다. 이 출력 형식은 미검증이므로 create 용 파서를 돌리지 않는다.',
+    )),
+    ('no-label-list', '이슈 표지', (
+        '최상위 `label` 서브커맨드',
+    ), (
+        '- Forgejo 의 area 태그는 **best-effort** 다. `fj` 에는 저장소 라벨을 열거할 수단이 없어(최상위 `label` 서브커맨드 자체가 없다) 무엇이 유효한지 볼 수 없다. 한 번 시도하고, 읽어서 확인하고, 안 붙었으면 미반영으로 보고한다 — 없는 라벨을 새로 만들어 채우지 않는다.',
+    )),
+    ('comma-label', '이슈 표지', (
+        '측정된 적 없',
+    ), (
+        '- 4단계가 태그를 둘 추론하면(`["BE", "FE"]`) `-a` 를 태그마다 하나씩 준다. 쉼표로 묶은 `-a "BE,FE"` 는 **측정된 적 없고**, 틀렸다면 없는 라벨 취급을 받아 종료코드 0 으로 조용히 무시된다. 어느 쪽이든 판정은 아래 읽기 확인이다.',
+    )),
+    ('view-surface', '조회 표면', (
+        '기본이 `body` 라서',
+        '개수만\\**\\s*보여',
+    ), (
+        '- 올바른 표면을 읽어라. `fj issue view <ID>` 는 기본이 `body` 라서 **코멘트를 보여주지 않는다**; 코멘트는 `fj issue view <ID> comments` 다. 이 절은 라벨만 확인하므로 기본 표면으로 충분하지만, 엉뚱한 표면을 읽으면 쓰기가 실패한 것과 똑같이 보인다.',
+        '- **코멘트 개수 비교로 게시를 확인하지 않는다 — 기본 `issue view` 표면은 개수만 보여 주고 본문이 없다.**',
+    )),
+    ('comment-quoting', '조회 표면', (
+        'quotes every line of a body',
+        '격리 문자는 작성자 줄에만',
+    ), (
+        "- `fj` quotes every line of a body or comment with `> ` and wraps the lines between them in U+2068/U+2069; the module splits a Forgejo read into one entry per run of quoted lines, and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.",
+        '- 로그에서 방금 쓴 PR URL 을 찾는다. 코멘트 본문 줄은 `> ` 로 시작하는 평문이다(격리 문자는 작성자 줄에만 있다).',
+    )),
+    ('empty-read', '조회 표면', (
+        'prints nothing and exits 0',
+        '0 바이트를 출력하고 종료 0',
+    ), (
+        '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence, measured on Forgejo: an issue with no comments prints nothing and exits 0, and an issue that does not exist exits 1. Whether `gh issue view --json comments` returns every comment of a long thread is unverified.',
+    )),
+    ('not-found', '조회 표면', (
+        'Error: not found',
+    ), (
+        '- **Forgejo**: the read contract from `~/.claude/skills/SKILL-CONFIG.md`. Strip the directional isolates from the wrapped fields (number, title, state) before comparing them, as the Forgejo section of Step 6 explains. Measured once (2026-09-26): a number that does not exist prints `Error: not found` and exits 1, and a pull request number prints the pull request with a `From … into …` line. One measurement is not a contract — the content rule below still decides.',
+    )),
+    ('edit-body', '편집과 코멘트', (
+        '위치 인자뿐',
+    ), (
+        '- `fj issue edit <N> body` 에는 `--body-file` 이 없다 — 본문은 위치 인자뿐이라 **파일 기반 갱신 경로가 없다**. 플랜을 있는 그대로 올린다는 것은 생성 시점의 계약이고, 등록된 뒤 로컬 파일과 이슈 본문이 갈라지면 되돌리기가 비싸다. 처음 올리는 것이 정확해야 하는 이유가 하나 더 있는 셈이다.',
+    )),
+    ('comment-overwrite', '편집과 코멘트', (
+        '\\**덮어쓰기\\**다',
+    ), (
+    )),
+    ('comment-idx', '편집과 코멘트', (
+        '0 부터인지 1 부터인지',
+    ), (
+    )),
+    ('comment-size', '편집과 코멘트', (
+        '이 문서는 수치를 적지 않는다',
+    ), (
+    )),
+    ('autofill-agit', 'PR', (
+        '`--autofill`',
+        '`--agit`',
+    ), (
+        '- **본문을 대신 채우는 플래그를 쓰지 않는다.** 이 명령의 `-A`(`--autofill`)는 커밋에서 본문을 만들어 impl-report 를 버린다. `-a` 는 라벨이 아니라 `--agit` 이고, `-w` 는 `--web` 이다 — 셋 다 이 경로에서 쓰지 않는다.',
+    )),
+    ('wip-draft', 'PR', (
+        'draft PR 로 만든다',
+    ), (
+        '- **제목은 보고서 첫 줄 한 곳에서 읽어 변수로 넘긴다.** 리터럴로 붙여넣으면 백틱이 명령 치환으로 실행된다. 그 줄이 없으면(영어 보고서 등) 빈 제목으로 PR 을 만들지 않고 멈춘다. 제목이 `WIP: ` 로 시작하면 Forgejo 는 draft PR 로 만든다.',
+    )),
+    ('pr-view-url', 'PR', (
+        '출력에는 URL 이 없다',
+    ), (
+        'PR URL 은 `https://<forgejo_host>/<forgejo_repo>/pulls/<PR_NUMBER>` 로 조립한다 — `pr view` 출력에는 URL 이 없다. 읽기 확인:',
+    )),
+    ('closes-measured', 'PR', (
+        '실측 네 건',
+    ), (
+        '- **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합 시 Forgejo 가 `Closes` 로 이슈를 닫는 것은 실측 네 건에서 확인됐다. 네 건 모두 본문과 커밋 트레일러 양쪽에 줄이 있었으므로, 어느 쪽이 닫았는지는 **가르지 못했다** — 그래서 둘 다 둔다.',
+    )),
+    ('status-pending', 'CI', (
+        'Pending 이어도 종료코드 0',
+    ), (
+        '- 판정은 로그의 체크 줄이 한다. `pr status` 는 체크가 Pending 이어도 종료코드 0 으로 끝나므로 종료코드 0 은 통과의 증거가 아니다.',
+    )),
+    ('status-panic', 'CI', (
+        '패닉',
+    ), (
+        '- 종료코드가 0 이 아니거나(병합된 PR 에서 이 명령은 패닉한다) 로그를 읽을 수 없으면 CI 상태를 unknown 으로 보고한다.',
+    )),
+    ('status-wait', 'CI', (
+        '끝이 없으므로|끝이 정해져 있지 않',
+    ), (
+        '- **PR path (Forgejo)**: `gh pr checks` 의 대응물은 `fj pr status` 다. 저장소의 작업 목록과 함께 파일로 받아 읽는다. `--wait` 는 끝이 없으므로 쓰지 않는다:',
+    )),
+    ('tasks-scope', 'CI', (
+        '저장소 전체의 작업 이력',
+        '목록은 저장소 전체다',
+    ), (
+        '- `actions tasks` 는 저장소 전체의 작업 이력이다. 과거에 작업이 한 번이라도 돌았다면 총 0건 분기는 나오지 않고 아래 1건 이상 분기로 간다.',
+        '- Pending 이고 `actions tasks` 가 1건 이상이면 그 작업이 이 PR 의 것인지 가를 수 없다(목록은 저장소 전체다) — "CI pending" 으로 보고하고 한도를 두고 다시 읽는다.',
+    )),
+    ('no-status-command', '상태와 의존성', (
+        '상태\\(보드 칸\\) 전환 명령',
+    ), (
+    )),
+    ('no-dependency-command', '상태와 의존성', (
+        '의존성\\(blocked-by\\) 명령도',
+    ), (
+    )),
+    ('dependency-post', '상태와 의존성', (
+        '\\*\\*막힌\\*\\* 이슈 쪽',
+    ), (
+    )),
+    ('dependency-read', '상태와 의존성', (
+        '/blocks',
+    ), (
+    )),
+    ('dependency-close', '상태와 의존성', (
+        '선행 이슈가 열려 있으면',
+    ), (
+    )),
+    ('token', '상태와 의존성', (
+        '인증 토큰이 필요',
+    ), (
+    )),
+)
+
+_I41_REFERENCE = (
+    ('원칙과 조용한 실패', (
+        '- 쓰기의 종료코드 0 과 stdout 은 효과의 증거가 아니다. 조회가 증거다. 쓰기 성공은 조용하고, 실패 가운데에도 종료코드 0 으로 끝나는 것이 있다. (실측, #28 — 아래 두 사례)',
+        '- 반대로 읽기의 0 이 아닌 종료코드는 믿을 수 있는 실패 신호다. 이 비대칭 때문에 읽기 실패는 "비어 있음" 과 가를 수 있고, 쓰기 성공은 되읽기로만 가를 수 있다. (실측, #45 — 아래 "조회 표면" 의 두 읽기)',
+        '- 이슈 번호가 빈 채로 나오는 실패: 생성 출력의 번호가 양방향 격리 문자로 감싸여 있어, 순진한 파싱이 에러 없이 빈 문자열을 돌려준다. (실측, #28)',
+        '- 적용되지 않은 라벨: 존재하지 않는 라벨은 종료코드 0, stderr 0 바이트로 끝나고 경고는 stdout 으로만 나간다. 성공이 침묵하고 실패가 말하므로 종료코드로도, "출력이 있었나" 로도 가를 수 없다. (실측, #28)',
+        '- 코멘트 게시 성공은 stdout 0 바이트다. (실측, #28)',
+    )),
+    ('격리 문자', (
+        '- 사람이 읽는 출력의 감싸인 필드 — 번호·제목·작성자·상태 — 는 양방향 격리 문자 `\\u2068`/`\\u2069` 로 감싸인다. (실측, #28)',
+        '- `--style minimal` 은 격리 문자를 없애지 않는다. 도움말의 "Always used in non-terminal contexts (i.e. pipes)" 가 그렇게 읽히지만, 파이프 출력에도 격리 문자는 그대로 있다. (실측, #28)',
+        '- 생성 출력은 `created issue #N: <title>` 과 `created pull request #N: <title>` 모양이고, `#` 와 첫 숫자 사이에 격리 문자가 끼어 있다. (실측, #28·#31)',
+        '- `issue view` 출력에서는 번호가 제목 **뒤**에 오고, 격리 문자가 중첩되거나 빈 채로 섞인다. 생성 출력과 번호 자리가 다르다. (실측, #28)',
+        '- 라벨은 자기 줄에 **평문**으로 찍힌다. 격리 문자는 감싸인 필드에만 있고, 모든 출력에 걸려 있지도 않다. (실측, #28)',
+    )),
+    ('전역 옵션', (
+        '- `--style` 은 서브커맨드 **앞**에만 온다. `-H`·`-C` 는 최상위에서도, 리프 명령에서도 받는다. (도움말)',
+    )),
+    ('저장소 지정 표면표', (
+        '같은 글자가 서브커맨드마다 다른 뜻을 갖는다. (도움말 v0.6.0, 실측 #28·#32)',
+        "| 서브커맨드 | `-r` | `-R` | `'<owner/repo>#N'` 인자 |",
+        '|---|---|---|---|',
+        '| `issue create` | `--repo` | `--remote` | — |',
+        '| `issue search` | `--repo` | `--remote` | — |',
+        '| `issue view` | 없음 | `--remote` | 받는다 |',
+        '| `issue comment` | 없음 | `--remote` | 받는다 |',
+        '| `issue edit … labels` | `--rm` (라벨 제거) | `--remote` | 받는다 |',
+        '| `issue edit … body`·`comment` | 없음 | `--remote` | 받는다 |',
+        '| `pr create` | `--repo` | 없음 | — |',
+        '| `pr view`·`pr status` | 없음 | 없음 | 받는다 |',
+        '| `actions tasks` | `--repo` | `--remote` | — |',
+        '- `-R` 은 저장소가 아니라 **로컬 git remote 이름**이다. owner/repo 를 넣으면 `no repo info specified` 로 실패한다. (실측, #32)',
+        "- `issue comment` 에 `-r` 을 주면 `unexpected argument '-r'` 로 죽는다. (실측, #32)",
+        '- `issue edit … labels` 에는 `--repo` 가 없고, 거기서 `-r` 은 `--rm` 이다. 저장소 지정으로 잘못 쓰면 라벨이 조용히 지워진다. (도움말, #28)',
+        '- remote 이름으로 게시하는 형태는 실측되지 않았다. (미검증)',
+    )),
+    ('이슈 생성과 검색', (
+        '- `issue create` 에는 라벨 플래그가 없다. type·priority·size 에 대응하는 플래그도 없다. (도움말)',
+        '- `--body` 와 `--body-file` 이 둘 다 빠지면 `$EDITOR` 가 열려 헤드리스 실행이 멈춘다. (도움말·실측, #28)',
+        '- `--web` 은 브라우저를 여는 플래그다. (도움말)',
+        '- `--no-template` 은 템플릿 선택 상호작용을 막는다. (도움말) blank issue 를 막은 저장소에서는 이 형태가 실패한다고 알려져 있고, 그때의 `--template <T>` 재시도는 실측한 저장소에 템플릿이 없어 겪지 못했다. (미검증)',
+        '- `issue search` 는 기본이 `-s open` 인 자유 텍스트 검색이다. 출력 형식은 확인하지 않았다. (도움말, 미검증)',
+    )),
+    ('이슈 표지', (
+        '- `fj` 에는 저장소 라벨을 열거할 수단이 없다. 최상위 `label` 서브커맨드 자체가 없다. (도움말)',
+        '- 쉼표로 묶은 `-a "BE,FE"` 형태는 측정된 적 없다. (미검증)',
+    )),
+    ('조회 표면', (
+        '- `issue view <ID>` 의 기본 표면은 `body` 이고, 코멘트는 **개수만** 보여 주고 본문이 없다. 코멘트 본문은 `comments` 서브커맨드로 읽는다(플래그가 아니라 서브커맨드다). (실측, #28)',
+        '- `comments` 표면에서 코멘트 본문의 모든 줄은 `> ` 로 인용되고 빈 줄은 `> `(공백 포함)이다. 코멘트 사이의 작성자 줄은 인용되지 않고 격리 문자로 감싸인다. 격리 문자는 작성자 줄에만 있다. (실측, #28·#45)',
+        '- 코멘트가 없는 이슈의 `comments` 읽기는 0 바이트를 출력하고 종료 0 이다. (실측, #45)',
+        '- 없는 번호의 `issue view` 는 `Error: not found` 를 출력하고 종료 1 이다. 풀 리퀘스트 번호는 그 PR 을 `From … into …` 줄과 함께 보여 준다. 한 번의 측정이다. (실측, 2026-09-26)',
+    )),
+    ('편집과 코멘트', (
+        '- `issue edit <N> body` 에는 `--body-file` 이 없다. 본문은 위치 인자뿐이라 파일 기반 갱신 경로가 없다. (도움말, #45)',
+        '- 코멘트를 지우는 명령은 없다. `issue edit <N> comment <idx>` 는 읽기가 아니라 **덮어쓰기**다 — 인덱스를 확인하려고 순회하면 코멘트가 파괴된다. (도움말, 실측 2026-09-12)',
+        '- `comment <idx>` 의 idx 가 0 부터인지 1 부터인지는 **확정되지 않았다**. forgejo-cli 0.5.0 소스는 코멘트 목록을 0 부터 센다(소스). 설치본 0.6.0 에서는 확인하지 않았다(미검증). 이 호출은 권한 분류기가 외부 쓰기로 막은 사례가 있다. (#45)',
+        '- 코멘트 크기: `## Plan Body Rules` 에 한도 행이 있는 트래커의 코멘트 수용 실측과 한도 수치의 정본은 `project-issue` 의 그 표와 `harness_core.plan_body.LIMITS` 다. 이 문서는 수치를 적지 않는다.',
+    )),
+    ('PR', (
+        '- `pr create` 의 `-A` 는 `--autofill`(커밋에서 본문을 만들어 주어진 본문을 버린다), `-a` 는 라벨이 아니라 `--agit`, `-w` 는 `--web` 이다. (도움말)',
+        '- 제목이 `WIP: ` 로 시작하면 Forgejo 는 draft PR 로 만든다. (도움말)',
+        '- `pr view` 출력에는 URL 이 없다. (실측, #28)',
+        '- 병합 시 Forgejo 가 `Closes #N` 으로 이슈를 닫는 것은 실측 네 건에서 확인됐다. 네 건 모두 PR 본문과 커밋 트레일러 양쪽에 줄이 있었으므로, 어느 쪽이 닫았는지는 가르지 못했다. (실측, #28 이후 네 건)',
+    )),
+    ('CI', (
+        '- `pr status` 는 체크가 Pending 이어도 종료코드 0 으로 끝난다. (실측, #28)',
+        '- `pr status` 는 병합된 PR 에서 패닉한다(v0.6.0, 종료 101). (실측, #32)',
+        '- `pr status --wait` 는 끝이 정해져 있지 않다. (도움말)',
+        '- `actions tasks` 는 PR 이 아니라 저장소 전체의 작업 이력이다. 작업이 한 번도 돈 적 없으면 `0 tasks` 를 출력한다. (실측, #28)',
+    )),
+    ('상태와 의존성', (
+        '- 이슈 상태(보드 칸) 전환 명령이 `fj` 에 없다. (도움말)',
+        '- 이슈 의존성(blocked-by) 명령도 `fj` 에 없다. `issue edit` 표면은 title·body·comment·labels 뿐이고 raw API 서브커맨드도 없다. (도움말)',
+        '- Forgejo 자체는 의존성을 지원한다. 등록은 REST 로만 된다: **막힌** 이슈 쪽 `POST …/repos/<owner>/<repo>/issues/<blocked>/dependencies` 에, 본문으로 **선행** 이슈(`owner`·`repo`·`index`)를 보낸다. 성공은 201 이다. (실측, #41)',
+        '- 되읽기는 `GET …/issues/<blocked>/dependencies` 응답의 번호 목록이고, 역방향 조회는 `GET …/issues/<N>/blocks` 다. (실측, #41)',
+        '- 선행 이슈가 열려 있으면 막힌 이슈를 닫을 수 없다. 병합 키워드(`Closes`)가 막힌 이슈를 닫으려 할 때의 동작은 확인하지 않았다. (실측, #41 / 미검증)',
+        '- REST 호출에는 인증 토큰이 필요하다. `fj` 설정 안의 토큰을 읽으려는 시도는 자격증명 탐색으로 차단됐다. (실측, #23·#41)',
+    )),
+    ('미검증 목록', (
+        '- `--template <T>` 재시도 경로',
+        '- 쉼표로 묶은 라벨 추가',
+        '- `issue search` 출력 형식',
+        '- remote 이름으로 게시하는 형태',
+        '- `comment <idx>` 의 시작 번호(0.6.0)',
+        '- 병합 키워드와 의존성이 얽힐 때의 닫기',
+    )),
+)
+_I41_TABLE_ROW = '| `_shared/references/forgejo.md` | `fj` 표면 사실 — 플래그 표면, 격리 문자, 조용한 성공, 조회 표면, CI·상태·의존성 | project-issue · project-start · project-done |'
+_I41_READ_SETTINGS = {
+    'skills/project-issue/SKILL.md': '- `~/.claude/skills/_shared/references/forgejo.md` — `fj` surface facts (`issue_tracker: forgejo` only)',
+    'skills/project-done/SKILL.md': '- `~/.claude/skills/_shared/references/forgejo.md` — `fj` surface facts (`issue_tracker: forgejo` only)',
+    'skills/project-start/SKILL.md': '- `~/.claude/skills/_shared/references/forgejo.md` — `fj` surface facts (`issue_tracker: forgejo` only)',
+}
+_I41_LIMIT_POINTER = '- 코멘트 크기: `## Plan Body Rules` 에 한도 행이 있는 트래커의 코멘트 수용 실측과 한도 수치의 정본은 `project-issue` 의 그 표와 `harness_core.plan_body.LIMITS` 다. 이 문서는 수치를 적지 않는다.'
+
+_I41_POINTER_COUNTS = {'issue/create': 16, 'issue/1-L.3': 1, 'issue/rules': 3, 'done/7': 7, 'done/8': 1, 'done/9': 4, 'done/11': 4, 'start/3': 1, 'config/keys': 0, 'config/tracker': 1}
+_I41_KEPT_RULES = (
+    ('issue/create', '이 `labels` 호출에 `-r` 을 주지 않는다'),
+    ('issue/create', '`--web` 은 자동 경로에서 쓰지 않는다'),
+    ('issue/create', 'create 용 번호 파서를 이 확인에 재사용하지 않는다'),
+    ('issue/create', '격리 제거를 라벨 줄에까지 확장하지 마라'),
+    ('issue/create', '**추출보다 앞에** 둔다'),
+    ('issue/create', '없는 라벨을 새로 만들어 채우지 않는다'),
+    ('issue/create', '`--body-file` 은 선택이 아니다'),
+    ('issue/1-L.3', 'One measurement is not a contract — the content rule below still decides.'),
+    ('done/7', '`-A`·`-a`·`-w` 는 셋 다 이 경로에서 쓰지 않는다'),
+    ('done/7', '그래서 둘 다 둔다'),
+    ('done/7', '저장소는 `-r <forgejo_repo>` 로만 준다'),
+    ('done/7', '**격리 제거는 추출보다 앞에 둔다.**'),
+    ('done/8', '라벨로 In Review 를 흉내 내지 않는다'),
+    ('done/9', 'remote 이름으로 게시하는 형태도 쓰지 않는다'),
+    ('done/9', '한쪽에 맞춰 통일하지 않는다'),
+    ('done/9', '코멘트 개수 비교로 게시를 확인하지 않는다'),
+    ('done/9', '게시 여부는 조회로만 확인한다'),
+    ('done/11', '`--wait` 는 쓰지 않는다'),
+    ('done/11', '종료코드 0 은 통과의 증거가 아니다'),
+    ('start/3', '라벨로 In Progress 를 흉내 내지 않는다'),
+)
+_I41_VOCABULARY = re.compile(
+    r"--rm\b|--autofill|--agit|--web\b|--wait\b|--remote\b|(?<![\w-])-R\b|\bWIP\b|패닉|\bpanic|0 바이트|"
+    r"prints nothing|Error: not found|unexpected argument|no repo info|개수만|URL 이 없|\bidx\b|"
+    r"/issues/\S*/dependencies|/blocks\b|격리|U\+206[89]|Always used|-s open|평문|헤드리스|브라우저|"
+    r"\bstdout\b|\$EDITOR|\bblank\b|템플릿|\b101\b|0 tasks|저장소 전체"
+)
+# Procedure lines that name a surface word; each was read as a rule, not a restated fact.
+_I41_VOCABULARY_PINNED = frozenset({
+    '# Repo targeting: -r <forgejo_repo> as below, or -R <forgejo_remote> when the project',
+    '# declares a remote that actually exists locally. create and search take both; edit takes -R only.',
+    '**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다 — 읽기 확인이 증거다.**',
+    '**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다 — 조회가 증거다.** `project-issue` 의 Forgejo 절이 이슈 생성에 세운 원칙과 같은 원칙이고, 이 절은 그것을 PR 생성에 적용한다. 원칙의 근거와 이 절이 기대는 `fj` 표면은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.',
+    '- **PR path (Forgejo)**: `gh pr checks` 의 대응물은 `fj pr status` 다. 저장소의 작업 목록과 함께 파일로 받아 읽는다. `--wait` 는 쓰지 않는다(`~/.claude/skills/_shared/references/forgejo.md`):',
+    '- **격리 제거는 추출보다 앞에 둔다.** 생성 출력의 모양과 번호를 감싼 격리 문자는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다. 빼거나 뒤로 옮기면 추출이 에러 없이 빈 문자열을 돌려준다.',
+    '- **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합이 `Closes` 로 이슈를 닫게 하는 줄이 본문과 커밋 트레일러 중 어느 쪽인지 가려지지 않았다(`~/.claude/skills/_shared/references/forgejo.md`) — 그래서 둘 다 둔다.',
+    '- **저장소는 이슈 인자에 넣는다.** `-r`·`-R` 로 지정하지 않고, remote 이름으로 게시하는 형태도 쓰지 않는다. 형제 명령(`pr create`)과 저장소 지정 표면이 다르다 — 한쪽에 맞춰 통일하지 않는다. 표면표는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.',
+    '- `--no-template` 을 준다. 이 형태가 실패하면(언제 실패하는지: `~/.claude/skills/_shared/references/forgejo.md`) `fj issue templates` 로 목록을 얻어 `--template <T>` 로 재시도한다. **이 재시도 경로는 미검증이다** — 실측한 저장소에 템플릿이 없어 겪지 못했다.',
+    '- `--web` 은 자동 경로에서 쓰지 않는다 — "웹에서 확인하려면" 같은 안내로도 넣지 않는다.',
+    '- create 용 번호 파서를 이 확인에 재사용하지 않는다. 두 출력은 번호 자리와 격리 모양이 다르다(`~/.claude/skills/_shared/references/forgejo.md`). 하나의 파서로 둘을 다루면 둘 다 부서진다 — 여기서는 번호를 다시 파싱하는 것이 목적이 아니므로 격리 문자에 관대하게 읽는다.',
+    '- 격리 제거(`\\u2068`/`\\u2069`)는 군더더기가 아니다. 파이프 한 단으로 두고 **추출보다 앞에** 둔다 — 뒤에 두면 추출이 영영 매치하지 않는다. 빼면 추출이 **에러 없이 빈 문자열**을 돌려주고(생성 출력에서 격리 문자가 끼는 자리: `~/.claude/skills/_shared/references/forgejo.md`), 그 빈 값이 8단계로 흘러든다. 8단계의 id 검사가 `plan-.md` 는 막지만, 그때는 이미 만들어진 이슈의 번호를 잃은 채 멈추는 것이다. 실패가 조용하다는 것이 이 단계를 지켜야 하는 이유다.',
+    '- 격리 제거를 라벨 줄에까지 확장하지 마라. 격리 제거는 감싸인 필드에만 쓰는 **국소 처리**이지 모든 `fj` 출력에 거는 일괄 처리가 아니다. 반대로 라벨 줄을 보고 "fj 출력에는 격리 문자가 없다" 고 일반화해서도 안 된다. 어느 필드가 감싸이는지는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다 — 두 과잉 적용이 모두 틀렸다.',
+    '- 격리 제거한 출력의 1행은 `<TITLE> #<PR_NUMBER>`, 2행의 상태는 `Open`, 3행은 `From` 뒤에 `<branch-name>`, `into` 뒤에 `<base_branch>` 가 백틱으로 감싸여 나온다. 셋 중 하나라도 다르면 PR 을 **잘못 만든 것**으로 보고한다 — GitHub 절의 세 계층 합의를 Forgejo 에서 확인하는 자리가 여기다.',
+    '- 출력 스타일 옵션에 기대지 않고 격리 제거를 펜스가 직접 한다 — 어느 옵션도 격리 문자를 없애지 않는다(`~/.claude/skills/_shared/references/forgejo.md`).',
+    '`forgejo` 는 조회(read) 전체와, 쓰기(write) 중 **이슈 생성·이슈 코멘트·PR 생성**이 계약이다. 이슈 생성의 상세 절차 — 필수 플래그, 이슈 번호 추출, 라벨 적용과 읽기 확인 — 는 `project-issue` 본문의 `### Forgejo` 절에, 이슈 코멘트와 PR 생성의 상세 절차 — 조회 확인 — 는 `project-done` 의 7·9단계에, `fj` 표면 사실 — 저장소 지정 형태, 조용한 성공, 격리 문자 — 은 `_shared/references/forgejo.md` 에 있다. 여기에 복제하지 않고 가리킨다. **상태 전환에는 아직 `fj` 계약이 없다** — 그 쓰기는 아래 웹 UI 수동 처리로 가거나, 미반영으로 보고하고 계속한다. 이슈 제목·상태 조회는 `fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<N>"` 을 사용하고, 로컬에 `forgejo_remote` 리모트가 실제로 존재하면 `fj issue view -R <forgejo_remote> <N>` 형태의 remote 기반 조회로 대체할 수 있다. 조회가 실패하면(네트워크·인증·CLI 부재) 그 항목을 "미확인" 으로 표기한 뒤 절차를 계속한다 — 조회 실패로 스킬을 중단하지 않는다. **이슈 생성은 `fj` 가 1순위이고, 웹 UI 수동 처리는 그 뒤의 마지막 단**이다. 계약이 있는 쓰기에서 `fj` 경로가 실패하면 웹 UI 수동 처리를 안내한다. 뒤 단계가 결과를 입력으로 쓰는 쓰기(이슈 번호·PR 번호)는 수동 결과를 받아 이후 단계를 진행한다 — 읽기 실패는 "미확인" 으로 넘길 수 있지만 이 쓰기의 실패는 그럴 수 없다. 번호는 로컬에서 합성할 수 없고 `project-start` 와 `project-done` 의 뒷단계가 그것을 입력으로 요구한다. 결과를 아무도 입력으로 쓰지 않는 쓰기 — 이슈 코멘트, 그리고 위 줄의 상태 전환 — 가 되지 않았으면 미반영으로 보고하고 계속한다.',
+    '생성을 먼저 잡고, 번호는 그 출력에서 읽는다. 격리 제거가 그 추출의 한 단이다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:',
+})
+_I41_PROSE = {
+    'issue/create': (
+        '### Forgejo (`issue_tracker: forgejo`)',
+        '**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다 — 읽기 확인이 증거다.**',
+        '이 원칙에 매다는 조용한 실패가 이 절에 둘 있다: 빈 채로 나오는 이슈 번호와, 적용되지 않았는데 성공처럼 끝나는 라벨. 두 사고의 표면 — 무엇이 어떻게 조용한가 — 은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다. 이 절은 두 사고를 막는 절차다.',
+        'harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 **무관하게** `fj` 직접 호출이 유일한 경로다. 전역 옵션의 자리와 서브커맨드마다 다른 플래그 표면은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다. 버전 확인 명령(`fj version`)과 최소 버전은 `~/.claude/skills/dependencies.yaml` 이 선언한다 — 여기서 추측하지 않는다.',
+        '생성을 먼저 잡고, 번호는 그 출력에서 읽는다. 격리 제거가 그 추출의 한 단이다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:',
+        '# Repo targeting: -r <forgejo_repo> as below, or -R <forgejo_remote> when the project',
+        '# declares a remote that actually exists locally. create and search take both; edit takes -R only.',
+        '- 격리 제거(`\\u2068`/`\\u2069`)는 군더더기가 아니다. 파이프 한 단으로 두고 **추출보다 앞에** 둔다 — 뒤에 두면 추출이 영영 매치하지 않는다. 빼면 추출이 **에러 없이 빈 문자열**을 돌려주고(생성 출력에서 격리 문자가 끼는 자리: `~/.claude/skills/_shared/references/forgejo.md`), 그 빈 값이 8단계로 흘러든다. 8단계의 id 검사가 `plan-.md` 는 막지만, 그때는 이미 만들어진 이슈의 번호를 잃은 채 멈추는 것이다. 실패가 조용하다는 것이 이 단계를 지켜야 하는 이유다.',
+        '- 출력 스타일 옵션에 기대지 않고 격리 제거를 펜스가 직접 한다 — 어느 옵션도 격리 문자를 없애지 않는다(`~/.claude/skills/_shared/references/forgejo.md`).',
+        '- **제목을 명령문에 리터럴로 붙여넣지 마라.** 파일에서 읽어 `"$TITLE"` 로 넘긴다. 셸은 파라미터 확장 결과를 다시 훑지 않으므로 따옴표 씌운 변수는 백틱이 들어 있어도 안전하다 — 위험한 것은 **리터럴**이다. `project-plan` 제목은 파일·심볼을 백틱으로 부르는 것이 상례라 이건 예외가 아니라 기본이다. 작은따옴표로 감싸는 것도 해결이 아니다: 제목 안의 아포스트로피 하나가 따옴표를 닫고 뒤따르는 백틱을 실행시키며, 그때 `--body-file` 이 빈 값을 받는다(그때 `fj` 가 하는 일: `~/.claude/skills/_shared/references/forgejo.md`).',
+        '- `--body-file` 은 선택이 아니다 — 빠졌을 때 `fj` 가 하는 일은 `~/.claude/skills/_shared/references/forgejo.md` 에 있고, 한국어 플랜을 있는 그대로 올린다는 계약도 이 플래그가 지킨다.',
+        '- `--web` 은 자동 경로에서 쓰지 않는다 — "웹에서 확인하려면" 같은 안내로도 넣지 않는다.',
+        '- `--no-template` 을 준다. 이 형태가 실패하면(언제 실패하는지: `~/.claude/skills/_shared/references/forgejo.md`) `fj issue templates` 로 목록을 얻어 `--template <T>` 로 재시도한다. **이 재시도 경로는 미검증이다** — 실측한 저장소에 템플릿이 없어 겪지 못했다.',
+        '- **생성 실패와 파싱 실패를 한 덩어리로 다루지 마라.** `"$(a | b | c)"` 의 종료코드는 `c` 의 것이라, 파이프라인 하나로 합치면 `fj` 가 죽어도 종료코드 0 에 빈 번호가 나와 **파싱 실패와 구별되지 않는다**. 위처럼 생성을 먼저 잡아 `CREATE_FAILED` 로 갈라둔다.',
+        '두 경우의 복구가 다르다. 갈라두는 이유가 이것이다:',
+        '- `BODY_FAILED=1` — 생성 호출 전에 멈췄으니 이슈는 **만들어지지 않았다**. 요약조차 한도를 넘었거나 모듈이 돌지 않은 것이다. 생성 실패가 아니므로 아래 두 복구를 타지 않고, 원인을 보고하고 멈춘다.',
+        '- `CREATE_FAILED` 가 `1` — 이슈는 **만들어지지 않았다**. 아래 웹 UI 마지막 단으로 간다. 여기서 검색으로 번호를 찾으려 하지 마라.',
+        '- 생성은 됐는데 `ISSUE_NUMBER` 가 비었다 — 번호만 못 읽은 것이다. 먼저 펜스가 출력한 생성 출력 원문에서 번호를 읽는다. 읽을 수 없을 때만 아래 펜스로 방금 만든 제목을 찾아 잡힌 번호의 제목을 눈으로 대조하고, 그래도 없으면 웹 UI 마지막 단으로 간다. 번호 없이 8단계로 넘어가지 않는다.',
+        '이 펜스도 **한 셸 호출로 실행한다** — 앞 펜스의 `TITLE` 은 이 호출까지 살아 있지 않으므로 같은 줄로 초안에서 제목을 다시 읽고, 제목이 비면 검색하지 않고 멈춘다. 빈 제목의 `issue search` 는 아무 열린 이슈나 잡는다:',
+        '`issue search` 는 제목이 비슷한 기존 열린 이슈를 **엉뚱한 번호로 잡을 수 있다**(`~/.claude/skills/_shared/references/forgejo.md`) — 생성 실패 경로에서 이걸 쓰면 안 되는 이유이고, 여기서도 잡힌 번호의 제목을 눈으로 대조한 뒤 쓴다. 검색 출력에는 create 용 파서를 돌리지 않는다.',
+        '라벨 적용과 읽기 확인 펜스의 `<ISSUE_NUMBER>` 는 리터럴로 치환한다 — 생성 펜스가 출력한 `ISSUE_NUMBER=` 값, 그것이 비었을 때 생성 출력 원문에서 읽은 번호, 재검색으로 잡아 제목을 대조한 번호, 웹 UI 에서 사람이 돌려준 번호 중 하나다. 8단계와 같은 이유로 앞 호출의 셸 변수를 넘기지 않는다: 살아남지 못한 변수는 빈 값으로 도착하고, 그러면 `"<forgejo_repo>#"` 는 대상 없는 호출이 된다.',
+        '라벨은 4단계에서 이미 추론한 area 태그를 재사용하고, 생성 후 두 번째 호출로 적용한다 — GitHub 절이 한 번의 호출을 고집하는 것과 갈리는 이유는 도구 표면의 차이(`~/.claude/skills/_shared/references/forgejo.md`)이지 절차 설계의 선택이 아니다:',
+        '- 4단계가 태그를 둘 추론하면(`["BE", "FE"]`) `-a` 를 태그마다 하나씩 준다. 쉼표로 묶은 `-a "BE,FE"` 형태는 쓰지 않는다(`~/.claude/skills/_shared/references/forgejo.md`). 어느 쪽이든 판정은 아래 읽기 확인이다.',
+        '- 대상 저장소는 이슈를 `<forgejo_repo>#<N>` 형태로 주어 지정하고, 이 `labels` 호출에 `-r` 을 주지 않는다 — 이 호출에서 그 글자가 무엇을 하는지는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.',
+        '- 라벨 적용은 아래 읽기 확인으로만 확증된다. 붙지 않았으면 그 라벨을 **미반영**으로 보고한다.',
+        '- Forgejo 의 area 태그는 **best-effort** 다. 무엇이 유효한 라벨인지 미리 볼 수 없으므로(`~/.claude/skills/_shared/references/forgejo.md`) 한 번 시도하고, 읽어서 확인하고, 안 붙었으면 미반영으로 보고한다 — 없는 라벨을 새로 만들어 채우지 않는다.',
+        'type·priority·size 는 `fj` 에 대응 플래그가 없다. 셋 다 **미반영**으로 보고하고 9단계 출력에 싣는다. 4단계가 세운 규칙이 여기에도 그대로 걸린다 — 이 셋을 area 태그에 실어 보내는 우회는 금지다. 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 폴백 원칙과 `~/.claude/skills/_shared/references/github-issue-fields.md` 이며, 여기에 복제하지 않고 가리킨다. 미반영은 오류 상태가 아니라 Forgejo 의 정상 결과다.',
+        '읽기 확인. 조회 형태는 `~/.claude/skills/SKILL-CONFIG.md` 의 기존 조회 계약을 그대로 재사용한다 — 새 형태를 발명하지 않는다:',
+        '# forgejo (read path - see "이슈 트래커" in SKILL-CONFIG.md)',
+        '- 확인할 일은 둘이다: 이슈가 실재하는지, 그리고 라벨이 실제로 붙었는지. 위 원칙 때문에 라벨은 여기 말고 확인할 데가 없다.',
+        '- create 용 번호 파서를 이 확인에 재사용하지 않는다. 두 출력은 번호 자리와 격리 모양이 다르다(`~/.claude/skills/_shared/references/forgejo.md`). 하나의 파서로 둘을 다루면 둘 다 부서진다 — 여기서는 번호를 다시 파싱하는 것이 목적이 아니므로 격리 문자에 관대하게 읽는다.',
+        '- 격리 제거를 라벨 줄에까지 확장하지 마라. 격리 제거는 감싸인 필드에만 쓰는 **국소 처리**이지 모든 `fj` 출력에 거는 일괄 처리가 아니다. 반대로 라벨 줄을 보고 "fj 출력에는 격리 문자가 없다" 고 일반화해서도 안 된다. 어느 필드가 감싸이는지는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다 — 두 과잉 적용이 모두 틀렸다.',
+        '- 올바른 표면을 읽어라. 이 절은 라벨만 확인하므로 기본 표면으로 충분하다 — 기본 표면과 `comments` 표면이 각각 무엇을 보여 주는지는 `~/.claude/skills/_shared/references/forgejo.md` 에 있고, 엉뚱한 표면을 읽으면 쓰기가 실패한 것과 똑같이 보인다.',
+        '- 등록된 뒤 이슈 본문을 파일에서 갱신하는 경로가 없다(`~/.claude/skills/_shared/references/forgejo.md`). 플랜을 있는 그대로 올린다는 것은 생성 시점의 계약이고, 등록된 뒤 로컬 파일과 이슈 본문이 갈라지면 되돌리기가 비싸다. 처음 올리는 것이 정확해야 하는 이유가 하나 더 있는 셈이다.',
+        '`fj` 쓰기 경로가 실패했을 때의 마지막 단은 웹 UI 수동 등록이며, 그 규칙은 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이 갖는다 — 여기에 복제하지 않는다. 사람이 돌려준 번호만 있으면 8단계는 그대로 진행된다.',
+        '8단계 rename 은 GitHub 과 같은 `plan-<ISSUE_NUMBER>.md` 규칙을 쓴다. forgejo 도 정수 이슈 번호이므로 새 분기를 만들지 않는다.',
+    ),
+    'issue/1-L.3': (
+        '- **Forgejo**: the read contract from `~/.claude/skills/SKILL-CONFIG.md`. Strip the directional isolates from the wrapped fields (number, title, state) before comparing them, as the Forgejo section of Step 6 explains. What a missing number and a pull request number print — measured once — is in `~/.claude/skills/_shared/references/forgejo.md`. One measurement is not a contract — the content rule below still decides.',
+    ),
+    'issue/rules': (
+        '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.',
+        'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 3 when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.',
+        '**GitHub** check:',
+        '**GitHub** post:',
+        '**Forgejo** check:',
+        '**Forgejo** post:',
+        '- The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.',
+        "- The module splits a Forgejo read into one entry per run of quoted lines — how `fj` prints bodies and comments is in `~/.claude/skills/_shared/references/forgejo.md` — and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.",
+    ),
+    'config/tracker': (
+        '### 이슈 트래커',
+        '위 CLI 들의 최소 버전과 **버전 확인 명령**은 `~/.claude/skills/dependencies.yaml` 에 선언돼 있다. 확인 명령을 추측하지 말 것 — `--version` 이 모든 도구에 통하지는 않고, 추측하면 설치된 도구를 미설치로 오판한다.',
+        '`forgejo` 는 조회(read) 전체와, 쓰기(write) 중 **이슈 생성·이슈 코멘트·PR 생성**이 계약이다. 이슈 생성의 상세 절차 — 필수 플래그, 이슈 번호 추출, 라벨 적용과 읽기 확인 — 는 `project-issue` 본문의 `### Forgejo` 절에, 이슈 코멘트와 PR 생성의 상세 절차 — 조회 확인 — 는 `project-done` 의 7·9단계에, `fj` 표면 사실 — 저장소 지정 형태, 조용한 성공, 격리 문자 — 은 `_shared/references/forgejo.md` 에 있다. 여기에 복제하지 않고 가리킨다. **상태 전환에는 아직 `fj` 계약이 없다** — 그 쓰기는 아래 웹 UI 수동 처리로 가거나, 미반영으로 보고하고 계속한다. 이슈 제목·상태 조회는 `fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<N>"` 을 사용하고, 로컬에 `forgejo_remote` 리모트가 실제로 존재하면 `fj issue view -R <forgejo_remote> <N>` 형태의 remote 기반 조회로 대체할 수 있다. 조회가 실패하면(네트워크·인증·CLI 부재) 그 항목을 "미확인" 으로 표기한 뒤 절차를 계속한다 — 조회 실패로 스킬을 중단하지 않는다. **이슈 생성은 `fj` 가 1순위이고, 웹 UI 수동 처리는 그 뒤의 마지막 단**이다. 계약이 있는 쓰기에서 `fj` 경로가 실패하면 웹 UI 수동 처리를 안내한다. 뒤 단계가 결과를 입력으로 쓰는 쓰기(이슈 번호·PR 번호)는 수동 결과를 받아 이후 단계를 진행한다 — 읽기 실패는 "미확인" 으로 넘길 수 있지만 이 쓰기의 실패는 그럴 수 없다. 번호는 로컬에서 합성할 수 없고 `project-start` 와 `project-done` 의 뒷단계가 그것을 입력으로 요구한다. 결과를 아무도 입력으로 쓰지 않는 쓰기 — 이슈 코멘트, 그리고 위 줄의 상태 전환 — 가 되지 않았으면 미반영으로 보고하고 계속한다.',
+    ),
+}
+# Every line naming Jira in project-done and project-start, as efec97f had them.
+_I41_JIRA_LINES = {
+    'skills/project-done/SKILL.md': (
+        'description: Run completion in one flow: verify DoD -> write impl-report -> commit -> create PR (GitHub/Forgejo) or merge branch (Jira) -> update issue status.',
+        '- `<issue-id>`: GitHub or Forgejo issue number, or Jira ticket ID',
+        "- **Ask git for the main checkout; never build the path from the CWD.** `$PWD` and the CWD's own `--show-toplevel` name the linked worktree — an absolute path to a directory with no `.task/plan/` in it. The four lines that resolve `REPORT_ROOT` are the canonical block in `~/.claude/skills/_shared/references/worktree.md`, byte for byte, as is the Forgejo fence in Step 7; the name is shared on purpose so the two stay one rule, and the Jira merge's `MAIN_CHECKOUT` is the same block under a different name.",
+        '### Jira (`issue_tracker: jira`)',
+        '- **The CWD stays on the base branch for the rest of this skill.** That is intentional, not leftover state: Steps 8 through 12 run from here, and the `project-clean` handoff at the end of Step 12 assumes the base is checked out. Do not `cd` back to the worktree to tidy up. Note this is the Jira path only — the GitHub path above does not change directory, so the two paths reach Step 8 from different places.',
+        'Forgejo 는 PR 이 있으므로 위 Jira 의 직접 병합 경로로 보내지 않는다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:',
+        '# fallback (Jira):   jira issue move "<ticket-id>" "<target-state>"   # then read it back, below',
+        '**The Jira fallback reads the result back.** A `jira issue move` that returns cleanly is not evidence that the issue moved.',
+        'jira issue move "<ticket-id>" "<target-state>"',
+        'jira issue view "<ticket-id>" --raw      # read the status field out of this response',
+        '- **Always pass the state argument.** `jira issue move <ticket-id>` with nothing after it opens an interactive picker (`Select desired state to transition %s to:`), and with no terminal attached the first entry of that list can be executed as-is. Never run the bare form from a skill.',
+        '- **Do not substitute `jira issue list -q "key = <ticket-id>" --plain --columns status`.** `--plain` prints a header row, and `-q` is scoped to the configured project context, so a key from another project silently yields zero rows.',
+        "> Limitation: this skillset's own repo has no Jira project, so this path was checked against the installed CLI's flag surface and this document's internal consistency. It has not been executed against a live Jira.",
+        '# fallback (Jira):   jira issue comment add <ticket-id> "Implementation complete. Branch: <branch-name>"',
+        '- **Branch-merge path (Jira, or any tracker without PRs)**: there is no PR to check. Read the CI run for the merge commit through whatever the project uses; if the project has no CI on that branch, say exactly that.',
+        '- PR URL (GitHub/Forgejo), or merge commit hash (Jira)',
+    ),
+    'skills/project-start/SKILL.md': (
+        '- If a tracker or git API command (`harness_cli.py`, `gh`, `fj`, `jira`) fails, retry through the documented fallback path for that step. If it still fails, report it to the user and stop — do not invent a third path.',
+        '- `<issue-id>`: GitHub issue number or Jira ticket ID (required)',
+        '- The first token is the issue id — an issue number or a Jira key; a flag (`in-place`, `worktree`, `adr`) as the first token is an error — stop and show the correct order.',
+        'Jira:',
+        'jira issue view <ticket-id>',
+        'Read `title`, `node_id` (GitHub) / ticket ID (Jira), and derive the branch name.',
+        'Branch naming rule: `feat/issue-<id>-<slug>` for GitHub, or `feat/<ticket-id>-<slug>` for Jira.',
+        '# fallback (Jira):   jira issue move "<ticket-id>" "<target-state>"   # then read it back, below',
+        '**The Jira fallback reads the result back.** A `jira issue move` that returns cleanly is not evidence that the issue moved.',
+        'jira issue move "<ticket-id>" "<target-state>"',
+        'jira issue view "<ticket-id>" --raw      # read the status field out of this response',
+        '- **Always pass the state argument.** `jira issue move <ticket-id>` with nothing after it opens an interactive picker (`Select desired state to transition %s to:`), and with no terminal attached the first entry of that list can be executed as-is. Never run the bare form from a skill.',
+        '- **Do not substitute `jira issue list -q "key = <ticket-id>" --plain --columns status`.** `--plain` prints a header row, and `-q` is scoped to the configured project context, so a key from another project silently yields zero rows.',
+        "> Limitation: this skillset's own repo has no Jira project, so this path was checked against the installed CLI's flag surface and this document's internal consistency. It has not been executed against a live Jira.",
+    ),
+}
+_I41_FENCE_EDITS = {
+    "skills/project-issue/SKILL.md": ((
+        "# declares a remote that actually exists locally. Both are accepted by create/search/edit.",
+        "# declares a remote that actually exists locally. create and search take both; edit takes -R only.",
+    ),),
+}
+
+
+def _i41_units(text: str) -> list[str]:
+    """Prose units — a paragraph, bullet, heading or table row joined across its
+    wrapped lines — plus each `#` comment inside a fence, whole-line or trailing.
+
+    A fence closes only on a bare run of the same character at least as long as
+    the one that opened it, so an indented or four-backtick fence stays one
+    block. Joining wrapped lines is what keeps a fact split over two lines from
+    slipping past a line-by-line scan; a heading is always a unit of its own.
+    """
+    out: list[str] = []
+    cur: str | None = None
+    fence = ""
+    for raw in text.splitlines():
+        s = raw.strip()
+        marker = re.match(r"(`{3,}|~{3,})(.*)$", s)
+        if fence:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) \
+                    and not marker.group(2).strip():
+                fence = ""
+            elif s.startswith("#"):
+                out.append(s)
+            else:
+                trailing = re.search(r"\s#\s.*$", s)
+                if trailing:
+                    out.append(trailing.group(0).strip())
+            continue
+        if marker:
+            if cur:
+                out.append(cur)
+                cur = None
+            fence = marker.group(1)
+            continue
+        if not s:
+            if cur:
+                out.append(cur)
+                cur = None
+            continue
+        if cur is None or re.match(r"(?:[-*+] |\d+[.)] |#{1,6} |\|)", s) or cur.startswith("#"):
+            if cur:
+                out.append(cur)
+            cur = s
+        else:
+            cur += " " + s
+    if cur:
+        out.append(cur)
+    assert not fence, "a fence never closes, so the rest of the file would scan as code"
+    return out
+
+
+def _i41_ref() -> str:
+    return read_skill(_I41_REF)
+
+
+def _i41_sections() -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    current = None
+    for unit in _i41_units(_i41_ref()):
+        if unit.startswith("## "):
+            current = unit[3:]
+            assert current not in sections, f"forgejo.md repeats the section {current!r}"
+            sections[current] = []
+        elif current:
+            sections[current].append(unit)
+    return sections
+
+
+def _i41_regex(signatures: tuple[str, ...]) -> re.Pattern:
+    return re.compile("|".join(f"(?:{s})" for s in signatures))
+
+
+def _i41_strays(texts: dict[str, str]) -> list[str]:
+    """Registry facts found outside forgejo.md, in the given texts."""
+    found = []
+    for key, _, signatures, _ in _I41_FACTS:
+        rx = _i41_regex(signatures)
+        for path, text in texts.items():
+            found += [f"{key} in {path}: {u[:80]}" for u in _i41_units(text) if rx.search(u)]
+    return found
+
+
+def _i41_skill_texts() -> dict[str, str]:
+    """Every skill document but the reference itself, and the README that indexes them."""
+    paths = [p for p in sorted((ROOT / "skills").rglob("*.md")) if str(p.relative_to(ROOT)) != _I41_REF]
+    return {str(p.relative_to(ROOT)): p.read_text(encoding="utf-8") for p in paths + [ROOT / "README.md"]}
+
+
+def test_i41_reference_is_declared_indexed_and_read_where_used() -> None:
+    config = read_skill("skills/SKILL-CONFIG.md")
+    rows = [l.strip() for l in config.splitlines() if l.startswith(f"| `{_I41_POINTER}` |")]
+    assert rows == [_I41_TABLE_ROW], f"the reference table row changed: {rows}"
+    readers = {r.strip() for r in rows[0].split("|")[3].split("·")}
+    assert readers == {s for s, refs in SKILL_REFERENCE_NEEDS.items() if "forgejo" in refs}, (
+        "the table's readers and SKILL_REFERENCE_NEEDS disagree"
+    )
+    for skill, line in _I41_READ_SETTINGS.items():
+        settings = "\n".join(_stripped_lines(read_skill(skill), "## Read Settings", "Read nothing else"))
+        assert_whole_line(settings, line)
+
+
+def test_i41_reference_is_pinned_section_by_section() -> None:
+    """A contradicting line added beside a fact, or a fact moved between sections, goes red."""
+    got = tuple((title, tuple(units)) for title, units in _i41_sections().items())
+    assert got == _I41_REFERENCE, "forgejo.md changed; if the change is a fact, update the registry too"
+
+
+def test_i41_every_fact_lives_once_in_the_reference_and_nowhere_else() -> None:
+    sections = _i41_sections()
+    assert all(key and signatures for key, _, signatures, _ in _I41_FACTS)
+    for key, section, signatures, before in _I41_FACTS:
+        rx = _i41_regex(signatures)
+        for original in before:
+            assert rx.search(original), f"{key}: the signature does not match the sentence it replaced"
+        assert section in sections, f"{key}: forgejo.md has no section {section!r}"
+        hits = [u for u in _i41_units(_i41_ref()) if rx.search(u)]
+        in_section = [u for u in sections[section] if rx.search(u)]
+        assert len(hits) == 1 and hits == in_section, (
+            f"{key}: expected exactly one line in forgejo.md, in {section!r}; found {hits}"
+        )
+    strays = _i41_strays(_i41_skill_texts())
+    assert not strays, "a fj surface fact is stated outside forgejo.md:\n" + "\n".join(strays)
+
+
+def test_i41_every_fact_in_the_reference_has_a_key() -> None:
+    """A fact added to forgejo.md without a registry key is a fact nothing keeps single."""
+    rx = _i41_regex(tuple(s for _, _, signatures, _ in _I41_FACTS for s in signatures))
+    unkeyed = [
+        f"{title}: {unit}" for title, units in _i41_sections().items() if title != "미검증 목록"
+        for unit in units if unit.startswith("- ") and not rx.search(unit)
+    ]
+    assert not unkeyed, "forgejo.md states a fact the registry does not cover:\n" + "\n".join(unkeyed)
+
+
+def test_i41_a_moved_fact_put_back_is_caught() -> None:
+    """Each fact, wrapped into the continuation of an existing bullet of each skill,
+    is found — the joining of wrapped lines is what this exercises, so a detector
+    that went back to scanning line by line would miss it."""
+    tried = 0
+    for key, _, signatures, before in _I41_FACTS:
+        sentence = (before or tuple(u for u in _i41_units(_i41_ref()) if _i41_regex(signatures).search(u)))[0]
+        words = sentence.split(" ")
+        for path in _I41_SKILLS[:3]:
+            lines = read_skill(path).splitlines()
+            at = next(i for i, l in enumerate(lines) if l.startswith("- ") and not l.endswith(":"))
+            mutant = lines[:at + 1] + ["  " + w for w in words] + lines[at + 1:]
+            assert any(s.startswith(f"{key} in {path}") for s in _i41_strays({path: "\n".join(mutant)})), (
+                f"{key}: its sentence wrapped into {path} goes unnoticed"
+            )
+            tried += 1
+    assert tried == 3 * len(_I41_FACTS)
+
+
+def _i41_slice(text: str, start: str, end: str) -> str:
+    """Raw lines from the one line starting `start` up to `end`, blank lines kept
+    so paragraphs stay apart for `_i41_units`."""
+    lines = text.splitlines()
+    starts = [i for i, l in enumerate(lines) if l.strip().startswith(start)]
+    assert len(starts) == 1, f"expected one line starting {start!r}, got {len(starts)}"
+    stop = next((k for k in range(starts[0] + 1, len(lines)) if lines[k].strip().startswith(end)), None)
+    assert stop is not None, f"no {end!r} after {start!r}"
+    return "\n".join(lines[starts[0]:stop])
+
+
+def _i41_slices() -> dict[str, str]:
+    issue, done, start = _issue_skill(), _done_skill(), _start_skill()
+    config = read_skill("skills/SKILL-CONFIG.md")
+    return {
+        "issue/create": _i41_slice(issue, "### Forgejo (`issue_tracker: forgejo`)", "**7. Read Back**"),
+        "issue/1-L.3": _i41_slice(issue, "- **Forgejo**: the read contract", "- **Jira**:"),
+        "issue/rules": _i41_slice(issue, "- A failed read is not an empty one.", "## Instructions"),
+        "done/7": _i41_slice(done, "### Forgejo (`issue_tracker: forgejo`)", "**8. Project status"),
+        "done/8": _i41_slice(done, "**Forgejo 에는 상태 전환", "**9. Post issue comment**"),
+        "done/9": _i41_slice(done, "Forgejo 에서는 `harness_enabled` 와 무관하게 위 Forgejo 줄로", "**9-H."),
+        "done/11": _i41_slice(done, "- **PR path (Forgejo)**", "- **Branch-merge path"),
+        "start/3": _i41_slice(start, "**Forgejo 에는 상태 전환", "**4. ADR"),
+        "config/keys": _i41_slice(config, "| `forgejo_host` |", "| `forgejo_repo` |"),
+        "config/tracker": _i41_slice(config, "### 이슈 트래커", "### harness 사용 여부"),
+    }
+
+
+def test_i41_each_site_points_at_the_reference() -> None:
+    counts = {site: text.count(_I41_POINTER) for site, text in _i41_slices().items()}
+    assert counts == _I41_POINTER_COUNTS, f"a site lost or gained its pointer: {counts}"
+
+
+def test_i41_prohibitions_stay_where_the_call_is_made() -> None:
+    slices = _i41_slices()
+    for site, rule in _I41_KEPT_RULES:
+        assert rule in slices[site], f"{site}: the rule moved away with its fact: {rule}"
+
+
+def test_i41_project_issue_forgejo_prose_is_pinned_whole() -> None:
+    """The procedure left behind — recovery order, title handling, 미반영 reports,
+    and where each pointer sits — the way project-done's goldens pin its steps."""
+    slices = _i41_slices()
+    for site, expected in _I41_PROSE.items():
+        assert tuple(_i41_units(slices[site])) == expected, f"{site}: the Forgejo prose changed"
+
+
+def test_i41_surface_vocabulary_lives_only_in_pinned_lines() -> None:
+    """A fact restated in new words still names the surface it describes."""
+    stray = [
+        f"{site}: {line}"
+        for site, text in _i41_slices().items()
+        for line in _i41_units(text)
+        if _I41_VOCABULARY.search(line) and line not in _I41_VOCABULARY_PINNED
+    ]
+    assert not stray, "a fj surface word appears outside the pinned lines:\n" + "\n".join(stray)
+
+
+def test_i41_jira_lines_of_done_and_start_are_untouched() -> None:
+    for path, expected in _I41_JIRA_LINES.items():
+        lines = tuple(l.strip() for l in read_skill(path).splitlines() if re.search(r"jira", l, re.I))
+        assert lines == expected, f"{path}: a line naming Jira changed"
+
+
+def test_i41_reference_hygiene() -> None:
+    """Deliberately strict: the reference carries no numbers a limit could hide in,
+    and nothing that could point at a credential."""
+    ref = _i41_ref()
+    assert not _fj_invocations(ref), "forgejo.md starts a line with an fj call; the fj scanners read it"
+    assert not re.search(r"^\s*(`{3,}|~{3,})", ref, re.M), "forgejo.md carries a fence"
+    for name, pattern in (
+        ("a limit number", r"\b\d{1,3}(?:,\d{3})+\b|\b\d{5,}\b|KiB|MiB|\d\s*\^\s*\d"),
+        ("a token variable", r"\b[A-Z][A-Z0-9_]*TOKEN\b|\bFJ_|\bFORGEJO_|\bGITEA_"),
+        ("a token value", r"\b[0-9a-f]{40}\b|Authorization:"),
+        ("a token path", r"Application Support|keys\.json|\.config/|\.local/share|forgejo-cli/|~/Library"),
+    ):
+        assert not re.search(pattern, ref), f"forgejo.md holds {name}"
+    assert_whole_line(ref, _I41_LIMIT_POINTER)
+
+
+def _i41_raw_fences(text: str) -> list[tuple[str, list[str]]]:
+    """Each fence as raw lines, markers and info string included, keyed by the heading above it."""
+    blocks: list[tuple[str, list[str]]] = []
+    heading, fence, current = "", "", None
+    for raw in text.splitlines():
+        s = raw.strip()
+        marker = re.match(r"(`{3,}|~{3,})(.*)$", s)
+        if fence:
+            current.append(raw)
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) \
+                    and not marker.group(2).strip():
+                blocks.append((heading, current))
+                fence, current = "", None
+            continue
+        if marker:
+            fence, current = marker.group(1), [raw]
+        elif _STEP_HEADING.match(raw) or raw.startswith("#"):
+            heading = s
+    return blocks
+
+
+def test_i41_fences_match_the_branch_point() -> None:
+    """#41 moved prose only. Compared with where the branch left main, not with a
+    fixed commit: once #41 is on main the branch point is HEAD itself, and later
+    fence edits are not #41's to judge."""
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    try:
+        base = git("merge-base", "HEAD", "origin/main")
+    except FileNotFoundError:
+        pytest.skip("git is not installed")
+    if base.returncode != 0 or not base.stdout.strip():
+        pytest.skip("no origin/main to find the branch point against")
+    for path in _I41_SKILLS:
+        shown = git("show", f"{base.stdout.strip()}:{path}")
+        if shown.returncode != 0:
+            pytest.skip(f"the branch point does not have {path}")
+        before = shown.stdout
+        for old, new in _I41_FENCE_EDITS.get(path, ()):
+            before = before.replace(old, new)
+        assert _i41_raw_fences(read_skill(path)) == _i41_raw_fences(before), (
+            f"{path}: a fence changed; #41 moves prose only"
+        )
