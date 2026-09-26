@@ -2844,3 +2844,219 @@ def test_i36_create_refusal_carries_the_organization_error(monkeypatch, capsys, 
     assert code == 2
     assert "create" not in fake.kinds()
     assert "INSUFFICIENT_SCOPES" in captured.err
+
+
+# ── #49: list elements, and a projectV2 of the wrong shape ───────────────────
+#
+# Each test is red against the code before #49 unless its docstring says it is a
+# preservation test. The list checks sit in `iter_issue_meta`, ahead of
+# `_shape_issue_node` (#24), which is not touched: a node that *is* an issue
+# object but lacks a key stays that function's KeyError.
+
+# {id: (node, how the error names it)}. The name is the type, never the value:
+# the message lands in stderr and audit output, and a node can be any size.
+_UNREADABLE_NODES = {
+    "null": (None, "null"),
+    "empty": ({}, "empty object"),
+    "str": ("x", "str"),
+    "int": (1, "int"),
+    "zero": (0, "int"),
+    "list": ([1], "list"),
+    "empty-str": ("", "str"),
+    "empty-list": ([], "list"),
+}
+
+
+def _issue_node(number: int) -> dict:
+    return _issue_list_page([number], has_next=False)["data"]["repository"]["issues"]["nodes"][0]
+
+
+def _page_with(nodes, *, has_next=False, cursor=None) -> dict:
+    """A list page whose `nodes` are exactly ``nodes``."""
+    page = _issue_list_page([], has_next=has_next, cursor=cursor)
+    page["data"]["repository"]["issues"]["nodes"] = list(nodes)
+    return page
+
+
+@pytest.mark.parametrize(
+    ("node", "named"), list(_UNREADABLE_NODES.values()), ids=list(_UNREADABLE_NODES)
+)
+def test_i49_iter_issue_meta_refuses_an_unreadable_node(node, named) -> None:
+    """`"x"` was an AttributeError in `_shape_issue_node`; null and `{}` were skipped unseen."""
+    fake = FakeGh(list_issues=_page_with([node]))
+    with pytest.raises(github.GraphQLError) as exc:
+        github.iter_issue_meta("<owner>", "<repo>", run=fake, **_meta_kwargs())
+    assert (
+        f"issue list page 1 of <owner>/<repo>: node 1 is not an issue object ({named})"
+        in str(exc.value)
+    )
+
+
+def test_i49_iter_issue_meta_checks_every_node_not_only_the_first() -> None:
+    fake = FakeGh(list_issues=_page_with([_issue_node(1), None]))
+    with pytest.raises(github.GraphQLError) as exc:
+        github.iter_issue_meta("<owner>", "<repo>", run=fake, **_meta_kwargs())
+    assert "issue list page 1 of <owner>/<repo>: node 2 is not an issue object" in str(exc.value)
+
+
+@pytest.mark.parametrize("node", [None, "x"], ids=["null", "str"])
+def test_i49_iter_issue_meta_counts_nodes_per_page(node) -> None:
+    """The node number restarts on each page, like the page number it is paired with."""
+    pages = iter(
+        [_page_with([_issue_node(1)], has_next=True, cursor="cursor-1"), _page_with([node])]
+    )
+    fake = FakeGh(list_issues=lambda *_: json.dumps(next(pages)))
+    with pytest.raises(github.GraphQLError) as exc:
+        github.iter_issue_meta("<owner>", "<repo>", run=fake, **_meta_kwargs())
+    assert "issue list page 2 of <owner>/<repo>: node 1 is not an issue object" in str(exc.value)
+
+
+def test_i49_a_node_missing_a_key_is_still_the_shapers_error() -> None:
+    """Preservation: the element check asks for an issue object, not for its keys (#24)."""
+    page = _issue_list_page([1], has_next=False)
+    del page["data"]["repository"]["issues"]["nodes"][0]["url"]
+    with pytest.raises(LookupError) as exc:
+        github.iter_issue_meta("<owner>", "<repo>", run=FakeGh(list_issues=page), **_meta_kwargs())
+    assert not isinstance(exc.value, github.GhError)
+
+
+@pytest.mark.parametrize(
+    "node", [node for node, _ in _UNREADABLE_NODES.values()], ids=list(_UNREADABLE_NODES)
+)
+def test_i49_audit_exits_two_on_an_unreadable_node(monkeypatch, capsys, node) -> None:
+    """Before #49: a traceback for `"x"`, `1`, `[1]`; rc 0 with the issue dropped for the rest."""
+    fake = FakeGh(
+        types=_types_response(), fields=_fields_response(), list_issues=_page_with([node])
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == "", "a list with an unread issue printed an audit"
+    assert "could not list the issues" in captured.err
+    assert "node 1 is not an issue object" in captured.err
+
+
+def test_i49_audit_with_a_limit_refuses_an_unreadable_node_inside_it(monkeypatch, capsys) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=_page_with([_issue_node(1), None, _issue_node(2)]),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields", "--limit", "5"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+
+
+def test_i49_audit_exits_two_on_an_unreadable_node_on_a_later_page(monkeypatch, capsys) -> None:
+    pages = iter(
+        [_issue_list_page(range(1, 101), has_next=True, cursor="cursor-1"), _page_with([None])]
+    )
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=lambda *_: json.dumps(next(pages)),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert "issue list page 2 of" in captured.err
+    assert fake.kinds().count("list_issues") == 2
+
+
+def test_i49_audit_does_not_judge_a_node_past_the_limit(monkeypatch, capsys) -> None:
+    """Preservation: nodes are judged as they are read, and `--limit 1` reads one.
+
+    Checking the whole page up front would fail an audit over an issue it was
+    never asked to audit.
+    """
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=_page_with([_issue_node(1), None]),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields", "--limit", "1"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["scanned"] == 1
+
+
+_USER_BOARD = {"data": {"user": {"projectV2": {**PROJECT_FIELDS_PAYLOAD, "id": "user-project"}}}}
+
+
+@pytest.mark.parametrize("project", ["x", [1], 5, True], ids=["str", "list", "int", "true"])
+def test_i49_load_tries_the_user_after_an_unusable_organization_board(project) -> None:
+    """A truthy non-dict `projectV2` ended the loop, then failed as a malformed board."""
+    fake = FakeGh(fields=_by_root({"data": {"organization": {"projectV2": project}}}, _USER_BOARD))
+    loaded = github.ProjectFields.load("<owner>", 4, run=fake)
+
+    assert loaded.project_id == "user-project"
+    assert fake.kinds().count("fields") == 2
+
+
+_UNUSABLE_ACCOUNTS = {
+    "str": ({"projectV2": "x"}, "str"),
+    "list": ({"projectV2": [1]}, "list"),
+    "empty-dict": ({"projectV2": {}}, "empty object"),
+    "empty-list": ({"projectV2": []}, "list"),
+    "empty-str": ({"projectV2": ""}, "str"),
+    "missing": ({}, "missing"),
+}
+
+
+@pytest.mark.parametrize(
+    ("account", "named"), list(_UNUSABLE_ACCOUNTS.values()), ids=list(_UNUSABLE_ACCOUNTS)
+)
+def test_i49_load_does_not_count_an_unusable_board_as_an_answer(account, named) -> None:
+    """Only an explicit null is the account saying "no such board"."""
+    message = _load_message({"data": {"organization": account}}, _gh_error(_NO_USER))
+
+    assert message.index(f"organization: unusable projectV2 ({named})") < message.index("user:")
+    assert "could not be resolved" in message
+    assert "not found for owner" not in message
+
+
+def test_i49_load_does_not_carry_an_unusable_board_to_the_next_root() -> None:
+    """The organization's `"x"` must not be what the loop ends holding."""
+    message = _load_message(
+        {"data": {"organization": {"projectV2": "x"}}}, {"data": {"user": None}}
+    )
+
+    assert "not found for owner" in message
+    assert "came back malformed" not in message
+
+
+def test_i49_load_names_an_unusable_board_at_the_user_root() -> None:
+    message = _load_message(_gh_error(_SCOPE_ERROR), {"data": {"user": {"projectV2": "x"}}})
+
+    assert "user: unusable projectV2" in message
+    assert "could not be resolved" in message
+    assert "came back malformed" not in message
+
+
+def test_i49_load_still_judges_a_null_board_at_the_user_root() -> None:
+    """Preservation: an explicit null is an answer at either root."""
+    message = _load_message(_gh_error(_SCOPE_ERROR), {"data": {"user": {"projectV2": None}}})
+
+    assert "user: no project #4" in message
+    assert "not found for owner" in message
+
+
+def test_i49_audit_reads_the_user_board_after_an_unusable_organization_one(
+    monkeypatch, capsys
+) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_by_root({"data": {"organization": {"projectV2": "x"}}}, _USER_BOARD),
+        list_issues=_issue_list_page([1], has_next=False),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert out["warnings"] == []

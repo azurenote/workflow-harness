@@ -438,8 +438,9 @@ class ProjectFields:
         """Resolve a project's single-select fields, organization then user.
 
         A project owner may be either kind of account and the GraphQL entry
-        points are different, so a failed ``organization`` lookup is a signal to
-        try ``user`` — not an error. Results are cached per process: a command
+        points are different, so a failed ``organization`` lookup — or one whose
+        board came back as neither null nor a board — is a signal to try
+        ``user``, not an error. Results are cached per process: a command
         that writes two fields resolves the project once.
         """
         key = (owner, int(number))
@@ -478,12 +479,26 @@ class ProjectFields:
                 answered = answered or account is None
                 misses.append((root, f"no {root} object"))
                 continue
+            # Only an explicit null is the account saying it has no such board.
+            # Anything else that is not a board — `"x"`, `{}`, the key missing —
+            # judged nothing, like an account of the wrong shape above, and must
+            # not end the loop before the other root is asked. (A missing
+            # *account* key still reads as null through `data.get` above and
+            # counts as an answer: a known asymmetry, left as it was.)
+            present = "projectV2" in account
+            candidate = account.get("projectV2")
+            if present and candidate is None:
+                answered = True
+                misses.append((root, f"no project #{number}"))
+                continue
+            if not (isinstance(candidate, dict) and candidate):
+                shape = _describe(candidate) if present else "missing"
+                misses.append((root, f"unusable projectV2 ({shape})"))
+                continue
             answered = True
-            project = account.get("projectV2")
-            if project:
-                break
-            misses.append((root, f"no project #{number}"))
-        if not project:
+            project = candidate
+            break
+        if project is None:
             _FIELDS_CACHE.pop(key, None)
             detail = "; ".join(f"{root}: {reason}" for root, reason in misses)
             # "Not found" is a judgement, and with no root answering there was
@@ -769,6 +784,12 @@ def iter_issue_meta(
     what this did, ``repository: null`` on page one was ``scanned: 0`` — a clean
     audit of nothing — and on page two it was the first hundred issues passing
     for the whole repository.
+
+    So is a node that is not an issue object, checked as each node is read:
+    ``"x"`` used to escape ``_shape_issue_node`` as an ``AttributeError``, and
+    ``null`` or ``{}`` was skipped — an issue gone from ``scanned`` with nothing
+    to say it was never audited. Nodes past ``limit`` are not read, so they are
+    not judged either.
     """
     if limit is not None and limit <= 0:
         return []
@@ -792,18 +813,24 @@ def iter_issue_meta(
             variables["states"] = [wanted_state]
         data = _graphql(_LIST_ISSUES_QUERY, variables, run=run)
         nodes, next_cursor = _read_list_page(data, page_number, owner, repo, after=cursor)
-        for node in nodes:
-            if node:
-                collected.append(
-                    _shape_issue_node(
-                        node,
-                        project_number=project_number,
-                        project_owner=project_owner,
-                        field_names=field_names,
-                    )
+        for index, node in enumerate(nodes, start=1):
+            # Only a non-empty object is an issue. The list enumerates what
+            # exists, so unlike `issue(number:)` a null here answers nothing.
+            # This judges the element only; what is inside it stays
+            # `_shape_issue_node`'s (#24).
+            if not (isinstance(node, dict) and node):
+                what = f"node {index} is not an issue object ({_describe(node)})"
+                raise _list_page_error(page_number, owner, repo, what)
+            collected.append(
+                _shape_issue_node(
+                    node,
+                    project_number=project_number,
+                    project_owner=project_owner,
+                    field_names=field_names,
                 )
-                if limit is not None and len(collected) >= limit:
-                    return collected
+            )
+            if limit is not None and len(collected) >= limit:
+                return collected
         if next_cursor is None:
             return collected
         cursor = next_cursor
@@ -823,9 +850,7 @@ def _read_list_page(
     """
 
     def refuse(what: str) -> GraphQLError:
-        return GraphQLError(
-            ["api", "graphql"], f"issue list page {page_number} of {owner}/{repo}: {what}"
-        )
+        return _list_page_error(page_number, owner, repo, what)
 
     repository = data.get("repository")
     if not isinstance(repository, dict):
@@ -847,6 +872,22 @@ def _read_list_page(
     if cursor == after:
         raise refuse("endCursor did not advance past the page it was read from")
     return nodes, cursor
+
+
+def _list_page_error(page_number: int, owner: str, repo: str, what: str) -> GraphQLError:
+    """The one spelling of "this list page could not be read", for pages and nodes alike."""
+    return GraphQLError(
+        ["api", "graphql"], f"issue list page {page_number} of {owner}/{repo}: {what}"
+    )
+
+
+def _describe(value: object) -> str:
+    """Name a value that was not the object expected, without echoing it."""
+    if value is None:
+        return "null"
+    if value == {}:
+        return "empty object"
+    return type(value).__name__
 
 
 def _is_configured_board(
@@ -1597,7 +1638,8 @@ def _audit_fields_handler(args) -> int:
     found nothing — "no drift on the axes that could be read" is not "no drift":
 
     - **0** — every axis was read; stdout carries the findings, drift or not.
-    - **2** — the issue list could not be read, on any page; stdout is empty.
+    - **2** — the issue list could not be read, on any page, or an element of
+      it is not an issue object; stdout is empty.
     - **3** — an axis could not be read; stdout still carries the audit of the
       axes that could, and ``warnings`` names the ones that were not. Unlike
       ``create-issue``'s 3 this is not a repair instruction: nothing was
