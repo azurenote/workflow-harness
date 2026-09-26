@@ -1494,7 +1494,8 @@ def test_audit_says_so_when_issue_types_cannot_be_read(monkeypatch, capsys) -> N
     code = _run(monkeypatch, fake, ["audit-fields"])
     out = json.loads(capsys.readouterr().out)
 
-    assert code == 0
+    # 3, not 0: the judgement is incomplete (#26). The audit itself still prints.
+    assert code == 3
     assert out["warnings"], "a half-audit reported as a clean audit"
     assert any("NOT audited" in w for w in out["warnings"])
 
@@ -1512,8 +1513,10 @@ def test_audit_state_reaches_the_query(monkeypatch, capsys, state, expected) -> 
     capsys.readouterr()
 
     argv = next(c for c in fake.calls if c["kind"] == "list_issues")["argv"]
-    sent = [tok for tok in argv if tok.startswith("state=")]
-    assert sent == ([f"state={expected}"] if expected else [])
+    # A list, in gh's array syntax: `issues(states:)` takes `[IssueState!]`. This
+    # used to assert `state=OPEN`, pinning the scalar GitHub refuses (#26).
+    sent = [tok for tok in argv if tok.startswith("state")]
+    assert sent == ([f"states[]={expected}"] if expected else [])
 
 
 def test_audit_limit_zero_scans_nothing(monkeypatch, capsys) -> None:
@@ -1849,7 +1852,8 @@ def test_audit_degrades_to_labels_when_the_board_cannot_be_read(
     code = _run(monkeypatch, fake, ["audit-fields"])
     out = json.loads(capsys.readouterr().out)
 
-    assert code == 0
+    # 3, not 0: the fallback runs and reports, but it is a half audit (#26).
+    assert code == 3
     assert any("project fields could not be read" in w for w in out["warnings"])
     assert out["with_drift"] == 1, "the label axis stopped auditing too"
     assert any("issue type" in sentence for sentence in out["issues"][0]["drift"])
@@ -2087,3 +2091,377 @@ def test_no_project_with_labels_reads_the_board_but_writes_nothing(
     assert "add_item" not in fake.kinds(), "--no-project put the issue on the board"
     assert "set_option" not in fake.kinds()
     assert any("--no-project" in sentence for sentence in out["drift"])
+
+
+# ── #26: GraphQL response contract, label identity, half-audit exit ─────────
+
+
+def _answer(payload):
+    """A ``run`` that answers every call with one response, recording argv."""
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    seen: list[list[str]] = []
+
+    def run(argv, *, stdin=None):
+        seen.append(list(argv))
+        return text
+
+    run.seen = seen
+    return run
+
+
+_OK_DATA = {"repository": {"issueTypes": {"nodes": []}}}
+_SERVER_MESSAGE = "Resource not accessible by integration"
+
+
+def _partial(data: dict, message: str = _SERVER_MESSAGE) -> dict:
+    """``data`` *and* ``errors`` — the answer ``gh`` exits 1 on, sent with 0."""
+    return {"data": data, "errors": [{"type": "FORBIDDEN", "message": message}]}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "<html>502 Bad Gateway</html>",
+        [1, 2],
+        {},
+        {"data": None},
+        {"data": "nope"},
+    ],
+    ids=["not-json", "json-array", "no-data", "data-null", "data-not-object"],
+)
+def test_graphql_refuses_a_response_it_cannot_use(payload) -> None:
+    with pytest.raises(github.GraphQLError) as caught:
+        github._graphql("query{ viewer { login } }", {}, run=_answer(payload))
+    assert isinstance(caught.value, github.GhError), "the handlers catch GhError, not this"
+
+
+def test_graphql_refuses_data_that_arrives_with_errors() -> None:
+    """A partial answer is refused, and the reason is the server's, not ours.
+
+    ``data`` is a real object here. A fixture with ``data: null`` would be
+    refused by the data check as well, and removing the errors check would
+    leave it green.
+    """
+    with pytest.raises(github.GraphQLError) as caught:
+        github._graphql(
+            "query($owner:String!){ viewer { login } }",
+            {"owner": "someone-private"},
+            run=_answer(_partial(_OK_DATA)),
+        )
+    exc = caught.value
+    assert _SERVER_MESSAGE in str(exc) and _SERVER_MESSAGE in exc.stderr
+    assert "exited 0" not in str(exc), "a refused response must not read as a clean exit"
+    for leaked in ("query(", "someone-private"):
+        assert leaked not in str(exc) and leaked not in exc.stderr, leaked
+
+
+@pytest.mark.parametrize(
+    "errors",
+    [[{}], ["x"], "x", [{"message": 5}], 5, {"message": "lone object"}],
+    ids=["no-message", "str-entry", "str", "int-message", "int", "bare-object"],
+)
+def test_graphql_errors_of_any_shape_still_become_graphql_error(errors) -> None:
+    with pytest.raises(github.GraphQLError) as caught:
+        github._graphql("query{ x }", {}, run=_answer({"data": _OK_DATA, "errors": errors}))
+    if isinstance(errors, dict):
+        assert "lone object" in str(caught.value), "a bare error object lost its message"
+
+
+@pytest.mark.parametrize("errors", [[], None], ids=["empty", "null"])
+def test_graphql_empty_errors_is_success(errors) -> None:
+    assert github._graphql("query{ x }", {}, run=_answer({"data": _OK_DATA, "errors": errors})) == _OK_DATA
+
+
+def test_graphql_sends_a_list_in_gh_array_syntax() -> None:
+    run = _answer({"data": _OK_DATA})
+    github._graphql("query{ x }", {"states": ["OPEN"]}, run=run)
+    argv = run.seen[0]
+    assert "states[]=OPEN" in argv
+    assert argv[argv.index("states[]=OPEN") - 1] == "-f"
+    assert not any(tok.startswith("states=") for tok in argv)
+    with pytest.raises(ValueError):
+        github._graphql("query{ x }", {"states": []}, run=run)
+    with pytest.raises(TypeError):
+        github._graphql("query{ x }", {"flags": [True]}, run=run)
+
+
+def _declared(query: str) -> dict[str, str]:
+    header = re.search(r"query\s*\(([^)]*)\)", query)
+    assert header, "every document here declares its variables"
+    return dict(re.findall(r"\$(\w+)\s*:\s*([\[\]\w!]+)", header.group(1)))
+
+
+_QUERIES = {
+    "list": github._LIST_ISSUES_QUERY,
+    "issue": github._ISSUE_META_QUERY,
+    "types": github._ISSUE_TYPES_QUERY,
+    "fields": github.ProjectFields._QUERY % "organization",
+}
+
+
+def test_states_argument_is_bound_to_a_list_variable() -> None:
+    """The fakes do not parse GraphQL, so the type binding is pinned as text.
+
+    `issues(states:)` takes `[IssueState!]`. A scalar `$state: IssueState` passed
+    there is refused by GitHub at validation whatever its value — which is how
+    `audit-fields` came to fail against the real API on every run (#26).
+    """
+    bound = 0
+    for name, query in _QUERIES.items():
+        declared = _declared(query)
+        for variable in re.findall(r"\bstates\s*:\s*\$(\w+)", query):
+            bound += 1
+            assert declared.get(variable, "").startswith("["), (name, variable, declared)
+    assert bound, "no `states:` argument found — this test would pass vacuously"
+
+
+@pytest.mark.parametrize("state", ["open", "all"])
+def test_list_query_variables_sent_are_all_declared(monkeypatch, capsys, state) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=_issue_list_page([1], has_next=False),
+    )
+    _run(monkeypatch, fake, ["audit-fields", "--state", state])
+    capsys.readouterr()
+
+    argv = next(c for c in fake.calls if c["kind"] == "list_issues")["argv"]
+    sent = {
+        argv[i + 1].split("=", 1)[0].removesuffix("[]")
+        for i, tok in enumerate(argv[:-1])
+        if tok in ("-f", "-F") and not argv[i + 1].startswith("query=")
+    }
+    assert sent <= set(_declared(github._LIST_ISSUES_QUERY)), sent
+
+
+def _by_root(organization: dict, user: dict):
+    """Answer the organization and the user lookups differently."""
+
+    def answer(fake, argv, stdin):
+        return organization if "organization(login" in " ".join(argv) else user
+
+    return answer
+
+
+def test_load_still_falls_back_to_user_when_organization_answers_with_errors() -> None:
+    """Preservation guard: the org miss now raises, and must still mean "try user"."""
+    user_payload = {"data": {"user": {"projectV2": {**PROJECT_FIELDS_PAYLOAD, "id": "user-project"}}}}
+    org_miss = {
+        "data": {"organization": None},
+        "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to an Organization"}],
+    }
+    fake = FakeGh(fields=_by_root(org_miss, user_payload))
+    loaded = github.ProjectFields.load("<owner>", 4, run=fake)
+
+    assert loaded.project_id == "user-project"
+    assert fake.kinds().count("fields") == 2
+
+
+def test_load_treats_an_account_of_the_wrong_shape_as_not_found() -> None:
+    fake = FakeGh(fields=_by_root({"data": {"organization": "x"}}, {"data": {"user": ["y"]}}))
+    with pytest.raises(github.FieldNotFoundError):
+        github.ProjectFields.load("<owner>", 4, run=fake)
+
+
+_MALFORMED_BOARDS = {
+    "fields-null": {**PROJECT_FIELDS_PAYLOAD, "fields": None},
+    "id-missing": {k: v for k, v in PROJECT_FIELDS_PAYLOAD.items() if k != "id"},
+    "options-null": {"id": PROJECT_ID, "fields": {"nodes": [{"id": "f", "name": PRIORITY_FIELD, "options": None}]}},
+    "option-unnamed": {
+        "id": PROJECT_ID,
+        "fields": {"nodes": [{"id": "f", "name": PRIORITY_FIELD, "options": [{"id": "o"}]}]},
+    },
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_MALFORMED_BOARDS))
+def test_a_malformed_board_degrades_the_audit_instead_of_crashing(monkeypatch, capsys, shape) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields={"data": {"organization": {"projectV2": _MALFORMED_BOARDS[shape]}}},
+        list_issues=_issue_list_page([1], has_next=False, labels=("BE", TYPE_NAMES[0].lower())),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 3
+    assert any("project fields could not be read" in w for w in out["warnings"])
+    assert out["with_drift"] == 1, "the label axis stopped auditing too"
+
+
+def test_a_malformed_board_does_not_stay_cached() -> None:
+    github.ProjectFields.load("<owner>", 4, run=FakeGh(fields=_fields_response()))
+    broken = FakeGh(fields={"data": {"organization": {"projectV2": _MALFORMED_BOARDS["fields-null"]}}})
+    with pytest.raises(github.FieldNotFoundError):
+        github.ProjectFields.load("<owner>", 4, run=broken, use_cache=False)
+    assert ("<owner>", 4) not in github._FIELDS_CACHE, "a stale board outlived a failed re-read"
+    # And a good answer afterwards is read, not refused.
+    assert github.ProjectFields.load("<owner>", 4, run=FakeGh(fields=_fields_response())).project_id == PROJECT_ID
+
+
+@pytest.mark.parametrize(
+    "types",
+    [
+        _partial({"repository": None}),
+        {"data": {"repository": None}},
+        _partial({"repository": {"issueTypes": {"nodes": [{"name": "Chore"}]}}}),
+        {"data": {"repository": "x"}},
+        {"data": {"repository": {"issueTypes": [1]}}},
+        {"data": {"repository": {"issueTypes": {"nodes": ["Chore"]}}}},
+        {"data": {"repository": {"issueTypes": {"nodes": [{"name": 5}]}}}},
+    ],
+    ids=["errors-null-repo", "null-repo", "partial", "repo-not-object", "types-not-object",
+         "node-not-object", "name-not-str"],
+)
+def test_create_refuses_when_issue_types_answer_unusably(monkeypatch, capsys, body_file, types) -> None:
+    """Scripted through to a clean create, so a red here is the type read and nothing else."""
+    fake = FakeGh(
+        types=types,
+        fields=_fields_response(),
+        create=_created(),
+        add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue=_issue_response(labels=(), issue_type=None, field_values={STATUS_FIELD: STATUS_OPTIONS[0]}),
+    )
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "create" not in fake.kinds()
+    assert captured.out == ""
+    assert "could not read the issue types" in captured.err
+
+
+_SET_OPTION_UNUSABLE = {
+    "errors": _partial({"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}),
+    "null-result": {"data": {"updateProjectV2ItemFieldValue": None}},
+    "result-not-object": {"data": {"updateProjectV2ItemFieldValue": "x"}},
+    "item-without-id": {"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {}}}},
+}
+
+
+@pytest.mark.parametrize("answer", sorted(_SET_OPTION_UNUSABLE))
+def test_create_exits_three_when_a_field_write_is_not_confirmed(
+    monkeypatch, capsys, body_file, answer
+) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        set_option=_SET_OPTION_UNUSABLE[answer],
+        read_issue=_issue_response(labels=(), issue_type=None, field_values={STATUS_FIELD: STATUS_OPTIONS[0]}),
+    )
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file])
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+
+    assert code == 3, "an unconfirmed write was reported as a clean create"
+    assert out["error"]
+    assert "set-fields 7" in captured.err
+
+
+def test_set_fields_exits_three_when_the_write_answers_with_errors(monkeypatch, capsys) -> None:
+    fake = FakeGh(
+        fields=_fields_response(),
+        read_issue=_issue_response(field_values={STATUS_FIELD: STATUS_OPTIONS[0]}),
+        set_option=_SET_OPTION_UNUSABLE["errors"],
+    )
+    code = _run(monkeypatch, fake, ["set-fields", "7", "--priority", PRIORITY_OPTIONS[1]])
+    out = json.loads(capsys.readouterr().out)
+
+    assert code == 3
+    assert out["error"] and out["observed"] is None
+    # The item already existed and the one write was the one refused.
+    assert out["applied"] == []
+
+
+def test_get_issue_refuses_an_issue_that_arrives_with_errors(monkeypatch, capsys) -> None:
+    """A real issue node *with* errors: the one fixture a missing issue cannot fake.
+
+    With `repository: null` the old code already exited 2 — through
+    "not found", which says something false about the issue.
+    """
+    fake = FakeGh(read_issue=_partial(_issue_response()["data"]))
+    code = _run(monkeypatch, fake, ["get-issue", "7"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert _SERVER_MESSAGE in captured.err
+    assert "not found" not in captured.err
+
+
+def test_audit_exits_two_when_the_issue_list_answers_with_errors(monkeypatch, capsys) -> None:
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        list_issues=_partial(_issue_list_page([1], has_next=False)["data"]),
+    )
+    code = _run(monkeypatch, fake, ["audit-fields"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == "", "a list read that failed printed an audit"
+
+
+def _label_create(monkeypatch, capsys, body_file, labels, observed, **overrides):
+    fake = FakeGh(
+        types=_types_response(),
+        fields=_fields_response(),
+        create=_created(),
+        add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        read_issue=_issue_response(
+            labels=observed, issue_type=None, field_values={STATUS_FIELD: STATUS_OPTIONS[0]}
+        ),
+    )
+    argv = ["create-issue", "--title", "t", "--body-file", body_file]
+    for label in labels:
+        argv += ["--label", label]
+    code = _run(monkeypatch, fake, argv, **overrides)
+    out = json.loads(capsys.readouterr().out)
+    sent = json.loads(next(c for c in fake.calls if c["kind"] == "create")["stdin"])["labels"]
+    return code, out, sent
+
+
+def test_declared_labels_are_recorded_in_their_declared_spelling(monkeypatch, capsys, body_file) -> None:
+    code, out, sent = _label_create(
+        monkeypatch, capsys, body_file, ["be"], ("BE",), allowed_labels=["BE"]
+    )
+    assert code == 0
+    assert out["requested"]["labels"] == ["BE"]
+    assert out["drift"] == []
+    assert sent == ["be"], "the record changed, the request must not"
+
+
+def test_declared_spelling_first_wins_stripped_and_once(monkeypatch, capsys, body_file) -> None:
+    code, out, sent = _label_create(
+        monkeypatch, capsys, body_file, ["be", "BE"], ("BE",), allowed_labels=[" BE ", "be"]
+    )
+    assert code == 0
+    assert out["requested"]["labels"] == ["BE"]
+    assert sent == ["be", "BE"]
+
+
+def test_undeclared_labels_compare_by_identity(monkeypatch, capsys, body_file) -> None:
+    code, out, _ = _label_create(monkeypatch, capsys, body_file, ["be"], ("BE",))
+    assert code == 0
+    assert out["requested"]["labels"] == ["be"], "no declared list, no canonical spelling to record"
+    assert out["drift"] == [], out["drift"]
+
+
+def test_mismatches_labels_fold_case_but_not_separators() -> None:
+    assert github._mismatches({"labels": ["be", "FE"]}, {"labels": ["BE"]}) == [
+        "labels requested but not applied: ['FE']"
+    ]
+    assert github._mismatches({"labels": ["BE"]}, {"labels": ["be", "X"]}) == [
+        "labels present but not requested: ['X']"
+    ]
+    assert github._mismatches({"labels": ["B-E"]}, {"labels": ["BE"]}), "B-E and BE are two labels"
+
+
+def test_mismatches_names_a_missing_label_once_whatever_its_spellings() -> None:
+    assert github._mismatches({"labels": ["be", "BE"]}, {"labels": []}) == [
+        "labels requested but not applied: ['be']"
+    ]
