@@ -1,6 +1,6 @@
 ---
 name: project-issue
-description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as a ticket in the issue tracker, then rename it to `plan-<id>.md`.
+description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as a ticket in the issue tracker, then rename it to `plan-<id>.md`. With `--issue <id>`, link the draft to an issue that already exists instead of creating one.
 ---
 
 # project-issue - Register Issue
@@ -10,6 +10,7 @@ description: Register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` dra
 Apply this skill in the following situations:
 - The user invokes `project-issue`, or asks to use the project-issue skill to register an issue
 - The user invokes `project-issue <plan-path>`, naming the draft file to register
+- The user invokes `project-issue [<plan-path>] --issue <id>`, or asks to attach a plan to an issue that already exists
 - A `plan-draft-*.md` or `plan-<uuid>.md` draft exists and issue-registration intent is detected
 - Keywords such as "register issue", "create ticket", "upload to GitHub", or "upload to Jira"
 
@@ -32,7 +33,7 @@ Because `project-plan` writes plan prose in Korean by default, do not translate 
 ## Usage
 
 ```
-project-issue [<plan-path>]
+project-issue [<plan-path>] [--issue <id>]
 ```
 
 - `[<plan-path>]`: the draft plan file to register. Optional.
@@ -42,6 +43,15 @@ project-issue [<plan-path>]
 The argument exists for the case discovery cannot resolve on its own: two or more drafts present.
 The harness path raises `MultiplePlanFilesError` outright; the harness-free path can still ask, but
 only interactively. Naming the file settles it in one step, and settles it non-interactively.
+
+- `[--issue <id>]`: an issue that already exists. Optional.
+  - **Given** — link mode: the draft is linked to issue `<id>` and no ticket is created; Step 1-L below runs.
+- With `--issue`, `<plan-path>` is required: stop before Step 1 if it is missing, because discovery would take whatever single draft is there, and nothing in a draft names its issue.
+
+Link mode exists because issues often come first — a defect filed from a review has a number before
+it has a plan. Without it the only way to attach a plan was to skip this skill and `mv` the file by
+hand, which bypasses both Step 1's validation and Step 8's refusal to overwrite, or to run this skill
+and get a second ticket for the same work.
 
 ## Instructions
 
@@ -76,7 +86,7 @@ print(path)
 
 The command exits non-zero and names the failed check, so a caller can branch on it. It prints the
 **resolved** path and the rest of this skill uses that value — validating one path and then renaming
-another is how a symlink lands Step 8's `mv` outside the plan directory.
+another is how a symlink lands Step 8's rename outside the plan directory.
 
 `abs_under_main` and `main_worktree_root` are why the plan directory is not `Path(".task/plan")`:
 `.task/plan/` is gitignored, so it exists only in the **main worktree**. Resolving against the CWD
@@ -85,8 +95,8 @@ records the same fix as plan-234).
 
 Why each check is load-bearing:
 
-- **Name check** — it is the only gate protecting Step 8's `mv`. Accept an arbitrary path here and Step 8 renames a file that was never a draft.
-- **Plan-directory check** — the harness-free `mv` in Step 8 hardcodes `.task/plan/` as its destination, while the harness path renames next to the source file. A path outside the plan directory makes the same input land in two different places depending on `harness_enabled`.
+- **Name check** — it is the only gate protecting Step 8's rename. Accept an arbitrary path here and Step 8 renames a file that was never a draft.
+- **Plan-directory check** — Step 8 renames next to the source file on both of its paths. A draft outside the plan directory would become a `plan-<id>.md` that `project-start` and `project-done` never look for.
 - **Stopping** — falling back to discovery would hand back the very ambiguity the argument was given to settle.
 
 Without the argument, discover the draft as before.
@@ -109,6 +119,117 @@ Handle the result:
 - **Two or more files**: show the list and mtimes, then ask the user to choose.
   - If the user says "latest", automatically choose the file with the newest mtime.
 
+**1-L. Link Mode (--issue)**
+
+Runs only when the call carried `--issue <id>`, right after Step 1 has printed the resolved draft
+path. Without `--issue`, skip this step.
+
+Link mode attaches the draft to an issue that already exists. Every check that can refuse runs here,
+before Step 2 asks a human to approve anything — a refusal after the approval is a wasted approval.
+Each check below stops the skill on failure.
+
+- Never carry a shell variable from an earlier call into these commands; substitute `<id>` and every path as a literal.
+
+The calls in this skill are separate turns — Step 2 and the comment question wait on a human — and
+shell variables do not survive between them. A variable that arrives empty does not fail: an empty
+path resolves to the main worktree root.
+
+1. **Validate the id.** It becomes part of a file name, so `../x` or `#25` must never reach Step 8.
+   Before substituting it at all, refuse an id containing anything but letters, digits and `-`
+   without running a command: a `'` in it would close the literal below and hand the rest to the
+   shell. Then check its form:
+
+   ```bash
+   python -c '
+   import re, sys
+   patterns = {
+       "github": r"[1-9][0-9]*",
+       "forgejo": r"[1-9][0-9]*",
+       "jira": r"[A-Z][A-Z0-9_]*-[1-9][0-9]*",
+   }
+   tracker, issue_id = sys.argv[1], sys.argv[2]
+   if tracker not in patterns:
+       sys.exit("reject (tracker): unknown issue_tracker %r" % tracker)
+   if not re.fullmatch(patterns[tracker], issue_id):
+       sys.exit("reject (id): %r is not a %s issue id" % (issue_id, tracker))
+   ' '<issue_tracker>' '<id>'
+   ```
+
+2. **Refuse an issue that already has a plan.** The plan directory lives in the main worktree only,
+   so the check is rooted there, not at the CWD:
+
+   ```bash
+   python -c '
+   import sys
+   from harness_core.git import main_worktree_root
+   target = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])
+   if target.exists():
+       sys.exit("stop (exists): %s already has a plan: %s" % (sys.argv[1], target))
+   ' '<id>'
+   ```
+
+   - When `plan-<id>.md` already exists, link mode stops here, before Step 2's confirmation screen.
+
+3. **Read the issue.** Keep the output — `project-iterate` reuses the body as its task description.
+
+   - **GitHub**: the core `get-issue` is not this gate. It returns no `state`, and it exits 2 when the
+     project board cannot be read, which would refuse the link for a reason unrelated to the issue.
+
+     ```bash
+     gh issue view "<id>" --json number,title,state,url,body,labels
+     ```
+
+   - **Forgejo**: the read contract from `~/.claude/skills/SKILL-CONFIG.md`. Strip the directional
+     isolates from the wrapped fields (number, title, state) before comparing them, as the Forgejo
+     section of Step 6 explains. Measured once (2026-09-26): a number that does not exist prints
+     `Error: not found` and exits 1, and a pull request number prints the pull request with a
+     `From … into …` line. One measurement is not a contract — the content rule below still decides.
+
+     ```bash
+     fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>"
+     ```
+
+   - **Jira**:
+
+     ```bash
+     jira issue view "<id>" --raw
+     ```
+
+   - Judge the read by its content, never by its exit code: the number or key read back equals `<id>`, the title is non-empty, the state is open, and it is not a pull request (GitHub: `url` is an `/issues/` URL; Forgejo: no `From … into …` line).
+   - If the read fails, the issue is closed, the number read back is not `<id>`, or it is a pull request, stop before Step 8 and report which it was.
+
+   `~/.claude/skills/SKILL-CONFIG.md` lets a failed read be marked and passed over, and in the same
+   paragraph refuses that for a failed write, because an issue number cannot be synthesized locally
+   and `project-start` requires one. This read is the second case wearing the first one's clothes:
+   Step 8 binds the local plan to `<id>`, and a plan bound to a number nobody could read sends
+   `project-start` to an issue that may not exist.
+
+4. **Confirm, then rename.** Step 2 runs with its link-mode additions, and the first line of Step 3 sends the flow to Step 8; nothing is inferred or created on the way, so the issue's type, labels, priority and size stay as the tracker has them.
+
+5. **After Step 8, offer the plan as a comment.** Ask on its own — `Post plan-<id>.md to #<id> as a comment? [yes/no]` — separately from Step 2.
+
+   - The comment is posted only on its own yes; a no is not an error, because the local `plan-<id>.md` is the canonical plan either way.
+   - If the issue body read in item 3 is the same text as the draft, the body already is this plan (a create-mode Step 8 failure being recovered): do not ask, and report the comment as skipped.
+
+   `<plan-file>` is the path Step 8 printed, substituted as a literal:
+
+   - **GitHub** — a project-local `add-comment` takes the body as a string argument, so it is not the
+     first choice for a whole plan:
+
+     ```bash
+     gh issue comment "<id>" --body-file '<plan-file>'
+     ```
+
+   - **Jira** — a positional body argument would silently win over `--template`, so never add one.
+     Not executed against a live Jira, like every Jira call in this skill:
+
+     ```bash
+     jira issue comment add "<id>" --template '<plan-file>' --no-input
+     ```
+
+   - **Forgejo** — `~/.claude/skills/SKILL-CONFIG.md` gives comments no `fj` contract yet. Post it
+     through the web UI by hand, or report it as 미반영.
+
 **2. User Confirmation**
 
 Show the file title, base branch, and first 30 body lines, then **always get confirmation**.
@@ -126,7 +247,20 @@ Are the Intent Summary and base branch correct? Create an issue from this file? 
 
 > Plan frontmatter (`base_branch`/`parent_issue`) is propagated to the issue without any extra work: Step 6 uploads the entire plan file as the issue body with `--body-file`, and Step 8 renames without changing content, preserving frontmatter. Title inference (`--title`) and type/label inference use a frontmatter-aware parser, so the leading `---` block does not affect them.
 
+In link mode the screen also carries the issue Step 1-L read, and the question changes:
+
+```
+issue: #<id> <issue title> (<state>)
+
+Are the Intent Summary and base branch correct? Link this file to #<id>? [yes/no]
+```
+
+The issue title is the check no command above can make: it is how a human notices that `<id>` names
+the wrong issue, or a pull request.
+
 **3. Infer Issue Type** (GitHub only)
+
+- In link mode (`--issue`), Steps 3–7 do not run: after Step 2's yes, go straight to Step 8.
 
 Analyze the plan title and `Intent Summary` / `Current State` keywords:
 
@@ -286,7 +420,7 @@ ISSUE_NUMBER="$(printf '%s\n' "$CREATED" \
   | sed -n 's/^created issue #\([0-9][0-9]*\).*/\1/p')"
 ```
 
-- 격리 제거(`\u2068`/`\u2069`)는 군더더기가 아니다. 파이프 한 단으로 두고 **추출보다 앞에** 둔다 — 뒤에 두면 추출이 영영 매치하지 않는다. 빼면 `#` 와 첫 숫자 사이에 격리 문자가 끼어 추출이 **에러 없이 빈 문자열**을 돌려주고, 그 빈 값이 8단계 `mv` 로 흘러들어 `plan-.md` 를 만든다. 실패가 조용하다는 것이 이 단계를 지켜야 하는 이유다.
+- 격리 제거(`\u2068`/`\u2069`)는 군더더기가 아니다. 파이프 한 단으로 두고 **추출보다 앞에** 둔다 — 뒤에 두면 추출이 영영 매치하지 않는다. 빼면 `#` 와 첫 숫자 사이에 격리 문자가 끼어 추출이 **에러 없이 빈 문자열**을 돌려주고, 그 빈 값이 8단계로 흘러든다. 8단계의 id 검사가 `plan-.md` 는 막지만, 그때는 이미 만들어진 이슈의 번호를 잃은 채 멈추는 것이다. 실패가 조용하다는 것이 이 단계를 지켜야 하는 이유다.
 - `--style minimal` 이 격리 문자를 없애줄 것이라고 기대하지 마라. 도움말의 "Always used in non-terminal contexts (i.e. pipes)" 가 그렇게 읽히지만, 파이프 출력에도 격리 문자는 **그대로 있다**.
 - **제목을 명령문에 리터럴로 붙여넣지 마라.** 파일에서 읽어 `"$TITLE"` 로 넘긴다. 셸은 파라미터 확장 결과를 다시 훑지 않으므로 따옴표 씌운 변수는 백틱이 들어 있어도 안전하다 — 위험한 것은 **리터럴**이다. `project-plan` 제목은 파일·심볼을 백틱으로 부르는 것이 상례라 이건 예외가 아니라 기본이다. 작은따옴표로 감싸는 것도 해결이 아니다: 제목 안의 아포스트로피 하나가 따옴표를 닫고 뒤따르는 백틱을 실행시키며, 그때 `--body-file` 이 빈 값을 받아 `$EDITOR` 가 열린다.
 - `--body-file` 은 선택이 아니다. `--body` 와 함께 빠지면 `$EDITOR` 가 열려 헤드리스에서 멈춘다. 한국어 플랜을 있는 그대로 올린다는 계약도 이 플래그가 지킨다.
@@ -353,26 +487,48 @@ A `create-issue` exit of 0 already includes this read in its `observed`; repeat 
 
 **8. Rename File**
 
-After issue creation succeeds:
+After issue creation succeeds — or, in link mode, after Step 2's yes. Both modes use this one step; link mode has no rename of its own.
+
+Substitute two literals: `<draft-plan-path>`, the resolved path Step 1 printed, and `<ISSUE_ID>` —
+`<ISSUE_NUMBER>` on GitHub and Forgejo, `<TICKET_ID>` on Jira (for example `plan-SYN-42.md`). Do not
+pass a shell variable from an earlier call: this step runs after a confirmation turn, a variable
+that did not survive it arrives empty, and an empty path resolves to the main worktree root.
 
 ```bash
-DRAFT_PLAN="<draft-plan-path>"
-# GitHub
-mv "$DRAFT_PLAN" .task/plan/plan-<ISSUE_NUMBER>.md
+python -c '
+import re, sys
+from pathlib import Path
+from harness_core.config import is_draft_plan
+from harness_core.git import main_worktree_root
+from harness_core.local import abs_under_main, rename_plan_to_issue
 
-# Jira
-mv "$DRAFT_PLAN" .task/plan/plan-<TICKET_ID>.md
-# example: plan-SYN-42.md
+draft, issue_id = abs_under_main(Path(sys.argv[1])).resolve(), sys.argv[2]
+plan_dir = (main_worktree_root() / ".task" / "plan").resolve()
+if not draft.is_file() or not is_draft_plan(draft.name) or draft.parent != plan_dir:
+    sys.exit("reject (draft): not a draft plan in %s: %s" % (plan_dir, draft))
+if not re.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", issue_id):
+    sys.exit("reject (id): not an issue number or ticket key: %r" % issue_id)
+try:
+    print(rename_plan_to_issue(draft, issue_id))
+except FileExistsError as exc:
+    sys.exit("stop (exists): %s" % exc)
+' '<draft-plan-path>' '<ISSUE_ID>'
 ```
 
-Idempotency: if the destination file already exists, skip the rename.
-If rename fails: keep the draft file and ask the user to enter the issue ID manually.
+It prints the new path; that is `<plan-file>` for Step 1-L's comment and for Step 9.
 
-When a harness exists:
-```bash
-DRAFT_PLAN="<draft-plan-path>"
-<harness_cli> rename-plan "$DRAFT_PLAN" <ISSUE_NUMBER>
-```
+Step 1's three checks run again here because this is the call that moves the file, and the values
+reach it across a turn: a check made in another call protects nothing when what arrives here is
+different. The id check is here for the same reason as Step 1-L's — an empty number, the Forgejo
+section's silent parse failure, would otherwise become `plan-.md`.
+
+- `<harness_cli> rename-plan` is not used here: it checks neither that its source is a draft file nor its id, so an empty path renames the main worktree itself, and it parses its number as an integer, so a Jira key is an argument error.
+- If `plan-<id>.md` already exists, the command stops with a non-zero exit and leaves the draft where it was: report it and stop, never overwrite the existing plan, and never delete the draft to finish the rename.
+
+`mv` is not used either: it overwrites an existing destination without a word, and a destination
+written relative to the CWD does not exist from a linked worktree, where `.task/plan/` is absent.
+
+- If the rename fails for any other reason, keep the draft; when the issue was already created, recover with `project-issue <draft-plan-path> --issue <ISSUE_ID>`, which links instead of creating a second ticket.
 
 **9. Output**
 
@@ -383,3 +539,9 @@ DRAFT_PLAN="<draft-plan-path>"
 - anything reported as not applied, and the command that would apply it later
 - file rename result: `<draft-plan-path>` -> `plan-<id>.md`
 - next step: `project-start <issue-number>`
+
+In link mode the output differs in three places:
+
+- metadata is what the Step 1-L read returned, as the tracker holds it — link mode inferred nothing, so there is no requested value to compare with. Where the read carries no field for a value (project fields on GitHub's `gh issue view`, and the type on a gh that does not return `issueType`; everything but labels on Forgejo), say so rather than guessing it.
+- the comment result from Step 1-L: posted (with where it can be seen), declined, skipped for a recovery run, or 미반영 on Forgejo. For every result but posted, include the Step 1-L command that would post `plan-<id>.md` later.
+- the issue line is the existing issue, and it says "linked", not "created".

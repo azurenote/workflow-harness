@@ -2077,7 +2077,12 @@ def test_draft_discovery_survives_the_new_argument() -> None:
 
 
 def test_codex_reference_shows_the_plan_path_argument() -> None:
-    assert "$project-issue [<plan-path>]" in read_skill("skills/_shared/references/codex.md")
+    """Whole lines, not substrings: the old line is a prefix of the new one."""
+    lines = [l.strip() for l in read_skill("skills/_shared/references/codex.md").splitlines()]
+
+    assert "$project-issue [<plan-path>] [--issue <id>]" in lines
+    assert "$project-issue [<plan-path>]" not in lines, "codex still shows project-issue without --issue"
+    assert "$project-iterate <id> [worktree] [adr]" in lines, "codex does not show the <id> re-entry"
 
 
 def test_skill_config_scopes_the_forgejo_write_contract() -> None:
@@ -2124,9 +2129,12 @@ def test_iterate_passes_the_plan_path_it_already_knows() -> None:
         text, "위치 인자로 그대로 넘긴다",
         starts_with="- Phase 1 이 방금 만든 플랜 경로를",
     )
+    # Re-entry used to fall back to argument-less discovery here, and discovery
+    # hands Phase 2 whatever unrelated draft it finds — a second ticket for an
+    # issue that already exists. Re-entry now always carries the path and links.
     assert_rule(
-        text, "인자 없이 불러 기존 자동 탐색으로 돌아간다",
-        starts_with="- 다만 `## Re-entry After Interruption` 경로로",
+        text, "`project-issue <plan-path> --issue <id>` 로 연결 모드를 부른다",
+        starts_with="- `## Re-entry After Interruption` 의 \"Issue only\" 상태에서 왔다면",
     )
 
 
@@ -2608,3 +2616,371 @@ def test_project_done_merges_from_the_main_checkout() -> None:
     assert "git worktree remove -f -f" in merge, (
         "the ban on force-removing a worktree is gone"
     )
+
+
+# --------------------------------------------------------------------------
+# Link mode: attaching a plan to an issue that already exists (#25)
+#
+# Every guard below exists because the failure it stops is a *second ticket*,
+# an *overwritten plan*, or a *renamed repository*, and all three are silent.
+# Slices are asserted non-empty and carrying a sentinel before any absence
+# check, because an absence check on an empty slice passes while proving
+# nothing. Gate lines are compared whole: `assert_rule` pins a line's start and
+# an anchor, and a review showed every gate surviving an escape clause appended
+# to its end (", unless the user says to proceed anyway").
+# --------------------------------------------------------------------------
+
+_CREATE_COMMANDS = ("create-issue", "gh issue create", "issue create", "jira issue create")
+_ISSUE_READS = ("gh issue view", 'issue view "<forgejo_repo>#', "jira issue view")
+_ID_PATTERN = r're.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", '
+
+
+def _issue_skill() -> str:
+    return read_skill("skills/project-issue/SKILL.md")
+
+
+def _iterate_skill() -> str:
+    return read_skill("skills/project-iterate/SKILL.md")
+
+
+def _start_skill() -> str:
+    return read_skill("skills/project-start/SKILL.md")
+
+
+def _link_mode() -> str:
+    section = skill_section(_issue_skill(), "**1-L. Link Mode")
+    assert section, "project-issue has no Step 1-L link-mode section"
+    for read in _ISSUE_READS:
+        assert read in section, f"the link-mode slice lost its issue read: {read}"
+    return section
+
+
+def _step8() -> str:
+    section = skill_section(_issue_skill(), "**8. Rename File**")
+    assert section and "rename_plan_to_issue(" in section, "Step 8 is gone"
+    return section
+
+
+def _fenced(text: str) -> str:
+    return "\n".join(line for line, in_fence in _outside_fences(text) if in_fence)
+
+
+def assert_whole_line(text: str, expected: str) -> None:
+    """The gate line exists exactly once and says exactly this — nothing appended."""
+    lines = [l.strip() for l in text.splitlines()]
+    assert lines.count(expected) == 1, (
+        f"gate line changed, moved or duplicated ({lines.count(expected)} exact matches):\n{expected}"
+    )
+
+
+def test_project_issue_documents_the_issue_argument() -> None:
+    text = _issue_skill()
+    lines = [l.strip() for l in text.splitlines()]
+
+    assert "project-issue [<plan-path>] [--issue <id>]" in lines
+    assert "project-issue [<plan-path>]" not in lines, "the usage block still omits --issue"
+    assert_rule(
+        text, "the draft is linked to issue `<id>` and no ticket is created",
+        starts_with="- **Given** — link mode",
+    )
+    assert_whole_line(text, (
+        "- With `--issue`, `<plan-path>` is required: stop before Step 1 if it is missing, "
+        "because discovery would take whatever single draft is there, and nothing in a draft names its issue."
+    ))
+    description = rule_line(text, "description:")
+    assert "--issue <id>" in description, "the skill description does not mention link mode"
+
+
+def test_link_mode_runs_before_confirmation() -> None:
+    order = _step_order(_issue_skill())
+    link = [i for i, h in enumerate(order) if h.startswith("**1-L.")]
+    confirm = [i for i, h in enumerate(order) if h.startswith("**2.")]
+    detect = [i for i, h in enumerate(order) if h.startswith("**1.")]
+
+    assert link and confirm and detect
+    assert detect[0] < link[0] < confirm[0], f"Step 1-L is out of place: {order}"
+
+
+def test_link_mode_creates_nothing() -> None:
+    section = _link_mode()
+    for command in _CREATE_COMMANDS:
+        assert command not in section, f"link mode names a create command: {command}"
+
+
+def test_link_mode_carries_no_shell_variable_across_turns() -> None:
+    """An empty `$DRAFT_PLAN` resolves to the main worktree root, and Step 8
+    then renames the repository. A review reproduced exactly that."""
+    assert_whole_line(_link_mode(), (
+        "- Never carry a shell variable from an earlier call into these commands; "
+        "substitute `<id>` and every path as a literal."
+    ))
+    for name, section in (("Step 1-L", _link_mode()), ("Step 8", _step8())):
+        fenced = _fenced(section)
+        assert fenced, f"{name} has no commands"
+        assert "$" not in fenced, f"{name} carries a shell variable into a command"
+
+
+def test_link_mode_skips_straight_to_step_8() -> None:
+    """Narrowing the range — or moving the line past Step 6 — runs the create."""
+    text = _issue_skill()
+    branch = "- In link mode (`--issue`), Steps 3–7 do not run: after Step 2's yes, go straight to Step 8."
+    assert_whole_line(text, branch)
+
+    lines = [l.strip() for l in text.splitlines()]
+    head = lines.index("**3. Infer Issue Type** (GitHub only)")
+    following = [l for l in lines[head + 1:] if l]
+    assert following[0] == branch, "the link-mode branch is not the first line of Step 3"
+
+    assert_whole_line(_link_mode(), (
+        "4. **Confirm, then rename.** Step 2 runs with its link-mode additions, and the first line "
+        "of Step 3 sends the flow to Step 8; nothing is inferred or created on the way, so the "
+        "issue's type, labels, priority and size stay as the tracker has them."
+    ))
+
+
+def test_link_mode_stops_when_the_issue_cannot_be_read() -> None:
+    section = _link_mode()
+    assert_whole_line(section, (
+        "- If the read fails, the issue is closed, the number read back is not `<id>`, "
+        "or it is a pull request, stop before Step 8 and report which it was."
+    ))
+    assert_whole_line(section, (
+        "- Judge the read by its content, never by its exit code: the number or key read back "
+        "equals `<id>`, the title is non-empty, the state is open, and it is not a pull request "
+        "(GitHub: `url` is an `/issues/` URL; Forgejo: no `From … into …` line)."
+    ))
+
+
+def test_link_mode_reads_each_tracker_through_its_contract() -> None:
+    section = _link_mode()
+    lines = [l.strip() for l in section.splitlines()]
+
+    # state for the gate, body for project-iterate, labels for Step 9.
+    assert 'gh issue view "<id>" --json number,title,state,url,body,labels' in lines
+    assert 'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>"' in lines
+    assert 'jira issue view "<id>" --raw' in lines
+    # The core get-issue is not the gate: no state, and exit 2 on a board failure.
+    assert "the core `get-issue` is not this gate" in section
+    assert "One measurement is not a contract — the content rule below still decides." in section
+
+
+def test_link_mode_refuses_an_existing_plan_before_confirmation() -> None:
+    section = _link_mode()
+    assert_whole_line(
+        section, "- When `plan-<id>.md` already exists, link mode stops here, before Step 2's confirmation screen.",
+    )
+    exists = section.index("stop (exists)")
+    assert "main_worktree_root()" in section[:exists], "the existence check is not main-rooted"
+    assert exists < section.index("gh issue view"), "the plan check runs after the issue read"
+    assert exists < section.index("4. **Confirm, then rename.**"), "the plan check runs after the confirmation"
+
+
+def test_link_mode_validates_the_id_per_tracker() -> None:
+    section = _link_mode()
+    fenced = _fenced(section)
+    assert "re.fullmatch(patterns[tracker], issue_id)" in fenced
+    assert '"github": r"[1-9][0-9]*"' in fenced
+    assert '"forgejo": r"[1-9][0-9]*"' in fenced
+    assert '"jira": r"[A-Z][A-Z0-9_]*-[1-9][0-9]*"' in fenced
+    assert "if tracker not in patterns:" in fenced, "an unknown tracker reaches the lookup"
+    assert "' '<issue_tracker>' '<id>'" in fenced, "the id is not passed as a literal argument"
+    assert "refuse an id containing anything but letters, digits and `-`" in section, (
+        "a quote in the id can still close the literal and reach the shell"
+    )
+
+
+def test_link_mode_has_no_rename_of_its_own() -> None:
+    fenced = _fenced(_link_mode())
+    for rename in ("mv ", "rename-plan", "rename_plan_to_issue"):
+        assert rename not in fenced, f"link mode carries its own rename: {rename}"
+    assert_whole_line(_step8(), (
+        "After issue creation succeeds — or, in link mode, after Step 2's yes. "
+        "Both modes use this one step; link mode has no rename of its own."
+    ))
+
+
+def test_step_8_revalidates_and_refuses_to_overwrite() -> None:
+    text = _issue_skill()
+    step8 = _step8()
+    fenced = _fenced(step8)
+
+    assert "mv " not in fenced, "Step 8 renames with mv again"
+    mentions = [l.strip() for l in step8.splitlines() if "rename-plan" in l]
+    assert len(mentions) == 1 and mentions[0].startswith("- `<harness_cli> rename-plan` is not used here"), (
+        f"Step 8 offers rename-plan, which checks neither path nor id: {mentions}"
+    )
+    assert "skip the rename" not in text, "an existing destination is skipped again, not refused"
+    assert "abs_under_main(Path(sys.argv[1]))" in fenced, "the draft path is not main-rooted"
+    assert (
+        "if not draft.is_file() or not is_draft_plan(draft.name) or draft.parent != plan_dir:"
+        in fenced
+    ), "Step 8 no longer repeats Step 1's three checks"
+    assert _ID_PATTERN + "issue_id)" in fenced, "the id pattern is weakened or gone"
+    assert 'except FileExistsError as exc:\n    sys.exit("stop (exists)' in fenced, (
+        "an existing destination does not end in a non-zero exit"
+    )
+    assert "' '<draft-plan-path>' '<ISSUE_ID>'" in fenced, "Step 8 does not take literals"
+
+    assert_whole_line(step8, (
+        "- `<harness_cli> rename-plan` is not used here: it checks neither that its source is a "
+        "draft file nor its id, so an empty path renames the main worktree itself, and it parses "
+        "its number as an integer, so a Jira key is an argument error."
+    ))
+    assert_whole_line(step8, (
+        "- If `plan-<id>.md` already exists, the command stops with a non-zero exit and leaves the "
+        "draft where it was: report it and stop, never overwrite the existing plan, and never "
+        "delete the draft to finish the rename."
+    ))
+    assert_whole_line(step8, (
+        "- If the rename fails for any other reason, keep the draft; when the issue was already "
+        "created, recover with `project-issue <draft-plan-path> --issue <ISSUE_ID>`, which links "
+        "instead of creating a second ticket."
+    ))
+
+
+def test_link_mode_comment_needs_its_own_yes_after_step_8() -> None:
+    section = _link_mode()
+    offer = section.index("5. **After Step 8, offer the plan as a comment.**")
+    assert offer > section.index("4. **Confirm, then rename.**"), "the comment is offered before the rename"
+
+    assert_whole_line(section, (
+        "- The comment is posted only on its own yes; a no is not an error, because the local "
+        "`plan-<id>.md` is the canonical plan either way."
+    ))
+    assert_whole_line(section, (
+        "- If the issue body read in item 3 is the same text as the draft, the body already is "
+        "this plan (a create-mode Step 8 failure being recovered): do not ask, and report the "
+        "comment as skipped."
+    ))
+
+    lines = [l.strip() for l in section[offer:].splitlines()]
+    assert "gh issue comment \"<id>\" --body-file '<plan-file>'" in lines
+    assert "jira issue comment add \"<id>\" --template '<plan-file>' --no-input" in lines
+
+    forgejo = section.split("**Forgejo** — `~/.claude/skills/SKILL-CONFIG.md` gives comments", 1)
+    assert len(forgejo) == 2, "the Forgejo comment branch is gone"
+    assert "미반영" in forgejo[1]
+    assert "fj " not in _fenced(forgejo[1]), "a Forgejo comment command was invented"
+
+
+def test_link_mode_changes_the_confirmation_and_the_output() -> None:
+    text = _issue_skill()
+    step2 = skill_section(text, "**2. User Confirmation**")
+    assert step2
+    assert "issue: #<id> <issue title> (<state>)" in step2
+    assert "Link this file to #<id>? [yes/no]" in step2
+
+    step9 = skill_section(text, "**9. Output**")
+    assert step9
+    assert_rule(
+        step9, "link mode inferred nothing, so there is no requested value to compare with",
+        starts_with="- metadata is what the Step 1-L read returned",
+    )
+    assert 'it says "linked", not "created"' in step9
+
+
+def test_iterate_reentry_never_counts_a_draft_as_the_plan() -> None:
+    text = _iterate_skill()
+
+    assert "supported draft plan exists" not in text, "a draft still marks Plan complete"
+    assert_whole_line(text, (
+        "- `<id>` 가 주어졌을 때 `plan-<id>.md` 가 없으면 초안이 있어도 Plan 완료로 판정하지 않는다 "
+        "— 초안에는 이슈 번호가 없어서, 거기 있는 초안은 다른 어떤 작업의 것이어도 된다."
+    ))
+
+    rows = [l.strip() for l in text.splitlines() if l.startswith("| ") and "Continue from" not in l]
+    table = [r for r in rows if r.split("|")[1].strip() in
+             ("Done", "Branch, no plan", "Start", "Issue", "Issue only")]
+    assert table == [
+        '| Done | PR exists or issue status is "In Review" | `gh pr list --head <branch-name>` | nothing left — report it |',
+        "| Branch, no plan | branch/worktree for `<id>` exists, `plan-<id>.md` does not | the two checks below | stop and report |",
+        "| Start | branch/worktree for `<id>` exists and `plan-<id>.md` exists | the two checks below | Phase 4 |",
+        "| Issue | `plan-<id>.md` exists, no branch/worktree | the plan check below | Phase 3 |",
+        "| Issue only | none of the above | — | Phase 1 from the issue body, then Phase 2 in link mode |",
+    ], "the re-entry state table changed"
+    assert_whole_line(text, (
+        "- 브랜치/워크트리는 있는데 `plan-<id>.md` 가 없으면 멈추고 사용자에게 보고한다. "
+        "`project-start` 는 플랜 없이는 브랜치를 만들지 않으므로(Step 1-A) 이 상태는 손으로 만든 "
+        "브랜치나 옛 실행에서만 나온다. Phase 4 로 넘겨도 `project-done` 이 플랜이 없어 멈춘다."
+    ))
+
+
+def test_iterate_checks_are_main_rooted_and_bounded() -> None:
+    text = _iterate_skill()
+    fenced = _fenced(text)
+
+    assert ".task/plan/plan-<id>.md" not in text, "the plan check is CWD-relative again"
+    assert "main_worktree_root()" in fenced
+    assert _ID_PATTERN + "sys.argv[1])" in fenced, "the plan check takes an unvalidated id"
+    assert 'git branch -a --list "*issue-<id>-*" "*/<id>-*"' in fenced
+    assert "grep" not in fenced and "\\| grep" not in text, "the branch check matches id prefixes again"
+
+
+def test_iterate_reads_the_issue_through_project_issue() -> None:
+    text = _iterate_skill()
+    for cli in ("gh issue", "fj -H", "fj issue", "jira issue"):
+        assert cli not in text, f"project-iterate writes its own tracker command: {cli}"
+    assert_whole_line(text, (
+        "- If that read fails or the content rule rejects it (closed, another number, a pull "
+        "request), stop and report it before writing any plan."
+    ))
+    assert_whole_line(text, (
+        "- 기존 초안이 있으면 목록을 보여 주고, 사용자가 그중 하나를 이 이슈의 플랜으로 명시적으로 "
+        "고를 때만 그 경로를 Phase 2 에 넘긴다. 고르지 않으면 이슈 본문으로 새 초안을 쓴다 — 초안 "
+        "소유를 추측하지 않는다."
+    ))
+
+
+def test_iterate_never_calls_project_issue_without_a_path() -> None:
+    text = _iterate_skill()
+
+    # The bare name is allowed once, in the rule that hands Phase 1's path over.
+    # "`project-issue` Step 1-L" cites the document, and is not a call.
+    bare = [
+        l.strip() for l in text.splitlines()
+        if re.search(r"`project-issue`(?! Step 1-L)", l)
+    ]
+    assert len(bare) == 1 and bare[0].startswith("- Phase 1 이 방금 만든 플랜 경로를"), bare
+
+    allowed = ("- Phase 1 이 방금 만든 플랜 경로를", "- From Phase 2:")
+    for word in ("탐색", "discovery", "no argument", "without argument", "인자 없이"):
+        for line in (l.strip() for l in text.splitlines() if word in l):
+            assert line.startswith(allowed), f"argument-less discovery is back: {line}"
+
+    assert_whole_line(text, (
+        "- `## Re-entry After Interruption` 의 \"Issue only\" 상태에서 왔다면 새 이슈를 만들지 않고 "
+        "`project-issue <plan-path> --issue <id>` 로 연결 모드를 부른다 — 이슈가 이미 있는데 생성 "
+        "모드로 부르면 같은 작업의 티켓이 둘이 된다."
+    ))
+    assert_whole_line(text, (
+        "- From Phase 2: `project-issue <plan-path>`, or `project-issue <plan-path> --issue <id>` "
+        "when the issue already exists. Always name the path: discovery without it can pick up a "
+        "draft that belongs to other work."
+    ))
+
+
+def test_start_requires_the_local_plan_before_side_effects() -> None:
+    text = _start_skill()
+    order = _step_order(text)
+    gate = [i for i, h in enumerate(order) if h.startswith("**1-A.")]
+    branch = [i for i, h in enumerate(order) if h.startswith("**2-A.")]
+
+    assert gate and branch and gate[0] < branch[0], f"the plan gate runs after branching: {order}"
+    section = skill_section(text, "**1-A.")
+    fenced = _fenced(section)
+    assert "main_worktree_root()" in fenced, "the plan check is CWD-relative"
+    assert _ID_PATTERN + "sys.argv[1])" in fenced, "the plan check takes an unvalidated id"
+    assert 'sys.exit(0 if plan.is_file() else "no plan: %s" % plan)' in fenced, (
+        "a missing plan no longer ends the check non-zero"
+    )
+    assert_whole_line(section, (
+        "- If `plan-<issue-id>.md` does not exist, stop here — before any branch, worktree, "
+        "status change or ADR — and point the user to `project-iterate <issue-id>`, or to writing "
+        "a draft and running `project-issue <plan-path> --issue <issue-id>`."
+    ))
+
+    step5 = skill_section(text, "**5. Load plan**")
+    assert step5
+    assert_whole_line(step5, "Read the `plan-<issue-id>.md` that Step 1-A found in the main worktree's plan directory.")
+    assert "issue body" not in step5, "the issue-body fallback is back"
+    assert ".task/plan/plan-<issue-id>.md" not in text, "a CWD-relative plan path is back"
