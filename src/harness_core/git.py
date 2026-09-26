@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -314,37 +315,92 @@ def current_branch() -> str:
     return result.stdout.strip()
 
 
+class MainWorktreeUnresolvedError(RuntimeError):
+    """The main work tree cannot be determined from inside this repository.
+
+    Raised by :func:`main_worktree_root` for a bare repository (with or without
+    linked worktrees) and for a ``--separate-git-dir`` repository, where the
+    first ``git worktree list`` entry is a git dir and git keeps no pointer
+    back to the work tree; and when ``git worktree list`` itself fails inside a
+    repository (one git refuses to read, for example). Guessing a directory
+    there is how gitignored state ends up under the wrong root, so the caller
+    gets a stop instead.
+    """
+
+
+def _first_worktree(listing: str) -> str:
+    """The path of the first ``git worktree list --porcelain`` record.
+
+    Read line by line, as the skills' ``sed -n '1s/^worktree //p'`` reads it,
+    so the two forms parse the same text the same way.
+    """
+    first = listing.split("\n", 1)[0]
+    return first[len("worktree "):] if first.startswith("worktree ") else ""
+
+
 @functools.lru_cache(maxsize=1)
 def main_worktree_root() -> Path:
     """Return the absolute path of the main worktree root.
 
-    In a linked worktree, `git rev-parse --git-common-dir` returns the shared
-    `.git` directory of the main worktree; its parent is the main worktree
-    root. In the main worktree itself, the common dir is the local `.git`,
-    so the result still resolves to the main worktree root.
+    The canonical rule, shared with the skills' shell block in
+    ``skills/_shared/references/worktree.md``: take the first entry of
+    ``git worktree list --porcelain`` and ask git for *that* entry's work tree
+    (``git -C <entry> rev-parse --show-toplevel``).
 
-    Fallbacks:
-        - bare repository: returns Path.cwd().resolve() (no worktree root).
-        - non-git environment (git missing or CWD outside a repo):
-          returns Path.cwd().resolve().
+    - Ordinary clone and its linked worktrees: the first entry is the main
+      worktree, and its toplevel is itself.
+    - Submodule (and its linked worktrees): the first entry is
+      ``.git/modules/<name>``; its ``core.worktree`` makes the toplevel the
+      submodule checkout.
+    - ``--separate-git-dir`` and bare repositories: the first entry is a git
+      dir with no work tree, so this raises :class:`MainWorktreeUnresolvedError`.
+      Deriving the root from the parent of ``--git-common-dir`` instead returns
+      a directory that exists and is wrong in all three of these layouts.
 
-    Cached with lru_cache — tests that change CWD across worktrees must call
-    main_worktree_root.cache_clear() between assertions.
+    Fallback: when git is missing, or git says CWD is not a repository at all,
+    returns Path.cwd().resolve(). Any other failed listing raises — a
+    repository git refuses to read (``safe.directory``) included — so the
+    harness stops exactly where the shell block stops.
+
+    Cached with lru_cache (exceptions are not cached) — tests that change CWD
+    across worktrees must call main_worktree_root.cache_clear() between
+    assertions.
     """
     try:
-        common = subprocess.check_output(
-            ["git", "rev-parse", "--git-common-dir"],
-            text=True, stderr=subprocess.DEVNULL,
-        ).strip()
-        bare = subprocess.check_output(
-            ["git", "rev-parse", "--is-bare-repository"],
-            text=True, stderr=subprocess.DEVNULL,
-        ).strip()
-        if bare == "true":
-            return Path.cwd().resolve()
-        return Path(common).resolve().parent
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        listing = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
         return Path.cwd().resolve()
+    if listing.returncode != 0:
+        # Only "not a git repository" means outside a repo. Git refusing a
+        # repository it does not trust fails the same way with a different
+        # message, and CWD there is the linked worktree, not the main one.
+        probe = subprocess.run(
+            ["git", "rev-parse", "--git-dir"], capture_output=True, text=True,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        if probe.returncode != 0 and "not a git repository" in probe.stderr:
+            return Path.cwd().resolve()
+        raise MainWorktreeUnresolvedError(
+            "git worktree list failed inside a repository: "
+            + (listing.stderr.strip() or f"exit {listing.returncode}")
+        )
+    first = _first_worktree(listing.stdout)
+    if not first:
+        raise MainWorktreeUnresolvedError("git worktree list reported no worktree")
+    top = subprocess.run(
+        ["git", "-C", first, "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    answer = top.stdout.rstrip("\n")  # as $(...) trims: newlines only
+    if top.returncode != 0 or not answer:
+        raise MainWorktreeUnresolvedError(
+            f"the first worktree entry {first} has no work tree "
+            "(a --separate-git-dir or bare repository)"
+        )
+    return Path(answer).resolve()
 
 
 def worktree_root() -> Path:
@@ -357,10 +413,13 @@ def worktree_root() -> Path:
     ``.claude/state.json``) exists only in the main checkout and stays on
     :func:`main_worktree_root`.
 
-    Fallbacks (same as :func:`main_worktree_root`):
+    Fallbacks:
         - bare repository, or CWD inside a ``.git`` directory: git has no
           working tree to report, so returns Path.cwd().resolve().
         - non-git environment: returns Path.cwd().resolve().
+    (:func:`main_worktree_root` raises for a bare repository instead, and from
+    inside ``.git`` of an ordinary clone answers the main checkout; the two
+    answer different questions.)
 
     Deliberately not cached: the value follows CWD, and a cached copy would
     outlive a ``chdir`` between worktrees.

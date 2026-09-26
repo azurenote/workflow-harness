@@ -2070,8 +2070,8 @@ def test_draft_discovery_survives_the_new_argument() -> None:
 
     assert "<harness_cli> find-draft-plan" in text, "the harness discovery call is gone"
     assert "Otherwise (or when no harness exists)" in text, "the discovery fallback is gone"
-    assert 'Path(".task/plan").glob("plan-*.md")' in text, (
-        "the discovery fallback no longer globs the plan directory"
+    assert '(main_worktree_root() / ".task" / "plan").glob("plan-*.md")' in text, (
+        "the discovery fallback no longer globs the main checkout's plan directory"
     )
     assert "**Two or more files**" in text, "the ambiguity branch is gone"
 
@@ -2586,8 +2586,11 @@ def test_project_done_merges_from_the_main_checkout() -> None:
 
     resolve = _commands(merge, "MAIN_CHECKOUT=")
     assert len(resolve) == 1, f"expected one main-checkout resolution, got {resolve}"
-    assert "git worktree list" in resolve[0], (
+    assert 'git -C "$FIRST_WORKTREE" rev-parse --show-toplevel' in resolve[0], (
         f"the main checkout is no longer resolved by asking git for it: {resolve[0]!r}"
+    )
+    assert any("git worktree list" in c for c in _commands(merge, "FIRST_WORKTREE=")), (
+        "the first worktree entry is no longer read from git worktree list"
     )
     # Scoped to command lines: the bullet explaining *why not* to walk up from
     # the git dir names both flags, so a whole-slice absence scan is red the day
@@ -2819,7 +2822,13 @@ def test_doc_id_pattern_is_the_code_definition() -> None:
         for md in sorted((ROOT / "skills").rglob("SKILL.md"))
         for m in re.finditer(r're\.fullmatch\(r"([^"]+)", ', md.read_text(encoding="utf-8"))
     ]
-    assert len(copies) >= 3, f"the inline copies moved: {copies}"
+    # #50 moved the path-only checks to shell, so the copies are now `grep -Eqx`.
+    copies += [
+        (str(md.relative_to(ROOT)), m.group(1))
+        for md in sorted((ROOT / "skills").rglob("SKILL.md"))
+        for m in re.finditer(r"grep -Eqx '([^']+)'", md.read_text(encoding="utf-8"))
+    ]
+    assert len(copies) >= 5, f"the inline copies moved: {copies}"
     drifted = [c for c in copies if c[1] != ISSUE_ID_PATTERN.pattern]
     assert not drifted, f"an inline id regex differs from config.ISSUE_ID_PATTERN: {drifted}"
 
@@ -2940,11 +2949,14 @@ def test_iterate_checks_are_main_rooted_and_bounded() -> None:
     text = _iterate_skill()
     fenced = _fenced(text)
 
-    assert ".task/plan/plan-<id>.md" not in text, "the plan check is CWD-relative again"
-    assert "main_worktree_root()" in fenced
-    assert _ID_PATTERN + "sys.argv[1])" in fenced, "the plan check takes an unvalidated id"
+    assert not re.search(r'(?<!\$MAIN_CHECKOUT/)\.task/plan/plan-<id>\.md', text), "the plan check is CWD-relative again"
+    assert 'PLAN="$MAIN_CHECKOUT/.task/plan/plan-<id>.md"' in fenced
+    assert "LC_ALL=C grep -Eqx '[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*'" in fenced, "the plan check takes an unvalidated id"
     assert 'git branch -a --list "*issue-<id>-*" "*/<id>-*"' in fenced
-    assert "grep" not in fenced and "\\| grep" not in text, "the branch check matches id prefixes again"
+    branch_lines = [l for l in fenced.splitlines() if "git branch" in l]
+    assert not any("grep" in l for l in branch_lines) and "\\| grep" not in text, (
+        "the branch check matches id prefixes again"
+    )
 
 
 def test_iterate_reads_the_issue_through_project_issue() -> None:
@@ -2999,9 +3011,9 @@ def test_start_requires_the_local_plan_before_side_effects() -> None:
     assert gate and branch and gate[0] < branch[0], f"the plan gate runs after branching: {order}"
     section = skill_section(text, "**1-A.")
     fenced = _fenced(section)
-    assert "main_worktree_root()" in fenced, "the plan check is CWD-relative"
-    assert _ID_PATTERN + "sys.argv[1])" in fenced, "the plan check takes an unvalidated id"
-    assert 'sys.exit(0 if plan.is_file() else "no plan: %s" % plan)' in fenced, (
+    assert 'PLAN="$MAIN_CHECKOUT/.task/plan/plan-<issue-id>.md"' in fenced, "the plan check is CWD-relative"
+    assert "LC_ALL=C grep -Eqx '[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*'" in fenced, "the plan check takes an unvalidated id"
+    assert '[ -f "$PLAN" ] || { echo "no plan at $PLAN"; exit 1; }' in fenced, (
         "a missing plan no longer ends the check non-zero"
     )
     assert_whole_line(section, (
@@ -3012,9 +3024,11 @@ def test_start_requires_the_local_plan_before_side_effects() -> None:
 
     step5 = skill_section(text, "**5. Load plan**")
     assert step5
-    assert_whole_line(step5, "Read the `plan-<issue-id>.md` that Step 1-A found in the main worktree's plan directory.")
+    assert_whole_line(step5, "Read `<plan-path>`, the absolute path Step 1-A printed in the main worktree's plan directory.")
     assert "issue body" not in step5, "the issue-body fallback is back"
-    assert ".task/plan/plan-<issue-id>.md" not in text, "a CWD-relative plan path is back"
+    assert not re.search(r'(?<!\$MAIN_CHECKOUT/)\.task/plan/plan-<issue-id>\.md', text), (
+        "a CWD-relative plan path is back"
+    )
 
 # --------------------------------------------------------------------------
 # project-done's Forgejo branch (#28)
@@ -3054,7 +3068,8 @@ _GOLDEN_DONE_FORGEJO = (
     'harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 무관하게 `fj` 직접 호출이 유일한 경로다. 전역 옵션(`-H`)은 서브커맨드 앞에 온다. 이 경로는 디렉터리를 바꾸지 않는다 — GitHub 경로처럼 작업 CWD 그대로 8단계로 간다.',
     'Forgejo 는 PR 이 있으므로 위 Jira 의 직접 병합 경로로 보내지 않는다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:',
     '```bash',
-    'REPORT_ROOT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'REPORT_ROOT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
     '[ -n "$REPORT_ROOT" ] && [ -d "$REPORT_ROOT" ] || {',
     'echo "could not resolve the main checkout"; exit 1; }',
     'REPORT="$REPORT_ROOT/.task/plan/impl-report-<id>.md"',
@@ -3069,7 +3084,7 @@ _GOLDEN_DONE_FORGEJO = (
     'printf \'REPORT=%s\\nCREATE_FAILED=%s\\nPR_NUMBER=%s\\n\' "$REPORT" "${CREATE_FAILED:-0}" "$PR_NUMBER"',
     'printf \'%s\\n\' "$CREATED"',
     '```',
-    '- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 해석 세 줄은 1단계 fallback 펜스와 바이트까지 같아서, 1단계가 fallback 으로 돌았다면 4단계가 쓴 `<report-path>` 가 여기서 그대로 나온다. `plan-file` 은 `--git-common-dir` 의 부모로 구하므로 분리된 git 디렉터리·서브모듈·bare 저장소에서는 다른 곳을 가리킬 수 있다 — 어느 경우든 파일이 없으면 PR 을 만들지 않고 멈추고, 4단계가 어디에 썼는지 확인한다.',
+    '- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 해석 네 줄은 1단계 fallback 펜스와 바이트까지 같고(정본: `worktree.md`), `plan-file` 도 같은 규칙이라, 4단계가 쓴 `<report-path>` 가 여기서 그대로 나온다 — 파일이 없으면 PR 을 만들지 않고 멈추고, 4단계가 어디에 썼는지 확인한다.',
     '- **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합 시 Forgejo 가 `Closes` 로 이슈를 닫는 것은 실측 네 건에서 확인됐다. 네 건 모두 본문과 커밋 트레일러 양쪽에 줄이 있었으므로, 어느 쪽이 닫았는지는 **가르지 못했다** — 그래서 둘 다 둔다.',
     '- **서브-PR 의 본문에는 `Closes #<id>` 가 없어야 한다.** 보고서에 습관처럼 그 줄이 남아 있으면 지운 뒤 펜스를 실행한다 — 5단계가 서브-PR 에서 `Closes` 를 뺀 이유가 본문에서 되살아나지 않게 한다.',
     '- **`--base`/`--head` 를 명시한다.** GitHub 절과 같은 이유다 — 세 계층이 한 출처에 합의해야 한다. 저장소는 `-r <forgejo_repo>` 로만 준다. 이 리프 명령에는 `-R` 이 없다.',
@@ -3346,8 +3361,11 @@ def test_done_forgejo_resolves_the_report_in_the_main_checkout() -> None:
     commands = _logical_lines(_fenced(section))
 
     roots = [c for c in commands if c.startswith("REPORT_ROOT=")]
-    assert roots == ['REPORT_ROOT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"'], (
-        f"the main checkout is not the first worktree git reports: {roots}"
+    assert roots == ['REPORT_ROOT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"'], (
+        f"the main checkout is not the work tree git reports for the first entry: {roots}"
+    )
+    assert [c for c in commands if c.startswith("FIRST_WORKTREE=")] == ['FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"'], (
+        "the first worktree entry is not read from git worktree list"
     )
     guard = commands.index('[ -n "$REPORT_ROOT" ] && [ -d "$REPORT_ROOT" ] || {')
     assert commands[guard + 1] == 'echo "could not resolve the main checkout"; exit 1; }', (
@@ -3357,7 +3375,8 @@ def test_done_forgejo_resolves_the_report_in_the_main_checkout() -> None:
         "a missing report no longer stops the fence before `--body-file` reads it"
     )
     for wrong in ("--show-toplevel", "--git-common-dir", "--path-format", "$PWD", "$(pwd)"):
-        offenders = [c for c in commands if wrong in c]
+        # The one allowed --show-toplevel asks about the first entry, not the CWD.
+        offenders = [c for c in commands if wrong in c and c not in roots]
         assert not offenders, f"the report path is derived from {wrong}, wrong in a worktree: {offenders}"
     assert "MAIN_CHECKOUT" not in section, (
         "the Jira merge's variable is reused; Step 7's one-resolution guard counts it"
@@ -3930,9 +3949,10 @@ _G_INSTRUCTIONS_HEAD = (
     'Once the re-entry state is known, check the CWD before any phase runs.',
     'Phases 1, 2 and 3 run from the main checkout — a new run, and re-entry in the "Issue" or "Issue only" state; from any other CWD, stop and print the main checkout path.',
     'Re-entry in the "Start" state is exempt: Phase 4 runs where the branch is already checked out (`## Re-entry After Interruption`).',
-    'The main checkout is the first entry of `git worktree list --porcelain`. Run this fence as one shell call — shell variables do not survive to the next call:',
+    'The main checkout is the work tree git reports for the first entry of `git worktree list --porcelain` — the canonical main-checkout block kept in the shared worktree reference. Run this fence as one shell call — shell variables do not survive to the next call:',
     '```bash',
-    'MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
     '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
     'echo "could not resolve the main checkout"; exit 1; }',
     '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {',
@@ -3949,7 +3969,8 @@ _G_PHASE3 = (
     "- This base check holds in both modes: a branch cut while another session's in-place run has left the main checkout on a feature branch would stack on that feature. Stacking on purpose is what plan frontmatter `base_branch` is for.",
     '- A declared base other than the project default base skips this base check only; `project-start` then branches from that base. Fill `<project default base>` below with the `base_branch` that Read Settings found in `skill-config.yaml`.',
     '```bash',
-    'MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
     '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
     'echo "could not resolve the main checkout"; exit 1; }',
     'CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"',
@@ -3962,7 +3983,8 @@ _G_PHASE3 = (
     '- Any other `rc=`: warn that ignoring could not be decided, and continue.',
     '- This check writes to no file and is not a gate.',
     '```bash',
-    'MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
     '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
     'echo "could not resolve the main checkout"; exit 1; }',
     'git -C "$MAIN_CHECKOUT" check-ignore -q .claude/worktrees/',
@@ -4005,18 +4027,24 @@ _G_ADR_STEP1 = (
     'Find the plan in the main worktree: `.task/plan/` is gitignored and exists only there, so a path relative to the CWD finds no plan when this step runs in a linked worktree, as it does under `project-start <issue-id> worktree adr`.',
     '```bash',
     '<harness_cli> plan-file <issue-id>',
-    '# fallback, for a project without a harness_cli:',
-    "python -c '",
-    'import re, sys',
-    'from harness_core.git import main_worktree_root',
-    'if not re.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", sys.argv[1]):',
-    'sys.exit("reject (id): not an issue number or ticket key: %r" % sys.argv[1])',
-    'plan = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])',
-    'sys.exit(0 if plan.is_file() else "no plan: %s" % plan)',
-    "' '<issue-id>'",
     '```',
-    'The fallback prints nothing on success; the plan it checked is `plan-<issue-id>.md` in `.task/plan/` under the root that `main_worktree_root()` returns, not under the CWD.',
-    "Read the `plan-<issue-id>.md` that this check found in the main worktree's plan directory, and the current branch diff, to identify the architecture decision that should be documented.",
+    'Without a harness_cli, use this fence — **run it as one shell invocation**; the four resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`:',
+    '```bash',
+    "case '<issue-id>' in",
+    "''|*[!A-Za-z0-9_-]*) echo \"reject (id): not an issue number or ticket key\" >&2; exit 1 ;;",
+    'esac',
+    "printf '%s\\n' '<issue-id>' | LC_ALL=C grep -Eqx '[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*' || {",
+    'echo "reject (id): not an issue number or ticket key" >&2; exit 1; }',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    'PLAN="$MAIN_CHECKOUT/.task/plan/plan-<issue-id>.md"',
+    '[ -f "$PLAN" ] || { echo "no plan at $PLAN"; exit 1; }',
+    "printf 'PLAN=%s\\n' \"$PLAN\"",
+    '```',
+    'Either form prints the plan\'s absolute path in the main checkout — `plan-file` prints it bare, the fallback as `PLAN=<path>`. That path is `<plan-path>`; substitute it as a literal, since a shell variable does not survive into the next call.',
+    'Read `<plan-path>` and the current branch diff to identify the architecture decision that should be documented.',
     'If the plan is missing, stop and report it.',
     'If the decision title is ambiguous, confirm it with the user.',
 )
@@ -4031,7 +4059,8 @@ _ITERATE_USAGE = (
 )
 
 _MAIN_RESOLVE = (
-    "MAIN_CHECKOUT=\"$(git worktree list --porcelain | sed -n '1s/^worktree //p')\"",
+    "FIRST_WORKTREE=\"$(git worktree list --porcelain | sed -n '1s/^worktree //p')\"",
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
     '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
 )
 
@@ -4156,12 +4185,13 @@ def test_iterate_main_checkout_fences_resolve_and_stop() -> None:
     fences = _golden_fences(list(_G_INSTRUCTIONS_HEAD)) + _golden_fences(list(_G_PHASE3))
     assert len(fences) == 3, "expected the precondition, base and ignore fences"
     for fence in fences:
-        assert tuple(fence[:2]) == _MAIN_RESOLVE, f"the main checkout is resolved another way: {fence[:2]}"
+        assert tuple(fence[:3]) == _MAIN_RESOLVE, f"the main checkout is resolved another way: {fence[:3]}"
         assert not any("exit 0" in l for l in fence), f"a fence can pass early: {fence}"
     precondition, base, ignore = fences
     assert [l for l in precondition if "--show-toplevel" in l] == [
+        _MAIN_RESOLVE[1],
         '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {'
-    ], "--show-toplevel may only be the other side of the comparison"
+    ], "--show-toplevel may only ask about the first entry, or be the other side of the comparison"
     assert precondition[-1].endswith("exit 1; }") and base[-1].endswith("exit 1; }"), "a gate no longer stops"
     assert '[ "$CURRENT" = "<project default base>" ] || {' in base
     for banned in ("--git-common-dir", "$PWD"):
@@ -4238,15 +4268,20 @@ def test_project_adr_reads_the_plan_from_the_main_worktree() -> None:
     text = read_skill("skills/project-adr/SKILL.md")
     step1 = _region(text, "**1. Decide ADR Content**", "**2. Decide File Name**", inclusive=True)
     assert tuple(step1) == _G_ADR_STEP1, "project-adr Step 1 changed"
-    assert not any(".task/plan/plan-<issue-id>.md" in l for l in step1), "a CWD-relative plan path is back"
-    assert _ID_PATTERN + "sys.argv[1])" in "\n".join(step1), "the plan lookup takes an unvalidated id"
+    assert not any(re.search(r'(?<!\$MAIN_CHECKOUT/)\.task/plan/plan-<issue-id>\.md', l) for l in step1), (
+        "a CWD-relative plan path is back"
+    )
+    assert "LC_ALL=C grep -Eqx '[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*'" in "\n".join(step1), (
+        "the plan lookup takes an unvalidated id"
+    )
 
 
 def test_project_adr_fallback_finds_the_plan_from_a_linked_worktree(tmp_path: Path) -> None:
     """Run the documented fallback where it matters: in a linked worktree, plan only in main."""
-    raw = read_skill("skills/project-adr/SKILL.md")
-    start = raw.index("python -c '\n") + len("python -c '\n")
-    code = raw[start:raw.index("\n' '<issue-id>'", start)]
+    step1 = skill_section(read_skill("skills/project-adr/SKILL.md"), "**1. Decide ADR Content**")
+    fences = [f for f in _fences_of(step1) if "FIRST_WORKTREE=" in f]
+    assert len(fences) == 1, "project-adr Step 1 should hold exactly one shell fallback fence"
+    code = fences[0]
 
     repo = tmp_path / "repo"
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -4256,7 +4291,7 @@ def test_project_adr_fallback_finds_the_plan_from_a_linked_worktree(tmp_path: Pa
     subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(linked), "-b", "feat/issue-7-x"], check=True)
 
     def run(issue: str) -> int:
-        return subprocess.run([sys.executable, "-c", code, issue], cwd=linked,
+        return subprocess.run(["sh", "-c", code.replace("<issue-id>", issue)], cwd=linked,
                               capture_output=True, text=True).returncode
 
     assert run("7") != 0, "the fallback found a plan that does not exist"
@@ -4321,9 +4356,9 @@ def _done_step1_fallback() -> str:
 
 
 def _resolve_block(commands: list[str]) -> list[str]:
-    roots = [i for i, c in enumerate(commands) if c.startswith("REPORT_ROOT=")]
-    assert len(roots) == 1, f"expected one REPORT_ROOT resolution, got {len(roots)}"
-    return commands[roots[0]:roots[0] + 3]
+    roots = [i for i, c in enumerate(commands) if c.startswith("FIRST_WORKTREE=")]
+    assert len(roots) == 1, f"expected one main-checkout resolution, got {len(roots)}"
+    return commands[roots[0]:roots[0] + 4]
 
 
 def test_done_has_no_cwd_relative_plan_or_report_path() -> None:
@@ -4376,7 +4411,7 @@ def test_done_step1_fallback_resolves_the_main_checkout_in_order() -> None:
         positions.append(hits[0])
     assert positions == sorted(positions), f"the fallback runs out of order: {list(zip(starts, positions))}"
     for wrong in ("--show-toplevel", "--git-common-dir", "--path-format", "$PWD", "$(pwd)", "harness_core"):
-        offenders = [c for c in commands if wrong in c]
+        offenders = [c for c in commands if wrong in c and c != 'REPORT_ROOT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"']
         assert not offenders, f"the main checkout is derived from {wrong}, wrong in a worktree: {offenders}"
 
 
@@ -4384,8 +4419,8 @@ def test_done_step1_and_forgejo_resolve_the_main_checkout_identically() -> None:
     step1 = _resolve_block(_logical_lines(_done_step1_fallback()))
     forgejo = _resolve_block(_logical_lines(_fenced(_done_forgejo())))
     assert step1 == forgejo, f"Step 1 and Step 7 resolve the main checkout differently:\n{step1}\n{forgejo}"
-    assert step1[0] == 'REPORT_ROOT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"'
-    assert step1[2].endswith("exit 1; }"), "an unresolved main checkout no longer stops the fence"
+    assert step1[:2] == ['FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 'REPORT_ROOT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"']
+    assert step1[3].endswith("exit 1; }"), "an unresolved main checkout no longer stops the fence"
 
 
 def test_done_step1_id_regex_is_the_code_definition() -> None:
@@ -4533,7 +4568,7 @@ def _step1_failures(fence: str, shell: list[str], tmp: Path) -> list[str]:
         else:
             if result.returncode == 0 or "PLAN=" in result.stdout:
                 failures.append(f"{name} (did not stop: rc {result.returncode}, stdout {result.stdout!r})")
-            elif expected == "unresolved" and "could not resolve the main checkout" not in out:
+            elif expected in ("unresolved", "stop or sep") and "could not resolve the main checkout" not in out:
                 failures.append(f"{name} (stopped without naming the unresolved checkout: {out!r})")
     return failures
 
@@ -4968,3 +5003,592 @@ def test_i40_test_module_defines_each_name_once() -> None:
             names += [t.id for t in targets if isinstance(t, ast.Name)]
     duplicates = sorted({n for n in names if names.count(n) > 1})
     assert not duplicates, f"defined more than once at module level: {duplicates}"
+
+
+# --------------------------------------------------------------------------
+# main checkout canonical resolution (#50)
+#
+# Two rules used to answer "where is the main checkout": the harness took the
+# parent of `--git-common-dir`, the skill fences took the first
+# `git worktree list` entry. Each is wrong in a different layout (a submodule,
+# a --separate-git-dir clone, a bare repo), and wrong there means a directory
+# that exists. The canonical rule — first entry, then git's own
+# `--show-toplevel` for that entry, stop if there is none — lives once in
+# skills/_shared/references/worktree.md and once in main_worktree_root(). The
+# matrix below checks each form against an absolute expected answer per
+# layout, not against each other: two forms broken the same way agree.
+# --------------------------------------------------------------------------
+
+_I50_REFERENCE = "skills/_shared/references/worktree.md"
+_I50_STOP = "STOP"
+_I50_RESOLVE_NAMES = ("MAIN_CHECKOUT", "REPORT_ROOT")
+
+# (row, cwd, expected from the shell block, expected from main_worktree_root)
+# Expected values are paths under the matrix root, or STOP. "sep" answers
+# STOP today; a git that listed the work tree first would answer the work tree.
+_I50_ROWS = (
+    ("main", "main", "main", "main"),
+    ("wt", "wt", "main", "main"),
+    ("wt-sub", "wt/sub/dir", "main", "main"),
+    ("super", "super", "super", "super"),
+    ("sub", "super/sub", "super/sub", "super/sub"),
+    ("subwt", "sub-wt", "super/sub", "super/sub"),
+    ("sep", "sep", _I50_STOP, _I50_STOP),
+    ("sepwt", "sep-wt", _I50_STOP, _I50_STOP),
+    ("bare", "bare.git", _I50_STOP, _I50_STOP),
+    ("barewt", "bare-wt", _I50_STOP, _I50_STOP),
+    ("shim-wt", "wt", _I50_STOP, _I50_STOP),
+    ("untrusted-wt", "wt", _I50_STOP, _I50_STOP),
+    ("non-repo", "norepo", _I50_STOP, "norepo"),
+)
+# A git without the test hook behind "untrusted-wt" reads the repo normally and
+# answers main; the row exists to catch the linked worktree coming back.
+_I50_SEP_ANSWER = {"sep": "sep", "sepwt": "sep", "untrusted-wt": "main"}
+
+# worktree.md's support table, row label -> matrix rows it describes.
+_I50_TABLE_ROWS = {
+    "일반 clone": ("main",),
+    "링크드 워크트리": ("wt", "wt-sub"),
+    "submodule": ("sub",),
+    "submodule 의 링크드 워크트리": ("subwt",),
+    "separate-git-dir": ("sep", "sepwt"),
+    "bare": ("bare",),
+    "bare 의 링크드 워크트리": ("barewt",),
+}
+_I50_TABLE_ANSWERS = {"main checkout": "main", "submodule checkout": "super/sub", "멈춤": _I50_STOP}
+
+# Canonical copies per file; zero copies would make "every copy is canonical" vacuous.
+_I50_COPIES = {
+    "skills/_shared/references/worktree.md": 1,
+    "skills/project-done/SKILL.md": 3,
+    "skills/project-iterate/SKILL.md": 4,
+    "skills/project-start/SKILL.md": 1,
+    "skills/project-adr/SKILL.md": 1,
+    "skills/project-clean/SKILL.md": 1,
+}
+
+
+def _i50_canonical() -> list[str]:
+    fences = [f for f in _fences_of(read_skill(_I50_REFERENCE)) if "FIRST_WORKTREE=" in f]
+    assert len(fences) == 1, f"{_I50_REFERENCE} should hold exactly one canonical block"
+    lines = fences[0].splitlines()
+    assert len(lines) == 4 and lines[0].startswith("FIRST_WORKTREE="), f"the canonical block changed shape: {lines}"
+    return lines
+
+
+def _i50_env(tmp: Path) -> dict:
+    return {
+        **_isolated_git_env(tmp),
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        "PYTHONPATH": str(ROOT / "src"),
+    }
+
+
+def _i50_repos(tmp: Path) -> dict:
+    """Every layout in the matrix, under one root."""
+    env = _i50_env(tmp)
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", "-c", "init.defaultBranch=main", "-c", "protocol.file.allow=always", *args],
+                       cwd=cwd, env=env, check=True, capture_output=True)
+
+    git("init", "-q", "main", cwd=tmp)
+    git("commit", "-q", "--allow-empty", "-m", "i", cwd=tmp / "main")
+    git("worktree", "add", "-q", str(tmp / "wt"), cwd=tmp / "main")
+    (tmp / "wt" / "sub" / "dir").mkdir(parents=True)
+    git("init", "-q", "subsrc", cwd=tmp)
+    git("commit", "-q", "--allow-empty", "-m", "s", cwd=tmp / "subsrc")
+    git("init", "-q", "super", cwd=tmp)
+    git("commit", "-q", "--allow-empty", "-m", "i", cwd=tmp / "super")
+    git("submodule", "add", "-q", str(tmp / "subsrc"), "sub", cwd=tmp / "super")
+    git("worktree", "add", "-q", str(tmp / "sub-wt"), cwd=tmp / "super" / "sub")
+    git("init", "-q", f"--separate-git-dir={tmp / 'sep.git'}", "sep", cwd=tmp)
+    git("commit", "-q", "--allow-empty", "-m", "i", cwd=tmp / "sep")
+    git("worktree", "add", "-q", str(tmp / "sep-wt"), cwd=tmp / "sep")
+    git("clone", "-q", "--bare", str(tmp / "main"), "bare.git", cwd=tmp)
+    git("worktree", "add", "-q", str(tmp / "bare-wt"), "main", cwd=tmp / "bare.git")
+    (tmp / "norepo").mkdir()
+    shim = tmp / "shim"
+    shim.mkdir()
+    (shim / "git").write_text(
+        '#!/bin/sh\n[ "$1" = worktree ] && [ "$2" = list ] && exit 1\nexec "%s" "$@"\n' % shutil.which("git"))
+    (shim / "git").chmod(0o755)
+    return env
+
+
+def _i50_row_env(env: dict, tmp: Path, row: str) -> dict:
+    if row == "shim-wt":
+        return {**env, "PATH": f"{tmp / 'shim'}{os.pathsep}{env['PATH']}"}
+    if row == "untrusted-wt":
+        return {**env, "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
+    return env
+
+
+def _i50_shell_answer(block: str, shell: list[str], cwd: Path, env: dict) -> str:
+    """The block's answer as a matrix value, or a description of what went wrong."""
+    result = subprocess.run([*shell, "-c", block + '\nprintf "%s\\n" "$MAIN_CHECKOUT"'],
+                            cwd=cwd, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        if result.stdout.strip() == "could not resolve the main checkout":
+            return _I50_STOP
+        return f"<failed without the stop message: rc {result.returncode}, {result.stdout!r}, {result.stderr!r}>"
+    return result.stdout.strip()
+
+
+def _i50_python_answer(cwd: Path, env: dict) -> str:
+    code = ("from harness_core.git import main_worktree_root, MainWorktreeUnresolvedError\n"
+            "try:\n    print(main_worktree_root())\n"
+            "except MainWorktreeUnresolvedError:\n    print('" + _I50_STOP + "')\n")
+    result = subprocess.run([sys.executable, "-c", code], cwd=cwd, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        return f"<raised something else: {result.stderr.strip()[-200:]!r}>"
+    return result.stdout.strip()
+
+
+def _i50_matches(answer: str, expected: str, row: str, tmp: Path) -> bool:
+    accepted = {expected}
+    if row in _I50_SEP_ANSWER:
+        accepted.add(_I50_SEP_ANSWER[row])
+    for want in accepted:
+        if want == _I50_STOP and answer == _I50_STOP:
+            return True
+        if want != _I50_STOP and os.path.isabs(answer) and Path(answer).resolve() == (tmp / want).resolve():
+            return True
+    return False
+
+
+def _i50_block_failures(block: str, shell: list[str], tmp: Path, env: dict) -> list[str]:
+    failures = []
+    for row, cwd, want, _ in _I50_ROWS:
+        answer = _i50_shell_answer(block, shell, tmp / cwd, _i50_row_env(env, tmp, row))
+        if not _i50_matches(answer, want, row, tmp):
+            failures.append(f"{row} (shell {' '.join(shell)}: {answer!r}, expected {want!r})")
+    return failures
+
+
+@pytest.fixture(scope="module")
+def _i50_matrix(tmp_path_factory):
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    tmp = tmp_path_factory.mktemp("i50 matrix").resolve()
+    return tmp, _i50_repos(tmp)
+
+
+def test_canonical_rows_are_all_present() -> None:
+    assert [r[0] for r in _I50_ROWS] == [
+        "main", "wt", "wt-sub", "super", "sub", "subwt", "sep", "sepwt", "bare", "barewt", "shim-wt",
+        "untrusted-wt", "non-repo",
+    ], "a layout row was dropped or renamed"
+
+
+def test_canonical_block_answers_every_layout(_i50_matrix) -> None:
+    tmp, env = _i50_matrix
+    block = "\n".join(_i50_canonical())
+    failures = []
+    for shell in _shells():
+        failures += _i50_block_failures(block, shell, tmp, env)
+    assert not failures, "the canonical shell block:\n" + "\n".join(failures)
+
+
+def test_main_worktree_root_answers_every_layout(_i50_matrix) -> None:
+    tmp, env = _i50_matrix
+    failures = []
+    for row, cwd, _, want in _I50_ROWS:
+        answer = _i50_python_answer(tmp / cwd, _i50_row_env(env, tmp, row))
+        if not _i50_matches(answer, want, row, tmp):
+            failures.append(f"{row} ({answer!r}, expected {want!r})")
+    assert not failures, "main_worktree_root():\n" + "\n".join(failures)
+
+
+def test_worktree_reference_table_is_the_matrix() -> None:
+    lines = read_skill(_I50_REFERENCE).splitlines()
+    head = lines.index("| 레이아웃 | 답 |")
+    table = {}
+    for line in lines[head + 2:]:
+        if not line.startswith("|"):
+            break
+        label, answer = [c.strip() for c in line.strip("|").split("|")]
+        table[label] = answer
+    assert set(table) == set(_I50_TABLE_ROWS), f"the support table's layouts changed: {sorted(table)}"
+    rows = {r[0]: r for r in _I50_ROWS}
+    for label, answer in table.items():
+        assert answer in _I50_TABLE_ANSWERS, f"unknown answer {answer!r} for {label!r}"
+        for row in _I50_TABLE_ROWS[label]:
+            assert rows[row][2] == _I50_TABLE_ANSWERS[answer] == rows[row][3], (
+                f"the table says {label!r} -> {answer!r}, the matrix says {rows[row][2:]!r}"
+            )
+
+
+def test_every_skill_resolution_is_the_canonical_block() -> None:
+    canonical = _i50_canonical()
+    counts = {}
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        rel = str(md.relative_to(ROOT))
+        for fence in _fences_of(md.read_text(encoding="utf-8")):
+            lines = [l.strip() for l in fence.splitlines()]
+            for i, line in enumerate(lines):
+                if not line.startswith("FIRST_WORKTREE="):
+                    continue
+                counts[rel] = counts.get(rel, 0) + 1
+                got = lines[i:i + 4]
+                name = next((n for n in _I50_RESOLVE_NAMES if got[1].startswith(n + "=")), None)
+                assert name, f"{rel}: unknown variable in {got[1]!r}"
+                want = [l.strip().replace("MAIN_CHECKOUT", name) for l in canonical]
+                assert got == want, f"{rel} resolves the main checkout differently:\n{got}\n{want}"
+    assert counts == _I50_COPIES, f"canonical copies per file changed: {counts}"
+
+
+def test_no_other_main_checkout_resolution_in_skill_fences() -> None:
+    """The one-liners the canonical block replaced, and the ones it bans, stay out."""
+    idiom = "git worktree list --porcelain | sed -n '1s/^worktree //p'"
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        rel = str(md.relative_to(ROOT))
+        for fence in _fences_of(md.read_text(encoding="utf-8")):
+            for line in fence.splitlines():
+                s = line.strip()
+                for banned in ("--git-common-dir", "--path-format", "--absolute-git-dir"):
+                    assert banned not in s, f"{rel}: a fence builds a path from {banned}: {s!r}"
+                if idiom in s:
+                    assert s.startswith("FIRST_WORKTREE="), f"{rel}: the first entry is used as the answer: {s!r}"
+
+
+def test_skill_fences_have_no_cwd_relative_plan_paths() -> None:
+    scoped = ("project-done", "project-iterate", "project-start", "project-adr", "project-clean", "project-issue")
+    bare = re.compile(r'(?<!\$MAIN_CHECKOUT/)(?<!\$REPORT_ROOT/)(?<!"\$MAIN_CHECKOUT"/)\.task/plan/plan-')
+    for skill in scoped:
+        for fence in _fences_of(read_skill(f"skills/{skill}/SKILL.md")):
+            for line in fence.splitlines():
+                assert not bare.search(line), f"{skill}: a CWD-relative plan path: {line.strip()!r}"
+                for banned in ('Path(".task/plan")', 'Path(".task") / "plan"', 'glob(".task/'):
+                    assert banned not in line, f"{skill}: a CWD-relative plan directory: {line.strip()!r}"
+
+
+def test_path_lookups_share_one_id_refusal() -> None:
+    """done 1, start 1-A, iterate's plan check and adr 1 refuse a bad id with the same lines."""
+    def refusal(text: str, heading: str | None, placeholder: str) -> str:
+        section = skill_section(text, heading) if heading else text
+        fences = [f for f in _fences_of(section) if "FIRST_WORKTREE=" in f and "case '" in f]
+        assert len(fences) == 1, f"expected one shell plan lookup under {heading!r}"
+        return "\n".join(fences[0].splitlines()[:5]).replace(placeholder, "<ID>")
+
+    blocks = {
+        "done": refusal(_done_skill(), "**1. Confirm plan file**", "<issue-id>"),
+        "start": refusal(_start_skill(), "**1-A.", "<issue-id>"),
+        "adr": refusal(read_skill("skills/project-adr/SKILL.md"), "**1. Decide ADR Content**", "<issue-id>"),
+        "iterate": refusal(_region_text(_iterate_skill(), "## Re-entry After Interruption", "## Instructions"),
+                           None, "<id>"),
+    }
+    assert len(set(blocks.values())) == 1, f"the id refusals drifted apart: {blocks}"
+    for name, (fence, _) in _i50_plan_lookups().items():
+        assert "harness_core" not in fence and "python" not in fence, f"{name}'s path lookup reaches for python"
+
+
+def _region_text(text: str, start: str, end: str) -> str:
+    lines = text.splitlines()
+    i = next(k for k, l in enumerate(lines) if l.startswith(start))
+    j = next(k for k in range(i + 1, len(lines)) if lines[k].startswith(end))
+    return "\n".join(lines[i:j])
+
+
+def _i50_plan_lookups() -> dict:
+    """The shell plan lookups that print only PLAN=, with their id placeholder."""
+    def one(section: str) -> str:
+        fences = [f for f in _fences_of(section) if "FIRST_WORKTREE=" in f and "PLAN=" in f]
+        assert len(fences) == 1
+        return fences[0]
+    return {
+        "start": (one(skill_section(_start_skill(), "**1-A.")), "<issue-id>"),
+        "adr": (one(skill_section(read_skill("skills/project-adr/SKILL.md"), "**1. Decide ADR Content**")), "<issue-id>"),
+        "iterate": (one(_region_text(_iterate_skill(), "## Re-entry After Interruption", "## Instructions")), "<id>"),
+    }
+
+
+_I50_LOOKUP_ROWS = (
+    ("worktree", "wt", "7", "ok"),
+    ("worktree subdir", "wt/sub/dir", "7", "ok"),
+    ("main", "main", "7", "ok"),
+    ("underscore key", "wt", "AB_C-7", "ok"),
+    ("missing", "wt", "8", "stop"),
+    ("leading zero", "wt", "07", "stop"),
+    ("multi-line id", "wt", "7\n8", "stop"),
+    ("traversal", "wt", "x/../../plan/plan-7", "stop"),
+    ("no repo", "norepo", "7", "unresolved"),
+    ("separate git dir", "sep-wt", "7", "unresolved"),
+)
+
+
+def test_plan_lookup_rows_are_all_present() -> None:
+    assert [r[0] for r in _I50_LOOKUP_ROWS] == [
+        "worktree", "worktree subdir", "main", "underscore key", "missing", "leading zero",
+        "multi-line id", "traversal", "no repo", "separate git dir",
+    ], "a plan-lookup row was dropped or renamed"
+
+
+@pytest.mark.parametrize("skill", ["start", "adr", "iterate"])
+def test_plan_lookups_behave_in_every_row(skill: str, tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    fence, placeholder = _i50_plan_lookups()[skill]
+    tmp = tmp_path.resolve()
+    env = _step1_repos(tmp)
+    plans = tmp / "main" / ".task" / "plan"
+    for shell in _shells():
+        for name, cwd, issue_id, expected in _I50_LOOKUP_ROWS:
+            result = subprocess.run([*shell, "-c", fence.replace(placeholder, issue_id)],
+                                    cwd=tmp / cwd, env=env, capture_output=True, text=True)
+            where = f"{skill} {name} under {' '.join(shell)}"
+            if expected == "ok":
+                assert result.returncode == 0, f"{where}: {result.stdout!r} {result.stderr!r}"
+                value = result.stdout.splitlines()
+                assert len(value) == 1 and value[0].startswith("PLAN="), f"{where}: {result.stdout!r}"
+                path = value[0][len("PLAN="):]
+                assert os.path.isabs(path) and Path(path).resolve() == (plans / f"plan-{issue_id}.md").resolve(), where
+                assert not (tmp / "wt" / ".task").exists(), f"{where}: created .task/ in the worktree"
+            else:
+                assert result.returncode != 0 and "PLAN=" not in result.stdout, f"{where}: did not stop"
+                if expected == "unresolved":
+                    assert "could not resolve the main checkout" in result.stdout, f"{where}: {result.stdout!r}"
+
+
+def test_clean_protects_the_bases_declared_in_the_main_checkout(tmp_path: Path) -> None:
+    """From a linked worktree the old relative grep found no plan and protected nothing."""
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    text = read_skill("skills/project-clean/SKILL.md")
+    fences = [f for f in _fences_of(text) if "FIRST_WORKTREE=" in f]
+    assert len(fences) == 1, "project-clean should hold one collecting fence"
+    lines = fences[0].splitlines()
+    upto = next(i for i, l in enumerate(lines) if l.startswith("printf 'PROTECT="))
+    collect = "\n".join(l for l in lines[:upto + 1] if not l.startswith("git fetch"))
+    exclude = next(l for l in lines if "grep -vxF" in l).strip()
+    assert exclude.startswith("| grep -vxF \"$PROTECT\""), exclude
+
+    tmp = (tmp_path / "with space").resolve()
+    tmp.mkdir()
+    env = _step1_repos(tmp)
+    (tmp / "main" / ".task" / "plan" / "plan-9.md").write_text("---\nbase_branch: feat/x\n---\n# Plan: x\n")
+    (tmp / "wt" / ".task" / "plan").mkdir(parents=True)
+    (tmp / "wt" / ".task" / "plan" / "plan-9.md").write_text("---\nbase_branch: decoy\n---\n# Plan: d\n")
+    result = subprocess.run(["sh", "-c", collect], cwd=tmp / "wt", env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines()[-1] == "PROTECT=feat/x", f"the protected set was read elsewhere: {result.stdout!r}"
+    kept = subprocess.run(["sh", "-c", "printf 'feat/x\\nfeat/y\\n' " + exclude],
+                          env={**env, "PROTECT": "feat/x"}, capture_output=True, text=True)
+    assert kept.stdout.split() == ["feat/y"], f"the protected branch is not excluded: {kept.stdout!r}"
+
+
+def test_done_wording_matches_the_canonical_rule() -> None:
+    text = _done_skill()
+    assert not re.search(r"first entry.*always", text), "the 'first entry is always the main worktree' claim is back"
+    assert "derive it differently" not in text
+    bullet = rule_line(text, "**Resolve the main checkout by asking git for it")
+    for token in ("separate-git-dir", ".git/modules", "--show-toplevel"):
+        assert token in bullet, f"the Jira bullet no longer explains {token}"
+    assert "stops when there is none" in bullet
+    forgejo = rule_line(text, "**보고서는 절대 경로로 넘긴다.**")
+    assert "--git-common-dir" not in forgejo and "해석 네 줄" in forgejo
+    assert "the same rule as the fence below, so both give the same directory or both stop" in rule_line(
+        text, "That form prints the path `main_worktree_root()` resolves")
+
+
+def test_clean_and_config_name_the_canonical_block() -> None:
+    clean = read_skill("skills/project-clean/SKILL.md")
+    assert_rule(clean, "**run this fence as one shell invocation**",
+                starts_with="Collect first — **run this fence as one shell invocation**.")
+    assert "PROTECT` comes back empty" in rule_line(clean, "**run this fence as one shell invocation**")
+    assert_whole_line(read_skill("skills/SKILL-CONFIG.md"),
+                      "| `_shared/references/worktree.md` | 워크트리 CWD 주의사항, main checkout 해석 정본 | "
+                      "project-start · project-done · project-clean · project-adr |")
+
+
+def test_worktree_reference_rule_section_is_pinned_whole() -> None:
+    lines = read_skill(_I50_REFERENCE).splitlines()
+    start = lines.index("## main checkout 해석 정본")
+    got = tuple(l.strip() for l in lines[start:] if l.strip())
+    assert got == _I50_REFERENCE_SECTION, "the canonical rule's prose in worktree.md changed"
+
+
+_I50_REFERENCE_SECTION = (
+    '## main checkout 해석 정본',
+    'main checkout 경로가 필요한 셸 단계(harness 가 없을 때의 fallback 포함)는 아래 블록을 **문자 그대로** 복사해 쓴다. 변수명만 `MAIN_CHECKOUT`',
+    '또는 `REPORT_ROOT` 로 바꿀 수 있다. 이 파일이 원본이고, 스킬의 사본이 이 블록과 같은지는',
+    '`tests/test_skill_docs.py` 가 검사한다. 스킬이 실행 중에 이 파일을 읽는 것은 아니다.',
+    '```bash',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    '```',
+    '규칙: `git worktree list --porcelain` 의 첫 항목을 얻고, **그 항목의 작업 트리를 git 에게 다시 묻는다**',
+    '(`git -C <첫 항목> rev-parse --show-toplevel`). 답이 없으면 멈춘다. `main_worktree_root()` 도 같은 규칙이다.',
+    '- 첫 항목을 그대로 쓰지 않는다. submodule 에서는 `.git/modules/<name>`, separate-git-dir 에서는 git dir 이 첫 항목으로 나온다.',
+    '- `--git-common-dir` 의 부모로 만들지 않는다. submodule·separate-git-dir·bare 에서 **존재하는 엉뚱한 디렉터리**가 된다.',
+    '- CWD 의 `--show-toplevel`·`$PWD` 로 만들지 않는다. 링크드 워크트리 자신이 나온다.',
+    '- `[ -n "$FIRST_WORKTREE" ] &&` 를 빼지 않는다. `git -C ""` 는 CWD 에 머물러 링크드 워크트리를 답한다.',
+    '- `|| :` 를 빼지 않는다. 대입문의 종료코드는 치환의 종료코드라서, 이게 없으면 `sh -e` 가 아래 메시지 전에 셸을 죽인다.',
+    '| 레이아웃 | 답 |',
+    '|----------|----|',
+    '| 일반 clone | main checkout |',
+    '| 링크드 워크트리 | main checkout |',
+    '| submodule | submodule checkout |',
+    '| submodule 의 링크드 워크트리 | submodule checkout |',
+    '| separate-git-dir | 멈춤 |',
+    '| bare | 멈춤 |',
+    '| bare 의 링크드 워크트리 | 멈춤 |',
+    'git dir 이름이 다른 디렉터리의 `.git` 인 separate-git-dir(`--separate-git-dir=/x/other/.git`)는 git 이 그 부모를 작업 트리로 보고하므로 이 규칙이 가려내지 못한다 — 드문 배치라 검사하지 않는다. 그 밖의 separate-git-dir 는 링크드 워크트리에서 main work tree 를 알아낼 방법이 없다(git dir 이 작업 트리를',
+    '가리키지 않는다). 그래서 main 에서 부르든 링크드에서 부르든 똑같이 멈춘다. 저장소 밖에서는 셸 블록이 멈추고,',
+    '`main_worktree_root()` 는 CWD 로 폴백한다.',
+)
+
+
+
+def test_plan_dir_propagates_the_unresolved_layout(tmp_path: Path, monkeypatch) -> None:
+    """The CLI stops in a bare repo instead of treating CWD as the main checkout."""
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    from harness_core import cli
+    from harness_core.git import MainWorktreeUnresolvedError, main_worktree_root
+
+    bare = tmp_path / "b.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, env=_i50_env(tmp_path))
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.chdir(bare)
+    main_worktree_root.cache_clear()
+    try:
+        with pytest.raises(MainWorktreeUnresolvedError):
+            cli._plan_dir()
+    finally:
+        main_worktree_root.cache_clear()
+
+
+def _i50_mutants(block: str) -> dict:
+    lines = block.splitlines()
+    assert lines[1].startswith("MAIN_CHECKOUT=")
+    mutants = {
+        "no empty check": block.replace('[ -n "$FIRST_WORKTREE" ] && ', ""),
+        "no || :": block.replace(" || :)", ")"),
+        "first entry as the answer": block.replace(lines[1], 'MAIN_CHECKOUT="$FIRST_WORKTREE"'),
+        "common-dir parent": block.replace(lines[1], 'MAIN_CHECKOUT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)"'),
+        "cwd toplevel": block.replace(lines[1], 'MAIN_CHECKOUT="$(git rev-parse --show-toplevel)"'),
+        "every worktree": block.replace("'1s/^worktree //p'", "'s/^worktree //p'"),
+    }
+    for name, mutant in mutants.items():
+        assert mutant != block, f"mutant {name!r} did not change the block"
+    return mutants
+
+
+# Each mutant, the row that exists to catch it, and the shell it needs.
+_I50_MUTANT_CATCHERS = {
+    "no empty check": ("shim-wt", ("sh",)),
+    "no || :": ("sep", ("sh", "-e")),
+    "first entry as the answer": ("sub", ("sh",)),
+    "common-dir parent": ("sub", ("sh",)),
+    "cwd toplevel": ("wt", ("sh",)),
+    "every worktree": ("wt", ("sh",)),
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_I50_MUTANT_CATCHERS))
+def test_canonical_rows_reject_each_mutant(mutant: str, _i50_matrix) -> None:
+    tmp, env = _i50_matrix
+    mutants = _i50_mutants("\n".join(_i50_canonical()))
+    assert set(mutants) == set(_I50_MUTANT_CATCHERS)
+    row, shell = _I50_MUTANT_CATCHERS[mutant]
+    failures = _i50_block_failures(mutants[mutant], list(shell), tmp, env)
+    assert any(f.startswith(f"{row} (") for f in failures), (
+        f"the {row!r} row does not reject the {mutant!r} mutant: {failures}"
+    )
+    assert not any("syntax error" in f for f in failures), failures
+
+
+def test_main_worktree_root_without_the_toplevel_question_fails_the_sub_row(_i50_matrix, monkeypatch) -> None:
+    """The harness side of 'first entry as the answer': the sub row catches it too."""
+    from harness_core import git as hgit
+
+    tmp, _ = _i50_matrix
+    real = subprocess.run
+
+    def first_entry_as_answer(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "-C"] and cmd[3:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, cmd[2] + "\n", "")
+        return real(cmd, *args, **kwargs)
+
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    for key, value in _isolated_git_env(tmp).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(hgit.subprocess, "run", first_entry_as_answer)
+    monkeypatch.chdir(tmp / "super" / "sub")
+    hgit.main_worktree_root.cache_clear()
+    try:
+        answer = str(hgit.main_worktree_root())
+    finally:
+        hgit.main_worktree_root.cache_clear()
+    assert not _i50_matches(answer, "super/sub", "sub", tmp), "the sub row accepts the first entry as the answer"
+
+
+# Every fence line in skills/** that names the worktree list, rev-parse,
+# main_worktree_root or .task/plan, with its count. A new way of finding the
+# main checkout — awk over the listing, a dirname of --git-dir, a python
+# one-liner — shows up here as a line nobody pinned.
+_I50_RESOLUTION_LINES = (
+    ('skills/_shared/references/worktree.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 1),
+    ('skills/_shared/references/worktree.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
+    ('skills/project-adr/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 1),
+    ('skills/project-adr/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
+    ('skills/project-adr/SKILL.md', 'PLAN="$MAIN_CHECKOUT/.task/plan/plan-<issue-id>.md"', 1),
+    ('skills/project-clean/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 1),
+    ('skills/project-clean/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
+    ('skills/project-clean/SKILL.md', 'PROTECT=$(grep -hERo \'^base_branch:[[:space:]]*\\S+\' "$MAIN_CHECKOUT"/.task/plan/plan-*.md 2>/dev/null \\', 1),
+    ('skills/project-clean/SKILL.md', 'git worktree list', 1),
+    ('skills/project-clean/SKILL.md', 'git worktree remove --force "<worktree path from git worktree list>" 2>/dev/null || true', 1),
+    ('skills/project-done/SKILL.md', 'BASE_BEFORE="$(git -C "$MAIN_CHECKOUT" rev-parse <base_branch>)"', 1),
+    ('skills/project-done/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 3),
+    ('skills/project-done/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
+    ('skills/project-done/SKILL.md', 'PLAN="$REPORT_ROOT/.task/plan/plan-<issue-id>.md"', 1),
+    ('skills/project-done/SKILL.md', 'REPORT="$REPORT_ROOT/.task/plan/impl-report-<id>.md"', 1),
+    ('skills/project-done/SKILL.md', 'REPORT_ROOT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 2),
+    ('skills/project-done/SKILL.md', 'echo ".task/plan/" >> .gitignore ;;', 1),
+    ('skills/project-done/SKILL.md', 'git check-ignore -q --no-index .task/plan/ && rc=0 || rc=$?', 1),
+    ('skills/project-done/SKILL.md', 'git restore --staged ".task/plan/" 2>/dev/null || true', 1),
+    ('skills/project-done/SKILL.md', 'printf \'PLAN=%s\\nREPORT=%s\\n\' "$PLAN" "$REPORT_ROOT/.task/plan/impl-report-<issue-id>.md"', 1),
+    ('skills/project-issue/SKILL.md', 'from harness_core.git import main_worktree_root', 3),
+    ('skills/project-issue/SKILL.md', 'plan_dir = (main_worktree_root() / ".task" / "plan").resolve()', 2),
+    ('skills/project-issue/SKILL.md', 'python -c \'from harness_core.config import is_draft_plan; from harness_core.git import main_worktree_root; print("\\n".join(str(p) for p in sorted((main_worktree_root() / ".task" / "plan").glob("plan-*.md")) if is_draft_plan(p.name)))\'', 1),
+    ('skills/project-issue/SKILL.md', 'target = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])', 1),
+    ('skills/project-iterate/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 4),
+    ('skills/project-iterate/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 4),
+    ('skills/project-iterate/SKILL.md', 'PLAN="$MAIN_CHECKOUT/.task/plan/plan-<id>.md"', 1),
+    ('skills/project-iterate/SKILL.md', '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {', 1),
+    ('skills/project-iterate/SKILL.md', "git worktree list --porcelain | python3 -c '", 1),
+    ('skills/project-iterate/SKILL.md', 'rel = subprocess.run(["git", "-C", path, "rev-parse", "--git-path", name],', 1),
+    ('skills/project-plan/SKILL.md', 'PLAN_FILE=".task/plan/plan-draft-${SLUG}-${N}.md"', 1),
+    ('skills/project-plan/SKILL.md', 'PLAN_FILE=".task/plan/plan-draft-${SLUG}.md"', 1),
+    ('skills/project-plan/SKILL.md', 'echo ".task/plan/" >> .gitignore ;;', 1),
+    ('skills/project-plan/SKILL.md', 'git check-ignore -q --no-index .task/plan/ && rc=0 || rc=$?', 1),
+    ('skills/project-plan/SKILL.md', 'mkdir -p .task/plan', 1),
+    ('skills/project-release/SKILL.md', "REMOTE_TAG_SHA=$(git rev-parse 'FETCH_HEAD^{}')", 1),
+    ('skills/project-release/SKILL.md', 'test "$(git rev-parse \'<tag>^{}\')" = "$RELEASE_SHA"', 1),
+    ('skills/project-start/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 1),
+    ('skills/project-start/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
+    ('skills/project-start/SKILL.md', 'PLAN="$MAIN_CHECKOUT/.task/plan/plan-<issue-id>.md"', 1),
+)
+
+
+def test_resolution_lines_in_skill_fences_are_pinned() -> None:
+    tokens = ("worktree list", "rev-parse", "main_worktree_root", ".task/plan")
+    seen: dict = {}
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        rel = str(md.relative_to(ROOT))
+        for fence in _fences_of(md.read_text(encoding="utf-8")):
+            for line in fence.splitlines():
+                if any(t in line for t in tokens):
+                    seen[(rel, line.strip())] = seen.get((rel, line.strip()), 0) + 1
+    got = tuple((rel, line, n) for (rel, line), n in sorted(seen.items()))
+    assert got == _I50_RESOLUTION_LINES, (
+        "fence lines that locate the main checkout or the plan directory changed; "
+        "if the new line follows the canonical rule, pin it here:\n"
+        + "\n".join(repr(e) for e in sorted(set(got) ^ set(_I50_RESOLUTION_LINES)))
+    )

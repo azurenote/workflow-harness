@@ -46,19 +46,27 @@ Find the plan in the main worktree: `.task/plan/` is gitignored and exists only 
 
 ```bash
 <harness_cli> plan-file <issue-id>
-# fallback, for a project without a harness_cli:
-python -c '
-import re, sys
-from harness_core.git import main_worktree_root
-if not re.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", sys.argv[1]):
-    sys.exit("reject (id): not an issue number or ticket key: %r" % sys.argv[1])
-plan = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])
-sys.exit(0 if plan.is_file() else "no plan: %s" % plan)
-' '<issue-id>'
 ```
 
-The fallback prints nothing on success; the plan it checked is `plan-<issue-id>.md` in `.task/plan/` under the root that `main_worktree_root()` returns, not under the CWD.
-Read the `plan-<issue-id>.md` that this check found in the main worktree's plan directory, and the current branch diff, to identify the architecture decision that should be documented.
+Without a harness_cli, use this fence — **run it as one shell invocation**; the four resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`:
+
+```bash
+case '<issue-id>' in
+  ''|*[!A-Za-z0-9_-]*) echo "reject (id): not an issue number or ticket key" >&2; exit 1 ;;
+esac
+printf '%s\n' '<issue-id>' | LC_ALL=C grep -Eqx '[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*' || {
+  echo "reject (id): not an issue number or ticket key" >&2; exit 1; }
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+PLAN="$MAIN_CHECKOUT/.task/plan/plan-<issue-id>.md"
+[ -f "$PLAN" ] || { echo "no plan at $PLAN"; exit 1; }
+printf 'PLAN=%s\n' "$PLAN"
+```
+
+Either form prints the plan's absolute path in the main checkout — `plan-file` prints it bare, the fallback as `PLAN=<path>`. That path is `<plan-path>`; substitute it as a literal, since a shell variable does not survive into the next call.
+Read `<plan-path>` and the current branch diff to identify the architecture decision that should be documented.
 If the plan is missing, stop and report it.
 If the decision title is ambiguous, confirm it with the user.
 

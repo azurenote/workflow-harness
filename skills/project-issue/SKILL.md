@@ -108,13 +108,14 @@ When `harness_enabled: true`:
 
 Otherwise (or when no harness exists):
 ```bash
-python -c 'from pathlib import Path; from harness_core.config import is_draft_plan; print("\n".join(str(p) for p in sorted(Path(".task/plan").glob("plan-*.md")) if is_draft_plan(p.name)))'
+python -c 'from harness_core.config import is_draft_plan; from harness_core.git import main_worktree_root; print("\n".join(str(p) for p in sorted((main_worktree_root() / ".task" / "plan").glob("plan-*.md")) if is_draft_plan(p.name)))'
 ```
 
-The fallback also uses `harness_core.config.is_draft_plan` as the single contract. Valid draft file names are only `plan-draft-<lowercase-slug>.md` or lowercase hex UUID `plan-<uuid>.md`.
+The fallback also uses `harness_core.config.is_draft_plan` as the single contract, and looks in the main checkout's plan directory for the same reason as the explicit-path check above. Valid draft file names are only `plan-draft-<lowercase-slug>.md` or lowercase hex UUID `plan-<uuid>.md`.
 
 Handle the result:
 - **No files**: tell the user to run `project-plan` first. Stop.
+- **A non-zero exit** is not "no files": the plan directory could not be located (a layout with no main work tree). Report the error and stop.
 - **One file**: use that file.
 - **Two or more files**: show the list and mtimes, then ask the user to choose.
   - If the user says "latest", automatically choose the file with the newest mtime.

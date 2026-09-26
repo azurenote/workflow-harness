@@ -52,7 +52,7 @@ project-done <issue-id> [adr]
 <harness_cli> plan-file <issue-id>
 ```
 
-That form prints the path `main_worktree_root()` resolves — the same directory as the fence below in an ordinary clone and its linked worktrees, though the two derive it differently. Without a harness_cli, use the fence below instead — **run it as one shell invocation**, because later lines read the variables earlier ones set:
+That form prints the path `main_worktree_root()` resolves — the same rule as the fence below, so both give the same directory or both stop. Without a harness_cli, use the fence below instead — **run it as one shell invocation**, because later lines read the variables earlier ones set:
 
 ```bash
 case '<issue-id>' in
@@ -60,7 +60,8 @@ case '<issue-id>' in
 esac
 printf '%s\n' '<issue-id>' | LC_ALL=C grep -Eqx '[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*' || {
   echo "reject (id): not an issue number or ticket key" >&2; exit 1; }
-REPORT_ROOT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+REPORT_ROOT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
 [ -n "$REPORT_ROOT" ] && [ -d "$REPORT_ROOT" ] || {
   echo "could not resolve the main checkout"; exit 1; }
 PLAN="$REPORT_ROOT/.task/plan/plan-<issue-id>.md"
@@ -70,8 +71,8 @@ printf 'PLAN=%s\nREPORT=%s\n' "$PLAN" "$REPORT_ROOT/.task/plan/impl-report-<issu
 
 If the file does not exist, stop and tell the user.
 
-- **Pass both paths on as literals.** Whichever form ran, its output names `<plan-path>` (the `PLAN=` value, or the path `plan-file` printed) and `<report-path>` (the `REPORT=` value, or `impl-report-<issue-id>.md` in the same directory as the path `plan-file` printed); Steps 1-B, 1-C, 2 and 4 and Step 7's GitHub path substitute those absolute paths (the Forgejo fence resolves the report again with the same three lines), because a shell variable does not survive into the next call and one that arrives empty turns `"$PLAN"` into a path relative to wherever that call runs.
-- **Ask git for the main checkout; never build the path from the CWD.** `--show-toplevel` and `$PWD` name the linked worktree — an absolute path to a directory with no `.task/plan/` in it. The three lines that resolve `REPORT_ROOT` are the same bytes as the Forgejo fence in Step 7, and the name is shared on purpose so the two stay one rule; the Jira merge's `MAIN_CHECKOUT` is a different fence with a different job.
+- **Pass both paths on as literals.** Whichever form ran, its output names `<plan-path>` (the `PLAN=` value, or the path `plan-file` printed) and `<report-path>` (the `REPORT=` value, or `impl-report-<issue-id>.md` in the same directory as the path `plan-file` printed); Steps 1-B, 1-C, 2 and 4 and Step 7's GitHub path substitute those absolute paths (the Forgejo fence resolves the report again with the same four lines), because a shell variable does not survive into the next call and one that arrives empty turns `"$PLAN"` into a path relative to wherever that call runs.
+- **Ask git for the main checkout; never build the path from the CWD.** `$PWD` and the CWD's own `--show-toplevel` name the linked worktree — an absolute path to a directory with no `.task/plan/` in it. The four lines that resolve `REPORT_ROOT` are the canonical block in `~/.claude/skills/_shared/references/worktree.md`, byte for byte, as is the Forgejo fence in Step 7; the name is shared on purpose so the two stay one rule, and the Jira merge's `MAIN_CHECKOUT` is the same block under a different name.
 - **The id is refused twice before it becomes a file name.** `grep` matches line by line, so an id of `7`, a newline and `../x` would pass it alone; the `case` first refuses anything but letters, digits, `_` and `-`, newline included, and `LC_ALL=C` keeps `[A-Z]` from matching other letters in other locales. Both run after the shell has parsed the line, so an id containing `'` must be refused before the fence is run at all — the same rule as `project-issue` Step 1-L.
 
 **1-B. Read base branch (frontmatter)**
@@ -269,7 +270,8 @@ Read the PR URL.
 **Run this fence as one shell invocation**, and note it is the one deliberate exception to the "do not repeat `cd`" rule in `~/.claude/skills/_shared/references/worktree.md`: that rule keeps `git add`/`commit`/`push` in the worktree, and this merge is the one command that must not run there.
 
 ```bash
-MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
 [ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
   echo "could not resolve the main checkout"; exit 1; }
 BASE_BEFORE="$(git -C "$MAIN_CHECKOUT" rev-parse <base_branch>)"
@@ -277,7 +279,7 @@ cd "$MAIN_CHECKOUT" || exit 1
 git checkout <base_branch> && git merge --no-ff "<branch-name>" && git push origin <base_branch>
 ```
 
-- **Resolve the main checkout by asking for it, not by walking up from the git dir.** `git worktree list` names it directly and its first entry is always the main worktree. Deriving it as the parent of `--git-common-dir` is wrong wherever `.git` is not a directory beside the work tree — a submodule, a `--separate-git-dir` clone, a bare repo — and in each of those the wrong directory **exists**, so `cd` succeeds and git quietly re-targets a different repository.
+- **Resolve the main checkout by asking git for it, not by walking up from the git dir.** The first `git worktree list` entry is not always a work tree — a submodule lists `.git/modules/<name>` and a `separate-git-dir` clone lists its git dir — so the block asks git for that entry's `--show-toplevel` and stops when there is none (the canonical block in `~/.claude/skills/_shared/references/worktree.md`). Deriving it as the parent of `--git-common-dir` is wrong in a submodule, a `--separate-git-dir` clone and a bare repo, and in each of those the wrong directory **exists**, so `cd` succeeds and git quietly re-targets a different repository.
 - **Validate the value before `cd`.** `cd ""` returns 0 and leaves you where you were, which puts you back in the worktree with the failure this block exists to prevent.
 - **Check that the merge actually moved.** If the branch tip holds nothing the base lacks, `git merge` prints `Already up to date.` and exits **0** without creating a merge commit, so the history keeps no trace that this round ran. Compare `$BASE_BEFORE` with `git rev-parse <base_branch>` afterwards. Do not test this with `git rev-parse HEAD^2`: once any earlier round merged with `--no-ff` the base tip is already a merge commit, so `HEAD^2` resolves happily after a no-op and points at the *previous* round's branch. An unchanged base is **reported**, not passed over as success.
 - **Leave no half-finished merge behind.** If you want to inspect the result before it is recorded, run the simulation and its abort **as one unit** — `git merge --no-commit --no-ff "<branch-name>"`, look, then `git merge --abort` — and do nothing else in between. A repository parked mid-merge blocks every later step and the next person inherits it without knowing why.
@@ -293,7 +295,8 @@ harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harnes
 Forgejo 는 PR 이 있으므로 위 Jira 의 직접 병합 경로로 보내지 않는다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:
 
 ```bash
-REPORT_ROOT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+REPORT_ROOT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
 [ -n "$REPORT_ROOT" ] && [ -d "$REPORT_ROOT" ] || {
   echo "could not resolve the main checkout"; exit 1; }
 REPORT="$REPORT_ROOT/.task/plan/impl-report-<id>.md"
@@ -309,7 +312,7 @@ printf 'REPORT=%s\nCREATE_FAILED=%s\nPR_NUMBER=%s\n' "$REPORT" "${CREATE_FAILED:
 printf '%s\n' "$CREATED"
 ```
 
-- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 해석 세 줄은 1단계 fallback 펜스와 바이트까지 같아서, 1단계가 fallback 으로 돌았다면 4단계가 쓴 `<report-path>` 가 여기서 그대로 나온다. `plan-file` 은 `--git-common-dir` 의 부모로 구하므로 분리된 git 디렉터리·서브모듈·bare 저장소에서는 다른 곳을 가리킬 수 있다 — 어느 경우든 파일이 없으면 PR 을 만들지 않고 멈추고, 4단계가 어디에 썼는지 확인한다.
+- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 해석 네 줄은 1단계 fallback 펜스와 바이트까지 같고(정본: `worktree.md`), `plan-file` 도 같은 규칙이라, 4단계가 쓴 `<report-path>` 가 여기서 그대로 나온다 — 파일이 없으면 PR 을 만들지 않고 멈추고, 4단계가 어디에 썼는지 확인한다.
 - **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합 시 Forgejo 가 `Closes` 로 이슈를 닫는 것은 실측 네 건에서 확인됐다. 네 건 모두 본문과 커밋 트레일러 양쪽에 줄이 있었으므로, 어느 쪽이 닫았는지는 **가르지 못했다** — 그래서 둘 다 둔다.
 - **서브-PR 의 본문에는 `Closes #<id>` 가 없어야 한다.** 보고서에 습관처럼 그 줄이 남아 있으면 지운 뒤 펜스를 실행한다 — 5단계가 서브-PR 에서 `Closes` 를 뺀 이유가 본문에서 되살아나지 않게 한다.
 - **`--base`/`--head` 를 명시한다.** GitHub 절과 같은 이유다 — 세 계층이 한 출처에 합의해야 한다. 저장소는 `-r <forgejo_repo>` 로만 준다. 이 리프 명령에는 `-R` 이 없다.
