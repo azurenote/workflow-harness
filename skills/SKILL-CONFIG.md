@@ -54,7 +54,7 @@ issue_tracker = forgejo → fj CLI (forgejo-cli 필요) — 조회: issue view/s
 
 위 CLI 들의 최소 버전과 **버전 확인 명령**은 `~/.claude/skills/dependencies.yaml` 에 선언돼 있다. 확인 명령을 추측하지 말 것 — `--version` 이 모든 도구에 통하지는 않고, 추측하면 설치된 도구를 미설치로 오판한다.
 
-`forgejo` 는 조회(read) 전체와, 쓰기(write) 중 **이슈 생성·이슈 코멘트·PR 생성**이 계약이다. 이슈 생성의 상세 절차 — 필수 플래그, 이슈 번호 추출, 라벨 적용과 읽기 확인 — 는 `project-issue` 본문의 `### Forgejo` 절에, 이슈 코멘트와 PR 생성의 상세 절차 — 저장소 지정 형태, 조용한 성공과 조회 확인 — 는 `project-done` 의 7·9단계에 있다. 여기에 복제하지 않고 가리킨다.
+`forgejo` 는 조회(read) 전체와, 쓰기(write) 중 **이슈 생성·이슈 코멘트·PR 생성**이 계약이다. 이슈 생성의 상세 절차 — 필수 플래그, 이슈 번호 추출, 라벨 적용과 읽기 확인 — 는 `project-issue` 본문의 `### Forgejo` 절에, 이슈 코멘트와 PR 생성의 상세 절차 — 조회 확인 — 는 `project-done` 의 7·9단계에, `fj` 표면 사실 — 저장소 지정 형태, 조용한 성공, 격리 문자 — 은 `_shared/references/forgejo.md` 에 있다. 여기에 복제하지 않고 가리킨다.
 **상태 전환에는 아직 `fj` 계약이 없다** — 그 쓰기는 아래 웹 UI 수동 처리로 가거나, 미반영으로 보고하고 계속한다.
 이슈 제목·상태 조회는
 `fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<N>"` 을 사용하고,
@@ -152,6 +152,7 @@ harness 를 못 쓰고 gh 로 내려가도 type·priority·size·status 가 적�
 | `_shared/references/hooks.md` | lifecycle 훅 포인트와 실패 정책 | project-start · project-done |
 | `_shared/references/worktree.md` | 워크트리 CWD 주의사항, main checkout 해석 정본 | project-start · project-done · project-clean · project-adr |
 | `_shared/references/github-issue-fields.md` | GitHub 이슈 메타데이터 계약과 `github_project` 스키마 | project-issue · project-start · project-done |
+| `_shared/references/forgejo.md` | `fj` 표면 사실 — 플래그 표면, 격리 문자, 조용한 성공, 조회 표면, CI·상태·의존성 | project-issue · project-start · project-done |
 | `_shared/references/codex.md` | Codex 호스트 메커니즘 | Codex 에서 실행할 때만 |
 
 경로는 `~/.claude/skills/` 기준이다.

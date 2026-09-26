@@ -23,6 +23,7 @@ That document holds the common contract only. This skill additionally reads:
 
 - `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
 - `~/.claude/skills/_shared/references/github-issue-fields.md` — issue metadata contract. Written for `issue_tracker: github`; Step 4 and the Forgejo branch reuse its label rule, so forgejo reads it too.
+- `~/.claude/skills/_shared/references/forgejo.md` — `fj` surface facts (`issue_tracker: forgejo` only)
 
 Read nothing else from the reference set; the rest does not apply here.
 
@@ -72,7 +73,7 @@ A plan reaches the tracker three ways: as a new issue's body (Step 6), as a comm
 - A summary that is itself over the limit is never cut to fit: nothing is posted, and the step reports why.
 - Every comment starts with a marker line, `<!-- plan-<id> rev:<rev> -->`, where `<rev>` is the first 8 hex digits of the plan file's sha1, and the marker counts toward the limit. A create-mode body carries no marker, because it is the plan as written.
 - The same content is never posted twice. Before posting, the issue body and comments are read, and the post is skipped when one of them starts with this marker line, or is this plan (or its create-mode summary) as a whole — an issue created from this plan. Each body and comment is compared on its own and in full, so a revision that only drops lines from the end is still posted.
-- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence, measured on Forgejo: an issue with no comments prints nothing and exits 0, and an issue that does not exist exits 1. Whether `gh issue view --json comments` returns every comment of a long thread is unverified.
+- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.
 
 The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 3 when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.
 
@@ -130,8 +131,8 @@ python -m harness_core.plan_body forgejo --issue '<id>' --expect-rev '<rev>' --s
 [ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }
 ```
 
-- The Forgejo comment takes the repository in the issue argument: `issue comment` has no `-r`, and its `-R` names a git remote. Success prints nothing, so the read-back is the only evidence, as in `project-done` Step 9.
-- `fj` quotes every line of a body or comment with `> ` and wraps the lines between them in U+2068/U+2069; the module splits a Forgejo read into one entry per run of quoted lines, and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.
+- The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.
+- The module splits a Forgejo read into one entry per run of quoted lines — how `fj` prints bodies and comments is in `~/.claude/skills/_shared/references/forgejo.md` — and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.
 
 ## Instructions
 
@@ -265,9 +266,8 @@ path resolves to the main worktree root.
 
    - **Forgejo**: the read contract from `~/.claude/skills/SKILL-CONFIG.md`. Strip the directional
      isolates from the wrapped fields (number, title, state) before comparing them, as the Forgejo
-     section of Step 6 explains. Measured once (2026-09-26): a number that does not exist prints
-     `Error: not found` and exits 1, and a pull request number prints the pull request with a
-     `From … into …` line. One measurement is not a contract — the content rule below still decides.
+     section of Step 6 explains. What a missing number and a pull request number print — measured once — is in
+     `~/.claude/skills/_shared/references/forgejo.md`. One measurement is not a contract — the content rule below still decides.
 
      ```bash
      fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>"
@@ -528,19 +528,16 @@ Compare the summary, type and project on the response with what was sent. This r
 
 **이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다 — 읽기 확인이 증거다.**
 
-이 원칙에 매다는 조용한 실패가 둘이다. 서로 다른 사고지만 뿌리가 같아서, 따로 경고하는 대신 원칙을 먼저 세우고 사례로 내린다.
+이 원칙에 매다는 조용한 실패가 이 절에 둘 있다: 빈 채로 나오는 이슈 번호와, 적용되지 않았는데 성공처럼 끝나는 라벨. 두 사고의 표면 — 무엇이 어떻게 조용한가 — 은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다. 이 절은 두 사고를 막는 절차다.
 
-1. **빈 이슈 번호** — 생성 성공 출력의 번호가 양방향 격리 문자로 감싸여 있어, 순진한 파싱이 에러 없이 **빈 문자열**을 돌려준다.
-2. **적용되지 않은 라벨** — 존재하지 않는 라벨은 종료코드 **0**, stderr **0 바이트**로 끝나고 경고는 stdout 으로만 나간다. 성공이 침묵하고 실패가 말하므로 `$?` 로도, "출력이 있었나" 로도 가를 수 없다 — 후자는 판정이 아예 뒤집힌다.
-
-harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 **무관하게** `fj` 직접 호출이 유일한 경로다. 전역 옵션(`-H`, `-C`, `--style`)은 서브커맨드 **앞**에 온다. 버전 확인 명령(`fj version`)과 최소 버전은 `~/.claude/skills/dependencies.yaml` 이 선언한다 — 여기서 추측하지 않는다.
+harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 **무관하게** `fj` 직접 호출이 유일한 경로다. 전역 옵션의 자리와 서브커맨드마다 다른 플래그 표면은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다. 버전 확인 명령(`fj version`)과 최소 버전은 `~/.claude/skills/dependencies.yaml` 이 선언한다 — 여기서 추측하지 않는다.
 
 생성을 먼저 잡고, 번호는 그 출력에서 읽는다. 격리 제거가 그 추출의 한 단이다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:
 
 ```bash
 DRAFT_PLAN='<draft-plan-path>'
 # Repo targeting: -r <forgejo_repo> as below, or -R <forgejo_remote> when the project
-# declares a remote that actually exists locally. Both are accepted by create/search/edit.
+# declares a remote that actually exists locally. create and search take both; edit takes -R only.
 TITLE="$(sed -n 's/^# Plan: //p' "$DRAFT_PLAN" | head -1)"
 [ -n "$TITLE" ] || { echo "no '# Plan: ' title line in $DRAFT_PLAN"; exit 1; }
 BODY_FILE="$(mktemp)" || exit 1
@@ -554,12 +551,12 @@ printf 'CREATE_FAILED=%s\nISSUE_NUMBER=%s\n%s\n' "${CREATE_FAILED:-0}" "$ISSUE_N
 printf '%s\n' "$CREATED"
 ```
 
-- 격리 제거(`\u2068`/`\u2069`)는 군더더기가 아니다. 파이프 한 단으로 두고 **추출보다 앞에** 둔다 — 뒤에 두면 추출이 영영 매치하지 않는다. 빼면 `#` 와 첫 숫자 사이에 격리 문자가 끼어 추출이 **에러 없이 빈 문자열**을 돌려주고, 그 빈 값이 8단계로 흘러든다. 8단계의 id 검사가 `plan-.md` 는 막지만, 그때는 이미 만들어진 이슈의 번호를 잃은 채 멈추는 것이다. 실패가 조용하다는 것이 이 단계를 지켜야 하는 이유다.
-- `--style minimal` 이 격리 문자를 없애줄 것이라고 기대하지 마라. 도움말의 "Always used in non-terminal contexts (i.e. pipes)" 가 그렇게 읽히지만, 파이프 출력에도 격리 문자는 **그대로 있다**.
-- **제목을 명령문에 리터럴로 붙여넣지 마라.** 파일에서 읽어 `"$TITLE"` 로 넘긴다. 셸은 파라미터 확장 결과를 다시 훑지 않으므로 따옴표 씌운 변수는 백틱이 들어 있어도 안전하다 — 위험한 것은 **리터럴**이다. `project-plan` 제목은 파일·심볼을 백틱으로 부르는 것이 상례라 이건 예외가 아니라 기본이다. 작은따옴표로 감싸는 것도 해결이 아니다: 제목 안의 아포스트로피 하나가 따옴표를 닫고 뒤따르는 백틱을 실행시키며, 그때 `--body-file` 이 빈 값을 받아 `$EDITOR` 가 열린다.
-- `--body-file` 은 선택이 아니다. `--body` 와 함께 빠지면 `$EDITOR` 가 열려 헤드리스에서 멈춘다. 한국어 플랜을 있는 그대로 올린다는 계약도 이 플래그가 지킨다.
-- `--web` 은 브라우저를 여는 플래그다. 자동 경로에서 쓰지 않는다 — "웹에서 확인하려면" 같은 안내로도 넣지 않는다.
-- `--no-template` 은 템플릿 선택 상호작용을 막는다. blank issue 를 막은 저장소에서는 이 형태가 실패하므로, 그때 `fj issue templates` 로 목록을 얻어 `--template <T>` 로 재시도한다. **이 재시도 경로는 미검증이다** — 실측한 저장소에 템플릿이 없어 겪지 못했다.
+- 격리 제거(`\u2068`/`\u2069`)는 군더더기가 아니다. 파이프 한 단으로 두고 **추출보다 앞에** 둔다 — 뒤에 두면 추출이 영영 매치하지 않는다. 빼면 추출이 **에러 없이 빈 문자열**을 돌려주고(생성 출력에서 격리 문자가 끼는 자리: `~/.claude/skills/_shared/references/forgejo.md`), 그 빈 값이 8단계로 흘러든다. 8단계의 id 검사가 `plan-.md` 는 막지만, 그때는 이미 만들어진 이슈의 번호를 잃은 채 멈추는 것이다. 실패가 조용하다는 것이 이 단계를 지켜야 하는 이유다.
+- 출력 스타일 옵션에 기대지 않고 격리 제거를 펜스가 직접 한다 — 어느 옵션도 격리 문자를 없애지 않는다(`~/.claude/skills/_shared/references/forgejo.md`).
+- **제목을 명령문에 리터럴로 붙여넣지 마라.** 파일에서 읽어 `"$TITLE"` 로 넘긴다. 셸은 파라미터 확장 결과를 다시 훑지 않으므로 따옴표 씌운 변수는 백틱이 들어 있어도 안전하다 — 위험한 것은 **리터럴**이다. `project-plan` 제목은 파일·심볼을 백틱으로 부르는 것이 상례라 이건 예외가 아니라 기본이다. 작은따옴표로 감싸는 것도 해결이 아니다: 제목 안의 아포스트로피 하나가 따옴표를 닫고 뒤따르는 백틱을 실행시키며, 그때 `--body-file` 이 빈 값을 받는다(그때 `fj` 가 하는 일: `~/.claude/skills/_shared/references/forgejo.md`).
+- `--body-file` 은 선택이 아니다 — 빠졌을 때 `fj` 가 하는 일은 `~/.claude/skills/_shared/references/forgejo.md` 에 있고, 한국어 플랜을 있는 그대로 올린다는 계약도 이 플래그가 지킨다.
+- `--web` 은 자동 경로에서 쓰지 않는다 — "웹에서 확인하려면" 같은 안내로도 넣지 않는다.
+- `--no-template` 을 준다. 이 형태가 실패하면(언제 실패하는지: `~/.claude/skills/_shared/references/forgejo.md`) `fj issue templates` 로 목록을 얻어 `--template <T>` 로 재시도한다. **이 재시도 경로는 미검증이다** — 실측한 저장소에 템플릿이 없어 겪지 못했다.
 
 - **생성 실패와 파싱 실패를 한 덩어리로 다루지 마라.** `"$(a | b | c)"` 의 종료코드는 `c` 의 것이라, 파이프라인 하나로 합치면 `fj` 가 죽어도 종료코드 0 에 빈 번호가 나와 **파싱 실패와 구별되지 않는다**. 위처럼 생성을 먼저 잡아 `CREATE_FAILED` 로 갈라둔다.
 
@@ -578,21 +575,21 @@ TITLE="$(sed -n 's/^# Plan: //p' "$DRAFT_PLAN" | head -1)"
 fj -H <forgejo_host> --style minimal issue search -r <forgejo_repo> "$TITLE"
 ```
 
-`issue search` 는 기본이 `-s open` 인 자유 텍스트 검색이다. 제목이 비슷한 기존 열린 이슈가 있으면 **엉뚱한 번호가 잡힌다** — 생성 실패 경로에서 이걸 쓰면 안 되는 이유이고, 여기서도 잡힌 번호의 제목을 눈으로 대조한 뒤 쓴다. 이 출력 형식은 미검증이므로 create 용 파서를 돌리지 않는다.
+`issue search` 는 제목이 비슷한 기존 열린 이슈를 **엉뚱한 번호로 잡을 수 있다**(`~/.claude/skills/_shared/references/forgejo.md`) — 생성 실패 경로에서 이걸 쓰면 안 되는 이유이고, 여기서도 잡힌 번호의 제목을 눈으로 대조한 뒤 쓴다. 검색 출력에는 create 용 파서를 돌리지 않는다.
 
 라벨 적용과 읽기 확인 펜스의 `<ISSUE_NUMBER>` 는 리터럴로 치환한다 — 생성 펜스가 출력한 `ISSUE_NUMBER=` 값, 그것이 비었을 때 생성 출력 원문에서 읽은 번호, 재검색으로 잡아 제목을 대조한 번호, 웹 UI 에서 사람이 돌려준 번호 중 하나다. 8단계와 같은 이유로 앞 호출의 셸 변수를 넘기지 않는다: 살아남지 못한 변수는 빈 값으로 도착하고, 그러면 `"<forgejo_repo>#"` 는 대상 없는 호출이 된다.
 
-라벨은 4단계에서 이미 추론한 area 태그를 재사용한다. `fj` 의 create 에는 라벨 플래그가 없으므로 생성 후 두 번째 호출로 적용한다 — GitHub 절이 한 번의 호출을 고집하는 것과 갈리는 이유는 도구 표면의 차이이지 절차 설계의 선택이 아니다:
+라벨은 4단계에서 이미 추론한 area 태그를 재사용하고, 생성 후 두 번째 호출로 적용한다 — GitHub 절이 한 번의 호출을 고집하는 것과 갈리는 이유는 도구 표면의 차이(`~/.claude/skills/_shared/references/forgejo.md`)이지 절차 설계의 선택이 아니다:
 
 ```bash
 fj -H <forgejo_host> issue edit "<forgejo_repo>#<ISSUE_NUMBER>" labels -a "<area tag>"
 ```
 
-- 4단계가 태그를 둘 추론하면(`["BE", "FE"]`) `-a` 를 태그마다 하나씩 준다. 쉼표로 묶은 `-a "BE,FE"` 는 **측정된 적 없고**, 틀렸다면 없는 라벨 취급을 받아 종료코드 0 으로 조용히 무시된다. 어느 쪽이든 판정은 아래 읽기 확인이다.
+- 4단계가 태그를 둘 추론하면(`["BE", "FE"]`) `-a` 를 태그마다 하나씩 준다. 쉼표로 묶은 `-a "BE,FE"` 형태는 쓰지 않는다(`~/.claude/skills/_shared/references/forgejo.md`). 어느 쪽이든 판정은 아래 읽기 확인이다.
 
-- 대상 저장소는 이슈를 `<forgejo_repo>#<N>` 형태로 주어 지정한다. `fj issue edit ... labels` 에는 `--repo` 가 **없고**, 거기서 `-r` 은 `--rm`(라벨 제거)이다. `create` 의 `-r`(`--repo`)과 같은 글자가 반대 의도를 갖는다 — 저장소 지정으로 잘못 쓰면 라벨이 조용히 지워진다.
+- 대상 저장소는 이슈를 `<forgejo_repo>#<N>` 형태로 주어 지정하고, 이 `labels` 호출에 `-r` 을 주지 않는다 — 이 호출에서 그 글자가 무엇을 하는지는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.
 - 라벨 적용은 아래 읽기 확인으로만 확증된다. 붙지 않았으면 그 라벨을 **미반영**으로 보고한다.
-- Forgejo 의 area 태그는 **best-effort** 다. `fj` 에는 저장소 라벨을 열거할 수단이 없어(최상위 `label` 서브커맨드 자체가 없다) 무엇이 유효한지 볼 수 없다. 한 번 시도하고, 읽어서 확인하고, 안 붙었으면 미반영으로 보고한다 — 없는 라벨을 새로 만들어 채우지 않는다.
+- Forgejo 의 area 태그는 **best-effort** 다. 무엇이 유효한 라벨인지 미리 볼 수 없으므로(`~/.claude/skills/_shared/references/forgejo.md`) 한 번 시도하고, 읽어서 확인하고, 안 붙었으면 미반영으로 보고한다 — 없는 라벨을 새로 만들어 채우지 않는다.
 
 type·priority·size 는 `fj` 에 대응 플래그가 없다. 셋 다 **미반영**으로 보고하고 9단계 출력에 싣는다. 4단계가 세운 규칙이 여기에도 그대로 걸린다 — 이 셋을 area 태그에 실어 보내는 우회는 금지다. 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 폴백 원칙과 `~/.claude/skills/_shared/references/github-issue-fields.md` 이며, 여기에 복제하지 않고 가리킨다. 미반영은 오류 상태가 아니라 Forgejo 의 정상 결과다.
 
@@ -604,10 +601,10 @@ fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<ISSUE_NUMBER>"
 ```
 
 - 확인할 일은 둘이다: 이슈가 실재하는지, 그리고 라벨이 실제로 붙었는지. 위 원칙 때문에 라벨은 여기 말고 확인할 데가 없다.
-- create 용 번호 파서를 이 확인에 재사용하지 않는다. view 는 번호가 제목 **뒤**에 오고 격리 문자가 중첩되거나 빈 채로 섞인다. 하나의 파서로 둘을 다루면 둘 다 부서진다 — 여기서는 번호를 다시 파싱하는 것이 목적이 아니므로 격리 문자에 관대하게 읽는다.
-- 격리 제거를 라벨 줄에까지 확장하지 마라. 라벨은 자기 줄에 **평문**으로 찍힌다. 격리 제거는 감싸인 필드(번호·제목·작성자·상태)에만 쓰는 **국소 처리**이지 모든 `fj` 출력에 거는 일괄 처리가 아니다. 반대로 라벨이 평문인 것을 보고 "fj 출력에는 격리 문자가 없다" 고 일반화해서도 안 된다. 두 과잉 적용이 모두 틀렸다.
-- 올바른 표면을 읽어라. `fj issue view <ID>` 는 기본이 `body` 라서 **코멘트를 보여주지 않는다**; 코멘트는 `fj issue view <ID> comments` 다. 이 절은 라벨만 확인하므로 기본 표면으로 충분하지만, 엉뚱한 표면을 읽으면 쓰기가 실패한 것과 똑같이 보인다.
-- `fj issue edit <N> body` 에는 `--body-file` 이 없다 — 본문은 위치 인자뿐이라 **파일 기반 갱신 경로가 없다**. 플랜을 있는 그대로 올린다는 것은 생성 시점의 계약이고, 등록된 뒤 로컬 파일과 이슈 본문이 갈라지면 되돌리기가 비싸다. 처음 올리는 것이 정확해야 하는 이유가 하나 더 있는 셈이다.
+- create 용 번호 파서를 이 확인에 재사용하지 않는다. 두 출력은 번호 자리와 격리 모양이 다르다(`~/.claude/skills/_shared/references/forgejo.md`). 하나의 파서로 둘을 다루면 둘 다 부서진다 — 여기서는 번호를 다시 파싱하는 것이 목적이 아니므로 격리 문자에 관대하게 읽는다.
+- 격리 제거를 라벨 줄에까지 확장하지 마라. 격리 제거는 감싸인 필드에만 쓰는 **국소 처리**이지 모든 `fj` 출력에 거는 일괄 처리가 아니다. 반대로 라벨 줄을 보고 "fj 출력에는 격리 문자가 없다" 고 일반화해서도 안 된다. 어느 필드가 감싸이는지는 `~/.claude/skills/_shared/references/forgejo.md` 에 있다 — 두 과잉 적용이 모두 틀렸다.
+- 올바른 표면을 읽어라. 이 절은 라벨만 확인하므로 기본 표면으로 충분하다 — 기본 표면과 `comments` 표면이 각각 무엇을 보여 주는지는 `~/.claude/skills/_shared/references/forgejo.md` 에 있고, 엉뚱한 표면을 읽으면 쓰기가 실패한 것과 똑같이 보인다.
+- 등록된 뒤 이슈 본문을 파일에서 갱신하는 경로가 없다(`~/.claude/skills/_shared/references/forgejo.md`). 플랜을 있는 그대로 올린다는 것은 생성 시점의 계약이고, 등록된 뒤 로컬 파일과 이슈 본문이 갈라지면 되돌리기가 비싸다. 처음 올리는 것이 정확해야 하는 이유가 하나 더 있는 셈이다.
 
 `fj` 쓰기 경로가 실패했을 때의 마지막 단은 웹 UI 수동 등록이며, 그 규칙은 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이 갖는다 — 여기에 복제하지 않는다. 사람이 돌려준 번호만 있으면 8단계는 그대로 진행된다.
 
