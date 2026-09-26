@@ -29,7 +29,9 @@ renamed it injects its own.
 
 from __future__ import annotations
 
+import argparse
 import json
+import shlex
 import subprocess
 from dataclasses import dataclass, field as dataclass_field
 from fnmatch import fnmatch
@@ -110,6 +112,14 @@ class GraphQLError(GhError):
 
 class FieldNotFoundError(LookupError):
     """A configured field name does not exist in the project."""
+
+
+class LinkTargetError(LookupError):
+    """A parent or blocker that cannot be linked; ``reason`` says why."""
+
+    def __init__(self, number: int, reason: str, detail: str = "") -> None:
+        self.number, self.reason = number, reason
+        super().__init__(f"#{number} {reason}" + (f": {detail}" if detail else ""))
 
 
 class OptionNotFoundError(LookupError):
@@ -681,6 +691,8 @@ _ISSUE_META_QUERY = """
         number title id url
         issueType { name }
         labels(first:100){ nodes { name } }
+        parent { id number repository { nameWithOwner } }
+        blockedBy(first:100){ totalCount nodes { id number repository { nameWithOwner } } }
         projectItems(first:20){
           nodes{
             id
@@ -732,9 +744,14 @@ def read_issue_meta(
             ``project_number`` is ``None``.
 
     Returns:
-        ``{number, title, node_id, url, type, labels, project}`` where ``project``
-        is ``None`` when the issue is in no matching project, and otherwise
-        ``{item_id, fields, <slot>: <option name or None>, ...}``.
+        ``{number, title, node_id, url, type, labels, project, parent,
+        blocked_by, blocked_by_truncated}`` where ``project`` is ``None`` when
+        the issue is in no matching project, and otherwise
+        ``{item_id, fields, <slot>: <option name or None>, ...}``. ``parent`` is
+        a number in this repository, ``owner/repo#N`` in another, or ``None``;
+        ``blocked_by`` lists the same forms, sorted. The keys in
+        ``_LINK_ID_KEYS`` carry the links' node ids for comparison, in the same
+        order.
 
     Raises:
         LookupError: the repository answered and has no such issue.
@@ -768,12 +785,140 @@ def read_issue_meta(
             ["api", "graphql"],
             f"the repository object for {owner}/{repo} carries an unreadable issue field",
         )
-    return _shape_issue_node(
+    # A missing or malformed parent/blockedBy is a GraphQLError too: see
+    # _shape_links.
+    meta = _shape_issue_node(
         issue,
         project_number=project_number,
         project_owner=project_owner,
         field_names=field_names,
     )
+    meta.update(_shape_links(issue, owner, repo))
+    return meta
+
+
+def _link_ref(node: object, owner: str, repo: str, what: str) -> tuple[str, int | str]:
+    """``(node id, display)`` of one linked issue; display is the number in this
+    repository and ``owner/repo#N`` in any other.
+
+    Identity is the node id: a number is only unique inside one repository, and
+    an existing parent or blocker may live in another.
+    """
+    if not isinstance(node, dict):
+        raise GraphQLError(["api", "graphql"], f"{what} is not an issue object: {node!r}")
+    node_id, number = node.get("id"), node.get("number")
+    where = (node.get("repository") or {}).get("nameWithOwner") if isinstance(
+        node.get("repository"), dict) else None
+    if not (isinstance(node_id, str) and node_id and isinstance(number, int)
+            and not isinstance(number, bool) and isinstance(where, str) and where):
+        raise GraphQLError(["api", "graphql"], f"{what} carries no readable id, number and repository")
+    same = where.lower() == f"{owner}/{repo}".lower()
+    return node_id, (number if same else f"{where}#{number}")
+
+
+def _ref_key(ref: int | str) -> tuple:
+    """This repository's numbers first, in order, then other repositories' by
+    repository and number — ``o/r#9`` before ``o/r#10``."""
+    if isinstance(ref, int):
+        return (0, "", ref)
+    where, _, number = ref.rpartition("#")
+    return (1, where.lower(), int(number))
+
+
+def _shape_links(issue: Mapping, owner: str, repo: str) -> dict:
+    """The parent and blockers of one issue, read strictly.
+
+    Only :func:`read_issue_meta` selects these fields, so the list query and
+    :func:`iter_issue_meta` keep their shape. A field that is missing or
+    malformed is an issue nobody could read — the same rule as a missing
+    ``issue`` — not an issue without links: reading it as "no parent" would
+    send a second ``addSubIssue`` or report drift that is not there.
+
+    ``blocked_by_truncated`` marks a list longer than the page read; it is not a
+    refusal, because every other command reading the issue would then fail on
+    an issue with many blockers.
+    """
+    if "parent" not in issue or "blockedBy" not in issue:
+        raise GraphQLError(["api", "graphql"], "the issue carries no parent or blockedBy field")
+    parent = issue["parent"]
+    parent_id, parent_ref = (None, None) if parent is None else _link_ref(parent, owner, repo, "parent")
+    blocked = issue["blockedBy"]
+    nodes = blocked.get("nodes") if isinstance(blocked, dict) else None
+    total = blocked.get("totalCount") if isinstance(blocked, dict) else None
+    if not isinstance(nodes, list) or not isinstance(total, int) or isinstance(total, bool):
+        raise GraphQLError(["api", "graphql"], "blockedBy carries no readable nodes and totalCount")
+    refs = sorted((_link_ref(node, owner, repo, "a blockedBy node") for node in nodes),
+                  key=lambda pair: _ref_key(pair[1]))
+    return {
+        "parent": parent_ref,
+        "parent_node_id": parent_id,
+        "blocked_by": [ref for _, ref in refs],
+        "blocked_by_node_ids": [node_id for node_id, _ in refs],
+        "blocked_by_truncated": total > len(refs),
+    }
+
+
+# Node ids of the links, which the commands compare by and never print: a
+# consumer reading them next to `blocked_by` would be reading internals.
+_LINK_ID_KEYS = ("parent_node_id", "blocked_by_node_ids")
+
+
+# Targets of a link are looked up before anything is written. `issueOrPullRequest`
+# rather than `issue`: GitHub answers a pull-request number exactly as it answers
+# a number that does not exist (NOT_FOUND on `issue`), and only this field says
+# which of the two it was.
+_LINK_TARGET_QUERY = """
+  query($owner:String!,$repo:String!,$number:Int!){
+    repository(owner:$owner,name:$repo){
+      issueOrPullRequest(number:$number){
+        __typename
+        ... on Issue { id number state subIssuesSummary { total } }
+      }
+    }
+  }
+"""
+
+# GitHub's cap on sub-issues per parent. A parent already at it passes a lookup
+# and then refuses the link after the issue exists, on every retry.
+SUB_ISSUE_LIMIT = 100
+
+
+
+def read_link_target(owner: str, repo: str, number: int, *, run: Run | None = None) -> dict:
+    """``{node_id, number, state, sub_issues}`` of an issue in this repository.
+
+    Raises:
+        LinkTargetError: ``reason`` is ``"does not exist"`` (the server's
+            NOT_FOUND, read from its structure), ``"is a pull request"``, or
+            ``"could not be read"`` — every other failure, because an answer
+            nobody could read says nothing about the issue.
+    """
+    try:
+        data = _graphql(
+            _LINK_TARGET_QUERY, {"owner": owner, "repo": repo, "number": int(number)}, run=run
+        )
+    except GhError as exc:
+        errors = _graphql_errors(exc)
+        if errors and all(
+            isinstance(e, dict) and e.get("type") == "NOT_FOUND"
+            and e.get("path") == ["repository", "issueOrPullRequest"]
+            for e in errors
+        ):
+            raise LinkTargetError(number, "does not exist") from None
+        raise LinkTargetError(number, "could not be read", str(exc)) from None
+    repository = data.get("repository")
+    node = repository.get("issueOrPullRequest") if isinstance(repository, dict) else None
+    if not isinstance(node, dict):
+        raise LinkTargetError(number, "could not be read", "the answer carries no issue")
+    if node.get("__typename") == "PullRequest":
+        raise LinkTargetError(number, "is a pull request")
+    summary = node.get("subIssuesSummary")
+    total = summary.get("total") if isinstance(summary, dict) else None
+    if not (node.get("__typename") == "Issue" and isinstance(node.get("id"), str) and node["id"]
+            and node.get("number") == int(number) and node.get("state") in ("OPEN", "CLOSED")
+            and isinstance(total, int) and not isinstance(total, bool)):
+        raise LinkTargetError(number, "could not be read", "the answer is not a readable issue")
+    return {"node_id": node["id"], "number": node["number"], "state": node["state"], "sub_issues": total}
 
 
 _LIST_ISSUES_QUERY = """
@@ -988,7 +1133,8 @@ def _shape_issue_node(
     """Shape one issue node into the observed-metadata dict.
 
     The single shaper: both the one-issue query and the list query select the
-    same fields and go through here. It was briefly duplicated, which put the
+    same fields and go through here — except the parent and blockers, which only
+    :func:`read_issue_meta` selects and :func:`_shape_links` adds. It was briefly duplicated, which put the
     project-item selection rule in two places with two sets of tests.
 
     An item is the board's when its number matches and, if ``project_owner`` is
@@ -1138,6 +1284,52 @@ def set_single_select(
         )
 
 
+_ADD_SUB_ISSUE_MUTATION = """
+  mutation($parent:ID!,$child:ID!){
+    addSubIssue(input:{issueId:$parent, subIssueId:$child}){
+      issue { id }
+      subIssue { id }
+    }
+  }
+"""
+
+_ADD_BLOCKED_BY_MUTATION = """
+  mutation($issue:ID!,$blocker:ID!){
+    addBlockedBy(input:{issueId:$issue, blockingIssueId:$blocker}){
+      issue { id }
+      blockingIssue { id }
+    }
+  }
+"""
+
+
+def add_sub_issue(parent_id: str, child_id: str, *, run: Run | None = None) -> None:
+    """Link ``child_id`` under ``parent_id``. Never replaces an existing parent.
+
+    ``replaceParent`` is deliberately not sent: a child already under another
+    parent is refused before this is called, and the server refuses it here too
+    rather than detaching the child silently.
+    """
+    data = _graphql(_ADD_SUB_ISSUE_MUTATION, {"parent": parent_id, "child": child_id}, run=run)
+    result = data.get("addSubIssue")
+    linked = result.get("subIssue") if isinstance(result, dict) else None
+    if not (isinstance(linked, dict) and linked.get("id") == child_id):
+        raise GraphQLError(
+            ["api", "graphql"], "addSubIssue returned no sub-issue; the link was not confirmed"
+        )
+
+
+def add_blocked_by(issue_id: str, blocker_id: str, *, run: Run | None = None) -> None:
+    """Record that ``issue_id`` is blocked by ``blocker_id``."""
+    data = _graphql(_ADD_BLOCKED_BY_MUTATION, {"issue": issue_id, "blocker": blocker_id}, run=run)
+    result = data.get("addBlockedBy")
+    blocker = result.get("blockingIssue") if isinstance(result, dict) else None
+    if not (isinstance(blocker, dict) and blocker.get("id") == blocker_id):
+        raise GraphQLError(
+            ["api", "graphql"], "addBlockedBy returned no blocking issue; the link was not confirmed"
+        )
+
+
 def apply_field_values(
     fields: ProjectFields,
     item_id: str,
@@ -1171,12 +1363,19 @@ def apply_field_values(
 # `test_every_command_builds_help` is an offline test.
 
 
-def _observed_from_meta(meta: Mapping, slots: Iterable[str]) -> dict:
-    """The requested-vs-observed view of one issue's metadata."""
+def _observed_from_meta(meta: Mapping, slots: Iterable[str], *, links: bool = False) -> dict:
+    """The requested-vs-observed view of one issue's metadata.
+
+    ``links`` adds the parent and blockers — only when they were asked for, so
+    a command that did not touch them reports exactly what it did before.
+    """
     project = meta.get("project") or {}
     observed = {"type": meta.get("type"), "labels": list(meta.get("labels") or [])}
     for slot in slots:
         observed[slot] = project.get(slot)
+    if links:
+        observed["parent"] = meta["parent"]
+        observed["blocked_by"] = list(meta["blocked_by"])
     return observed
 
 
@@ -1215,6 +1414,12 @@ def _mismatches(requested: Mapping, observed: Mapping) -> list[str]:
                 drift.append(f"labels requested but not applied: {missing}")
             if extra:
                 drift.append(f"labels present but not requested: {extra}")
+        elif key == "blocked_by":
+            # Only what was asked for: an issue may rightly carry other blockers,
+            # and one set earlier is not drift of this request. Order is ignored.
+            missing = [number for number in want if number not in (got or [])]
+            if missing:
+                drift.append(f"blocked_by requested but not linked: {missing}")
         elif got != want:
             drift.append(f"{key}: requested {want!r}, observed {got!r}")
     return drift
@@ -1284,12 +1489,116 @@ def _writable_slots(field_names: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+def _issue_number(value: str) -> int:
+    """argparse ``type=`` for ``--parent``/``--blocked-by``: a positive number in
+    this repository. ``owner/repo#N`` and URLs are refused — links are
+    same-repository only."""
+    if not (value.isascii() and value.isdigit()) or int(value) < 1:
+        shown = value if len(value) <= 40 else value[:40] + "…"
+        raise argparse.ArgumentTypeError(f"not an issue number in this repository: {shown!r}")
+    return int(value)
+
+
+# Pieces `set-fields` repairs when run again with the same flag. The rest cannot
+# be repaired by it: it never writes Status, adds a board item only to write a
+# field, and a failed read-back is fixed by reading, not writing.
+_REPAIR_FLAGS = {"type": "--type", "priority": "--priority", "size": "--size", "parent": "--parent"}
+_NOT_REPAIRABLE_HINTS = {
+    "project_item": "add the issue to the board",
+    "status": "set its Status on the board; set-fields never writes Status",
+    "read_back": "read it with get-issue",
+}
+
+
+def _repair_report(number: int, failures: Sequence[tuple[str, str]], values: Mapping[str, object]) -> dict:
+    """What an ``INCOMPLETE`` report says, as data. Never an exit code.
+
+    ``failures`` is ``(piece, message)`` in the order the writes ran; a piece is
+    ``type``, ``project_item``, ``status``, ``priority``, ``size``, ``parent``,
+    ``blocked_by:#<N>`` or ``read_back``. The recovery line carries only the
+    pieces that failed and that ``set-fields`` can repair, quoted for the shell;
+    it is ``None`` when there are none. ``values`` holds what each repairable
+    piece asked for.
+    """
+    argv = ["set-fields", str(number)]
+    unrepairable: list[str] = []
+    for piece, _ in failures:
+        if piece in _REPAIR_FLAGS:
+            argv += [_REPAIR_FLAGS[piece], str(values[piece])]
+        elif piece.startswith("blocked_by:#"):
+            argv += ["--blocked-by", piece.split("#", 1)[1]]
+        else:
+            unrepairable.append(piece)
+    # `set-fields` adds the board item itself when it writes a field.
+    if "project_item" in unrepairable and any(p in ("priority", "size") for p, _ in failures):
+        unrepairable.remove("project_item")
+    return {
+        "errors": [{"piece": piece, "error": message} for piece, message in failures],
+        "recovery": shlex.join(argv) if len(argv) > 2 else None,
+        "unrepairable": unrepairable,
+    }
+
+
+def _repair_lines(number: int, report: Mapping) -> list[str]:
+    lines = []
+    if report["recovery"]:
+        lines += ["Repair it in place:", f"  {report['recovery']}"]
+    for piece in report["unrepairable"]:
+        hint = _NOT_REPAIRABLE_HINTS.get(piece, "repair it by hand")
+        if piece == "read_back":
+            hint = f"{hint} {number}"
+        lines.append(f"Not repairable by set-fields {number} — {piece}: {hint}")
+    return lines
+
+
+def _link_targets(owner: str, repo: str, parent: int | None, blockers: Sequence[int]) -> tuple[dict | None, list[tuple[int, dict]], list[str]]:
+    """Look up every link target before the first write.
+
+    Returns the parent's target, each blocker's, and the warnings to report
+    (a closed target is linked, not refused). Raises :class:`LinkTargetError`
+    for a target that does not exist, is a pull request or cannot be read. The
+    sub-issue cap is the caller's: a parent the issue is already under is not
+    one it is being added to.
+    """
+    warnings: list[str] = []
+    parent_target = None
+    if parent is not None:
+        parent_target = read_link_target(owner, repo, parent)
+        if parent_target["state"] == "CLOSED":
+            warnings.append(f"parent #{parent} is closed")
+    blocker_targets = []
+    for number in blockers:
+        target = read_link_target(owner, repo, number)
+        if target["state"] == "CLOSED":
+            warnings.append(f"blocker #{number} is closed")
+        blocker_targets.append((number, target))
+    return parent_target, blocker_targets, warnings
+
+
+def _truncated_blockers(drift: list[str], notes: list[str]) -> tuple[list[str], list[str]]:
+    """With a blocker list longer than the page read, a requested blocker that
+    is not shown is unknown, not missing: move it from drift into a note."""
+    unknown = [d for d in drift if d.startswith("blocked_by requested but not linked")]
+    note = "blocked_by: the issue has more blockers than one page reads; one not shown may be past it"
+    return ([d for d in drift if d not in unknown],
+            notes + [note] + [d.replace("requested but not linked", "not confirmed") for d in unknown])
+
+
+def _refuse_full_parent(number: int, target: Mapping) -> None:
+    """Raise when a parent this issue would be *added* to is at GitHub's cap."""
+    if target["sub_issues"] >= SUB_ISSUE_LIMIT:
+        raise LinkTargetError(number, "already has the most sub-issues GitHub allows",
+                              str(target["sub_issues"]))
+
+
 def _create_issue_handler(args) -> ExitCode:
     """Create one issue with its full metadata, then report what actually stuck.
 
     Returns ``OK``, ``REFUSED``, ``INCOMPLETE`` or ``UNKNOWN`` — a contract the
     skill depends on; what each means for this command is in
-    ``skills/_shared/references/exit-codes.md``. ``UNKNOWN`` exists because a
+    ``skills/_shared/references/exit-codes.md``. ``--parent`` and
+    ``--blocked-by`` link the new issue; their targets are looked up before the
+    create, so a target that does not exist is ``REFUSED`` with nothing made. ``UNKNOWN`` exists because a
     failed create request does not say whether the issue exists: neither
     ``REFUSED`` nor ``INCOMPLETE`` can be claimed, as there is nothing to repair
     and nothing is safe to retry blind.
@@ -1299,7 +1608,9 @@ def _create_issue_handler(args) -> ExitCode:
     issue that can never be created cleanly. Everything after the create is
     inside the ``INCOMPLETE`` guarantee — including the read-back, which is the
     call most likely to fail, since it runs last and GitHub can legitimately 404
-    an issue it has just created.
+    an issue it has just created. Every piece after the create is attempted even
+    when an earlier one failed, and the failures are reported together, with a
+    ``set-fields`` line that repairs only what failed.
 
     "Checked without writing" includes reading the project's field options, and
     that read is a precondition rather than a step of joining the board: it is
@@ -1321,6 +1632,9 @@ def _create_issue_handler(args) -> ExitCode:
             "--no-project cannot be combined with --priority/--size: "
             "those are project fields"
         )
+    blockers = list(dict.fromkeys(args.blocked_by or []))
+    if args.parent is not None and args.parent in blockers:
+        args._parser.error(f"#{args.parent} cannot be both the parent and a blocker")
 
     # Stage one: no network. A label the project does not allow is rejected
     # before anything exists to clean up.
@@ -1400,7 +1714,7 @@ def _create_issue_handler(args) -> ExitCode:
     # name, and folding them back together puts a `--no-project` issue on the
     # board — every write below hangs off `board`.
     board = fields if wants_project else None
-    pending: list[tuple[str, str]] = []
+    pending: list[tuple[str, str, str]] = []
     # The board's own spelling of each value, which is what the read-back reports.
     resolved: dict[str, str] = {}
     if board is not None:
@@ -1408,12 +1722,12 @@ def _create_issue_handler(args) -> ExitCode:
             if initial_status:
                 status_field = board.field(slots["status"])
                 option_id, resolved["status"] = status_field.option(initial_status)
-                pending.append((status_field.id, option_id))
+                pending.append(("status", status_field.id, option_id))
             for slot, value in (("priority", args.priority), ("size", args.size)):
                 if value:
                     field = board.field(writable[slot])
                     option_id, resolved[slot] = field.option(value)
-                    pending.append((field.id, option_id))
+                    pending.append((slot, field.id, option_id))
         except (FieldNotFoundError, OptionNotFoundError) as exc:
             print_error(str(exc))
             return ExitCode.REFUSED
@@ -1423,6 +1737,19 @@ def _create_issue_handler(args) -> ExitCode:
     except (OSError, UnicodeDecodeError) as exc:
         print_error(f"--body-file could not be read: {exc}")
         return ExitCode.REFUSED
+
+    # Link targets last among the checks: they are the only ones that name other
+    # issues, and each costs a query. Still before the create — a target that
+    # does not exist is a refusal, not an issue left half-linked.
+    try:
+        parent_target, blocker_targets, link_warnings = _link_targets(owner, repo, args.parent, blockers)
+        if parent_target is not None:
+            _refuse_full_parent(args.parent, parent_target)
+    except LinkTargetError as exc:
+        print_error(f"cannot link: {exc}; nothing was created")
+        return ExitCode.REFUSED
+    for warning in link_warnings:
+        print_error(f"warning: {warning}")
 
     try:
         created = create_issue(
@@ -1456,38 +1783,46 @@ def _create_issue_handler(args) -> ExitCode:
     for slot, value in (("priority", args.priority), ("size", args.size)):
         if value:
             requested[slot] = resolved.get(slot, value)
+    links = args.parent is not None or bool(blockers)
+    if args.parent is not None:
+        requested["parent"] = args.parent
+    if blockers:
+        requested["blocked_by"] = sorted(blockers)
 
-    notes: list[str] = []
+    notes: list[str] = list(link_warnings)
     if args.no_project:
         notes.append("--no-project: the issue was not added to any project")
     elif project_number is None:
         notes.append("no project configured for this repo; no project field was set")
 
-    def _fail(exc: Exception) -> ExitCode:
-        print_error(
-            f"the issue was created but its metadata is not complete: {exc}\n"
-            f"Do not create it again. Repair it in place:\n"
-            f"  set-fields {created['number']}"
-        )
-        print_json(
-            {
-                **created,
-                "title": args.title,
-                "requested": requested,
-                "observed": None,
-                "drift": notes,
-                "error": str(exc),
-            }
-        )
-        return ExitCode.INCOMPLETE
-
-    try:
-        if board is not None:
+    # Every piece is attempted; one failing does not stop the next. Stopping at
+    # the first left later pieces unwritten *and* unreported — the repair then
+    # fixed only what it was told about.
+    failures: list[tuple[str, str]] = []
+    if board is not None:
+        item_id = None
+        try:
             item_id = ensure_project_item(board.project_id, created["node_id"])
-            for field_id, option_id in pending:
+        except (GhError, KeyError, ValueError) as exc:
+            failures.append(("project_item", str(exc)))
+        for slot, field_id, option_id in pending:
+            if item_id is None:
+                failures.append((slot, "skipped: the issue is not on the board"))
+                continue
+            try:
                 set_single_select(board.project_id, item_id, field_id, option_id)
-    except (GhError, FieldNotFoundError, OptionNotFoundError, KeyError, ValueError) as exc:
-        return _fail(exc)
+            except (GhError, KeyError, ValueError) as exc:
+                failures.append((slot, str(exc)))
+    if parent_target is not None:
+        try:
+            add_sub_issue(parent_target["node_id"], created["node_id"])
+        except (GhError, KeyError, ValueError) as exc:
+            failures.append(("parent", str(exc)))
+    for number, target in blocker_targets:
+        try:
+            add_blocked_by(created["node_id"], target["node_id"])
+        except (GhError, KeyError, ValueError) as exc:
+            failures.append((f"blocked_by:#{number}", str(exc)))
 
     def _observe() -> dict:
         meta = read_issue_meta(
@@ -1500,20 +1835,53 @@ def _create_issue_handler(args) -> ExitCode:
         )
         return meta
 
+    meta = observed = None
+    drift: list[str] = []
     try:
         meta = _observe()
-        observed = _observed_from_meta(meta, slots)
+        observed = _observed_from_meta(meta, slots, links=links)
         drift = _mismatches(requested, observed)
-        if drift:
+        if drift and not failures:
             # One re-read: a project automation writing Status can land after the
             # create response, and reporting that race as drift trains the reader
-            # to ignore the field that matters.
+            # to ignore the field that matters. After a failure the drift is
+            # expected, so there is nothing to wait for.
             meta = _observe()
-            observed = _observed_from_meta(meta, slots)
+            observed = _observed_from_meta(meta, slots, links=links)
             drift = _mismatches(requested, observed)
     except (GhError, LookupError, ValueError) as exc:
-        return _fail(exc)
+        failures.append(("read_back", str(exc)))
+        # Drift from an earlier read beside `observed: null` would say two
+        # things about links nobody could confirm.
+        meta, observed, drift = None, None, []
+    if meta is not None and links and meta.get("blocked_by_truncated"):
+        drift, notes = _truncated_blockers(drift, notes)
 
+    def _incomplete() -> ExitCode:
+        report = _repair_report(
+            created["number"], failures, {**requested, **{k: v for k, v in (("priority", args.priority), ("size", args.size)) if v}}
+        )
+        print_error(
+            "\n".join(
+                [f"the issue was created but its metadata is not complete: {failures[0][1]}",
+                 "Do not create it again."] + _repair_lines(created["number"], report)
+            )
+        )
+        print_json(
+            {
+                **created,
+                "title": meta["title"] if meta is not None else args.title,
+                "requested": requested,
+                "observed": observed,
+                "drift": drift + notes,
+                "error": failures[0][1],
+                "errors": report["errors"],
+            }
+        )
+        return ExitCode.INCOMPLETE
+
+    if failures:
+        return _incomplete()
     print_json(
         {
             **created,
@@ -1545,7 +1913,7 @@ def _get_issue_handler(args) -> ExitCode:
     except (GhError, LookupError) as exc:
         print_error(str(exc))
         return ExitCode.REFUSED
-    print_json(meta)
+    print_json({key: value for key, value in meta.items() if key not in _LINK_ID_KEYS})
     return ExitCode.OK
 
 
@@ -1564,12 +1932,25 @@ def _set_fields_handler(args) -> ExitCode:
     report "nothing happened"), so a refusal before it is ``REFUSED``, and a
     failure after the first write is ``INCOMPLETE`` rather than pretending
     nothing was applied. See ``skills/_shared/references/exit-codes.md``.
+
+    ``--parent``/``--blocked-by`` link the issue, which is how an ``INCOMPLETE``
+    create is finished. Identity is the node id: a parent already in place is
+    success, another parent is ``REFUSED`` before any write (GitHub allows one),
+    and a blocker already there is not written again. A request whose links are
+    all in place and that asks nothing else is ``OK`` with a note rather than
+    ``NOOP``: a repair caller reads success as success.
     """
     config = args.github
     owner, repo = config["owner"], config["repo"]
     project_number = config["project_number"]
     slots = _field_slots(config["field_names"])
     writable = _writable_slots(config["field_names"])
+    blockers = list(dict.fromkeys(args.blocked_by or []))
+    if args.number == args.parent or args.number in blockers:
+        args._parser.error(f"#{args.number} cannot be linked to itself")
+    if args.parent is not None and args.parent in blockers:
+        args._parser.error(f"#{args.parent} cannot be both the parent and a blocker")
+    links = args.parent is not None or bool(blockers)
 
     try:
         before = read_issue_meta(
@@ -1609,7 +1990,7 @@ def _set_fields_handler(args) -> ExitCode:
     wanted = {slot: value for slot, value in
               (("priority", args.priority), ("size", args.size)) if value}
     fields = None
-    pending: list[tuple[str, str]] = []
+    pending: list[tuple[str, str, str]] = []
     # The board's own spelling, for the same reason `create-issue` keeps it: the
     # read-back reports that spelling, so recording the caller's turned
     # `--priority p1` into drift against the option it had just matched.
@@ -1623,16 +2004,109 @@ def _set_fields_handler(args) -> ExitCode:
                 for slot, value in wanted.items():
                     field = fields.field(writable[slot])
                     option_id, resolved[slot] = field.option(value)
-                    pending.append((field.id, option_id))
+                    pending.append((slot, field.id, option_id))
             except (GhError, FieldNotFoundError, OptionNotFoundError, KeyError) as exc:
                 print_error(str(exc))
                 return ExitCode.REFUSED
 
-    # ── First write below this line. ─────────────────────────────────────────
-    def _fail(exc: Exception, applied: list[str]) -> ExitCode:
+    # Links: targets looked up, and the issue's own links judged by node id,
+    # before the first write — another parent is a refusal, not a half repair.
+    parent_target = None
+    blocker_targets: list[tuple[int, dict]] = []
+    if links:
+        try:
+            parent_target, blocker_targets, link_warnings = _link_targets(owner, repo, args.parent, blockers)
+        except LinkTargetError as exc:
+            print_error(f"cannot link: {exc}; nothing was changed")
+            return ExitCode.REFUSED
+        for warning in link_warnings:
+            print_error(f"warning: {warning}")
+        notes.extend(link_warnings)
+        if parent_target is not None:
+            requested["parent"] = args.parent
+            current = before["parent_node_id"]
+            if current == parent_target["node_id"]:
+                notes.append(f"parent: already under #{args.parent}")
+                parent_target = None
+            elif current is None:
+                try:
+                    _refuse_full_parent(args.parent, parent_target)
+                except LinkTargetError as exc:
+                    print_error(f"cannot link: {exc}; nothing was changed")
+                    return ExitCode.REFUSED
+            else:
+                shown = before["parent"]
+                shown = f"#{shown}" if isinstance(shown, int) else shown
+                print_error(
+                    f"#{args.number} is already under {shown}; GitHub allows one parent, "
+                    f"and this command does not replace it. Nothing was changed."
+                )
+                return ExitCode.REFUSED
+        if blockers:
+            requested["blocked_by"] = sorted(blockers)
+            present = set(before["blocked_by_node_ids"])
+            for number, target in list(blocker_targets):
+                if target["node_id"] in present:
+                    notes.append(f"blocked_by: #{number} already recorded")
+                    blocker_targets.remove((number, target))
+
+    # ── First write below this line. Every piece is attempted. ───────────────
+    applied: list[str] = []
+    failures: list[tuple[str, str]] = []
+    if issue_type:
+        requested["type"] = issue_type
+        try:
+            run_gh(
+                ["api", f"repos/{owner}/{repo}/issues/{args.number}",
+                 "-X", "PATCH", "--input", "-"],
+                stdin=json.dumps({"type": issue_type}),
+            )
+            applied.append("type")
+        except (GhError, ValueError, KeyError) as exc:
+            failures.append(("type", str(exc)))
+    if pending:
+        requested.update(resolved)
+        item_id = (before.get("project") or {}).get("item_id")
+        if not item_id:
+            # Adding the item is not setting its status: whatever the board's
+            # automation assigns is the status, and it shows up in `after`.
+            try:
+                item_id = ensure_project_item(fields.project_id, before["node_id"])
+                applied.append("project item")
+            except (GhError, ValueError, KeyError) as exc:
+                failures.append(("project_item", str(exc)))
+        for slot, field_id, option_id in pending:
+            if not item_id:
+                failures.append((slot, "skipped: the issue is not on the board"))
+                continue
+            try:
+                set_single_select(fields.project_id, item_id, field_id, option_id)
+                applied.append(slot)
+            except (GhError, ValueError, KeyError) as exc:
+                failures.append((slot, str(exc)))
+    if parent_target is not None:
+        try:
+            add_sub_issue(parent_target["node_id"], before["node_id"])
+            applied.append("parent")
+        except (GhError, ValueError, KeyError) as exc:
+            failures.append(("parent", str(exc)))
+    for number, target in blocker_targets:
+        try:
+            add_blocked_by(before["node_id"], target["node_id"])
+            applied.append(f"blocked_by:#{number}")
+        except (GhError, ValueError, KeyError) as exc:
+            failures.append((f"blocked_by:#{number}", str(exc)))
+
+    def _fail() -> ExitCode:
+        report = _repair_report(
+            args.number, failures,
+            {"type": issue_type, **wanted, "parent": args.parent},
+        )
         print_error(
-            f"#{args.number} was partially updated ({', '.join(applied) or 'nothing'} "
-            f"applied) and then failed: {exc}"
+            "\n".join(
+                [f"#{args.number} was partially updated ({', '.join(applied) or 'nothing'} "
+                 f"applied) and then failed: {failures[0][1]}"] + _repair_lines(args.number, report)
+            )
         )
         print_json(
             {
@@ -1641,34 +2115,15 @@ def _set_fields_handler(args) -> ExitCode:
                 "requested": requested,
                 "observed": None,
                 "applied": applied,
-                "error": str(exc),
+                "drift": notes,
+                "error": failures[0][1],
+                "errors": report["errors"],
             }
         )
         return ExitCode.INCOMPLETE
 
-    applied: list[str] = []
-    try:
-        if issue_type:
-            run_gh(
-                ["api", f"repos/{owner}/{repo}/issues/{args.number}",
-                 "-X", "PATCH", "--input", "-"],
-                stdin=json.dumps({"type": issue_type}),
-            )
-            requested["type"] = issue_type
-            applied.append("type")
-        if pending:
-            item_id = (before.get("project") or {}).get("item_id")
-            if not item_id:
-                # Adding the item is not setting its status: whatever the board's
-                # automation assigns is the status, and it shows up in `after`.
-                item_id = ensure_project_item(fields.project_id, before["node_id"])
-                applied.append("project item")
-            requested.update(resolved)
-            for field_id, option_id in pending:
-                set_single_select(fields.project_id, item_id, field_id, option_id)
-            applied.extend(wanted)
-    except (GhError, ValueError, KeyError) as exc:
-        return _fail(exc, applied)
+    if failures:
+        return _fail()
 
     try:
         after = read_issue_meta(
@@ -1680,9 +2135,13 @@ def _set_fields_handler(args) -> ExitCode:
             field_names=slots,
         )
     except (GhError, LookupError) as exc:
-        return _fail(exc, applied)
+        failures.append(("read_back", str(exc)))
+        return _fail()
 
-    observed = _observed_from_meta(after, slots)
+    observed = _observed_from_meta(after, slots, links=links)
+    drift = _mismatches(requested, observed)
+    if links and after.get("blocked_by_truncated"):
+        drift, notes = _truncated_blockers(drift, notes)
     print_json(
         {
             "number": after["number"],
@@ -1691,7 +2150,7 @@ def _set_fields_handler(args) -> ExitCode:
             "observed": observed,
             "status_before": (before.get("project") or {}).get("status"),
             "status_after": (after.get("project") or {}).get("status"),
-            "drift": _mismatches(requested, observed) + notes,
+            "drift": drift + notes,
         }
     )
     return ExitCode.OK
@@ -1855,17 +2314,33 @@ def register_github_commands(
     create.add_argument(
         "--no-project", action="store_true", help="Do not add the issue to the project"
     )
+    create.add_argument(
+        "--parent", type=_issue_number, help="Link the new issue under this issue (same repository)"
+    )
+    create.add_argument(
+        "--blocked-by", type=_issue_number, action="append", default=[],
+        help="Record the new issue as blocked by this issue (same repository; repeatable)",
+    )
     create.set_defaults(func=_create_issue_handler, github=config, _parser=create)
 
     get = sub.add_parser("get-issue", help="Read an issue's type, labels and project fields")
     get.add_argument("number", type=int)
     get.set_defaults(func=_get_issue_handler, github=config, _parser=get)
 
-    repair = sub.add_parser("set-fields", help="Repair an issue's type and project fields")
+    repair = sub.add_parser(
+        "set-fields", help="Repair an issue's type, project fields, parent and blockers"
+    )
     repair.add_argument("number", type=int)
     repair.add_argument("--type")
     repair.add_argument("--priority")
     repair.add_argument("--size")
+    repair.add_argument(
+        "--parent", type=_issue_number, help="Link the issue under this issue (same repository)"
+    )
+    repair.add_argument(
+        "--blocked-by", type=_issue_number, action="append", default=[],
+        help="Record the issue as blocked by this issue (same repository; repeatable)",
+    )
     repair.set_defaults(func=_set_fields_handler, github=config, _parser=repair)
 
     audit = sub.add_parser("audit-fields", help="List issues whose metadata drifted (read-only)")

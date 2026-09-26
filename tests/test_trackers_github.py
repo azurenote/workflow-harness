@@ -206,6 +206,9 @@ def _issue_response(
                     "url": f"https://example.invalid/issues/{number}",
                     "issueType": {"name": issue_type} if issue_type else None,
                     "labels": {"nodes": [{"name": label} for label in labels]},
+                    # #20: the one-issue query selects the links; an issue with none.
+                    "parent": None,
+                    "blockedBy": {"totalCount": 0, "nodes": []},
                     "projectItems": {"nodes": project_items},
                 }
             }
@@ -392,6 +395,8 @@ def test_partial_failure_exit_3_keeps_number_on_stdout(monkeypatch, capsys, body
         fields=_fields_response(),
         create=_created(number=11),
         add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        # #20: a failure is followed by one read-back, so the report shows what stuck.
+        read_issue=_issue_response(number=11),
     )
     fake.fail("set_option", github.GhError(["api", "graphql"], 1, "boom"))
 
@@ -3431,3 +3436,675 @@ def test_i37_fail_on_drift_help_names_the_table() -> None:
     audit = _parser()._subparsers._group_actions[0].choices["audit-fields"]  # noqa: SLF001
     help_text = next(a.help for a in audit._actions if "--fail-on-drift" in a.option_strings)  # noqa: SLF001
     assert "FINDINGS" in help_text and "exit-codes.md" in help_text
+
+
+# ---------------------------------------------------------------------------
+# #20 — `--parent`/`--blocked-by` on the canonical create-issue and set-fields
+#
+# Link targets are looked up before the create (REFUSED if one cannot be
+# linked); after it, every piece — board item, each field, the parent, each
+# blocker — is attempted, the failures are collected into one INCOMPLETE, and
+# stderr prints a `set-fields` line carrying only the failed pieces it can
+# repair. The read-back carries the links, compared by node id.
+#
+# `_I20FakeGh` routes the new calls by tokens only they carry, and answers the
+# target lookup per `number` variable; the base `FakeGh` is left as it is.
+# ---------------------------------------------------------------------------
+
+import re as _i20_re
+import shlex as _i20_shlex
+
+_I20_NEW = "issue-node-7"
+
+
+class _I20FakeGh(FakeGh):
+    def __init__(self, targets=None, **responses):
+        super().__init__(**responses)
+        self.targets = targets or {}
+
+    @staticmethod
+    def _classify(argv):
+        joined = " ".join(argv)
+        for token, kind in (("addSubIssue", "add_sub_issue"), ("addBlockedBy", "add_blocked_by"),
+                            ("issueOrPullRequest", "link_target")):
+            if token in joined:
+                return kind
+        return FakeGh._classify(argv)
+
+    def __call__(self, argv, *, stdin=None):
+        argv = list(argv)
+        if self._classify(argv) == "link_target":
+            self.calls.append({"argv": argv, "stdin": stdin, "kind": "link_target"})
+            answer = self.targets[_i20_vars(argv)["number"]]
+            if isinstance(answer, Exception):
+                raise answer
+            return json.dumps(answer)
+        return super().__call__(argv, stdin=stdin)
+
+
+def _i20_vars(argv) -> dict:
+    """The GraphQL variables a call sent, query excluded; `-F` ints as ints."""
+    out = {}
+    for i, tok in enumerate(argv[:-1]):
+        if tok in ("-f", "-F") and not argv[i + 1].startswith("query="):
+            key, value = argv[i + 1].split("=", 1)
+            out[key] = int(value) if tok == "-F" and value.lstrip("-").isdigit() else value
+    return out
+
+
+def _i20_bindings(argv) -> dict:
+    """`{input field: value sent}` — the mutation text's `input:{f:$v}` bound to argv."""
+    query = next(tok for tok in argv if tok.startswith("query="))
+    block = _i20_re.search(r"input\s*:\s*\{([^}]*)\}", query)
+    assert block, f"no input object in {query!r}"
+    sent = _i20_vars(argv)
+    return {field: sent[var] for field, var in _i20_re.findall(r"(\w+)\s*:\s*\$(\w+)", block.group(1))}
+
+
+def _i20_target(number, *, state="OPEN", typename="Issue", sub_issues=0) -> dict:
+    node = {"__typename": typename}
+    if typename == "Issue":
+        node.update({"id": f"target-node-{number}", "number": number, "state": state,
+                     "subIssuesSummary": {"total": sub_issues}})
+    return {"data": {"repository": {"issueOrPullRequest": node}}}
+
+
+def _i20_not_found() -> github.GhError:
+    body = {"data": {"repository": {"issueOrPullRequest": None}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "issueOrPullRequest"],
+                        "message": "Could not resolve to an issue or pull request"}]}
+    return github.GhError(["api", "graphql"], 1, "not found", stdout=json.dumps(body))
+
+
+def _i20_ref(number, repo="<owner>/<repo>", node=None) -> dict:
+    return {"id": node or f"target-node-{number}", "number": number, "repository": {"nameWithOwner": repo}}
+
+
+def _i20_issue(number=7, *, parent=None, blockers=(), total=None, **kw) -> dict:
+    payload = _issue_response(number=number, **kw)
+    issue = payload["data"]["repository"]["issue"]
+    issue["parent"] = parent
+    issue["blockedBy"] = {"totalCount": len(blockers) if total is None else total, "nodes": list(blockers)}
+    return payload
+
+
+_I20_LINKED = {"data": {"addSubIssue": {"issue": {"id": "x"}, "subIssue": {"id": _I20_NEW}}}}
+
+
+def _i20_blocked(blocker_id):
+    return {"data": {"addBlockedBy": {"issue": {"id": _I20_NEW}, "blockingIssue": {"id": blocker_id}}}}
+
+
+def _i20_blocked_answer(fake, argv, stdin):
+    return _i20_blocked(_i20_vars(argv)["blocker"])
+
+
+def _i20_create_fake(*, targets=None, read=None, **extra) -> _I20FakeGh:
+    responses = dict(
+        types=_types_response(), fields=_fields_response(), create=_created(number=7),
+        add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+        set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+        add_sub_issue=_I20_LINKED, add_blocked_by=_i20_blocked_answer,
+        read_issue=read if read is not None else _i20_issue(
+            parent=_i20_ref(5), blockers=[_i20_ref(3), _i20_ref(4)]),
+    )
+    responses.update(extra)
+    return _I20FakeGh(targets=targets if targets is not None else {n: _i20_target(n) for n in (3, 4, 5)},
+                      **responses)
+
+
+def _i20_recovery(err: str) -> list:
+    """Every `  set-fields N …` line on stderr, parsed with the real parser."""
+    found = []
+    for match in _i20_re.finditer(r"^\s+set-fields (\d+)\b(.*)$", err, _i20_re.M):
+        found.append(_parser().parse_args(["set-fields", match.group(1), *_i20_shlex.split(match.group(2))]))
+    return found
+
+
+def _i20_create(monkeypatch, capsys, fake, body_file, *extra):
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file, *extra])
+    captured = capsys.readouterr()
+    return code, (json.loads(captured.out) if captured.out.strip() else None), captured.err
+
+
+_I20_ALL = ("--priority", PRIORITY_OPTIONS[0], "--parent", "5", "--blocked-by", "3", "--blocked-by", "4")
+
+
+# ── D1 usage ────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("argv", [
+    ["create-issue", "--title", "t", "--body-file", "x", "--parent", "0"],
+    ["create-issue", "--title", "t", "--body-file", "x", "--parent", "-1"],
+    ["create-issue", "--title", "t", "--body-file", "x", "--parent", "o/r#5"],
+    ["create-issue", "--title", "t", "--body-file", "x", "--blocked-by", "x"],
+    ["create-issue", "--title", "t", "--body-file", "x", "--parent", "5", "--blocked-by", "5"],
+    ["set-fields", "7", "--parent", "7"],
+    ["set-fields", "7", "--blocked-by", "7"],
+    ["set-fields", "7", "--parent", "https://github.com/o/r/issues/5"],
+])
+def test_i20_usage_errors_refuse_before_any_gh_call(monkeypatch, capsys, argv) -> None:
+    fake = _i20_create_fake()
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, fake, argv)
+    capsys.readouterr()
+    assert exc.value.code == 2 and fake.calls == []
+
+
+def test_i20_a_repeated_blocker_is_looked_up_and_linked_once(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(read=_i20_issue(blockers=[_i20_ref(3)]))
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, "--blocked-by", "3", "--blocked-by", "3")
+    assert code == 0, out
+    assert fake.kinds().count("link_target") == 1 and fake.kinds().count("add_blocked_by") == 1
+
+
+# ── D2 lookups before the create ────────────────────────────────────────────
+
+_I20_UNLINKABLE = [
+    (_i20_not_found(), "does not exist"),
+    (_i20_target(5, typename="PullRequest"), "is a pull request"),
+    (github.GhError(["api", "graphql"], 1, "secondary rate limit"), "could not be read"),
+]
+
+
+@pytest.mark.parametrize("flag, answer, said", [
+    *[("--parent", a, s) for a, s in _I20_UNLINKABLE],
+    *[("--blocked-by", a, s) for a, s in _I20_UNLINKABLE],
+    # The cap is the parent's: a blocker has no sub-issues to count.
+    ("--parent", _i20_target(5, sub_issues=github.SUB_ISSUE_LIMIT), "most sub-issues"),
+])
+def test_i20_a_target_that_cannot_be_linked_refuses_before_the_create(
+    monkeypatch, capsys, body_file, flag, answer, said
+) -> None:
+    fake = _i20_create_fake(targets={5: answer})
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, flag, "5")
+    assert code == 2 and out is None
+    assert said in err
+    assert "create" not in fake.kinds() and fake.mutations() == []
+
+
+def test_i20_lookups_come_before_the_create_one_per_target(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake()
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    kinds = fake.kinds()
+    assert code == 0, out
+    assert "create" in kinds
+    lookups = [i for i, k in enumerate(kinds) if k == "link_target"]
+    assert len(lookups) == 3 and max(lookups) < kinds.index("create")
+    assert sorted(_i20_vars(fake.calls[i]["argv"])["number"] for i in lookups) == [3, 4, 5]
+
+
+def test_i20_a_closed_target_is_linked_with_a_warning(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(targets={5: _i20_target(5, state="CLOSED"), 3: _i20_target(3, state="CLOSED")},
+                            read=_i20_issue(parent=_i20_ref(5), blockers=[_i20_ref(3)]))
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5", "--blocked-by", "3")
+    assert code == 0
+    assert "warning: parent #5 is closed" in err and "warning: blocker #3 is closed" in err
+    assert "parent #5 is closed" in out["drift"] and "blocker #3 is closed" in out["drift"]
+
+
+def test_i20_a_closed_parent_warning_survives_a_link_failure(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(targets={5: _i20_target(5, state="CLOSED")}, read=_i20_issue())
+    fake.fail("add_sub_issue", github.GhError(["api", "graphql"], 1, "boom"))
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5")
+    assert code == 3 and "parent #5 is closed" in out["drift"]
+
+
+# ── D3 every piece is attempted, failures are collected ─────────────────────
+
+def _i20_pieces(out) -> list[str]:
+    return [e["piece"] for e in out["errors"]]
+
+
+def test_i20_parent_failure_still_links_every_blocker(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(read=_i20_issue(blockers=[_i20_ref(3), _i20_ref(4)]))
+    fake.fail("add_sub_issue", github.GhError(["api", "graphql"], 1, "parent boom"))
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    assert code == 3
+    assert fake.kinds().count("add_blocked_by") == 2, "a blocker was not attempted after the parent failed"
+    assert _i20_pieces(out) == ["parent"] and out["error"] == out["errors"][0]["error"]
+    (recovery,) = _i20_recovery(err)
+    assert (recovery.number, recovery.parent, recovery.blocked_by, recovery.priority) == (7, 5, [], None)
+
+
+def test_i20_first_blocker_failure_still_links_the_second(monkeypatch, capsys, body_file) -> None:
+    def blocked(fake, argv, stdin):
+        if _i20_vars(argv)["blocker"] == "target-node-3":
+            raise github.GhError(["api", "graphql"], 1, "blocker 3 boom")
+        return _i20_blocked(_i20_vars(argv)["blocker"])
+    fake = _i20_create_fake(add_blocked_by=blocked, read=_i20_issue(parent=_i20_ref(5), blockers=[_i20_ref(4)]))
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    assert code == 3
+    assert [_i20_vars(c["argv"])["blocker"] for c in fake.calls if c["kind"] == "add_blocked_by"] == [
+        "target-node-3", "target-node-4"]
+    assert _i20_pieces(out) == ["blocked_by:#3"]
+    (recovery,) = _i20_recovery(err)
+    assert (recovery.parent, recovery.blocked_by, recovery.priority) == (None, [3], None)
+
+
+def test_i20_board_item_failure_skips_fields_and_still_links(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake()
+    fake.fail("add_item", github.GhError(["api", "graphql"], 1, "item boom"))
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    assert code == 3
+    assert "set_option" not in fake.kinds()
+    assert fake.kinds().count("add_sub_issue") == 1 and fake.kinds().count("add_blocked_by") == 2
+    assert _i20_pieces(out) == ["project_item", "status", "priority"]
+    (recovery,) = _i20_recovery(err)
+    assert recovery.priority == PRIORITY_OPTIONS[0] and recovery.parent is None
+    assert "Not repairable by set-fields 7 — status" in err
+    assert "— project_item" not in err, "set-fields re-adds the item when it writes the priority"
+
+
+def test_i20_one_field_failure_does_not_stop_the_next_field(monkeypatch, capsys, body_file) -> None:
+    def set_option(fake, argv, stdin):
+        if _i20_vars(argv)["field"] == STATUS_FIELD_ID:
+            raise github.GhError(["api", "graphql"], 1, "status boom")
+        return {"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}}
+    fake = _i20_create_fake(set_option=set_option)
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    assert code == 3
+    assert [_i20_vars(c["argv"])["field"] for c in fake.calls if c["kind"] == "set_option"] == [
+        STATUS_FIELD_ID, "field-urgency"]
+    assert _i20_pieces(out) == ["status"]
+    assert _i20_recovery(err) == [], "set-fields cannot repair Status; no line may say it can"
+    assert "Not repairable by set-fields 7 — status" in err
+
+
+def test_i20_a_failed_read_back_is_its_own_piece(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake()
+    fake.fail("read_issue", github.GhError(["api", "graphql"], 1, "read boom"))
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    assert code == 3 and out["observed"] is None and _i20_pieces(out) == ["read_back"]
+    assert _i20_recovery(err) == [] and "read it with get-issue 7" in err
+
+
+def test_i20_all_pieces_failing_are_all_reported_once(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake()
+    for kind in ("add_item", "add_sub_issue", "add_blocked_by", "read_issue"):
+        fake.fail(kind, github.GhError(["api", "graphql"], 1, f"{kind} boom"))
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    assert code == 3
+    assert _i20_pieces(out) == ["project_item", "status", "priority", "parent",
+                                "blocked_by:#3", "blocked_by:#4", "read_back"]
+    assert out["error"] == "gh api graphql exited 1: add_item boom"
+    (recovery,) = _i20_recovery(err)
+    assert (recovery.priority, recovery.parent, recovery.blocked_by) == (PRIORITY_OPTIONS[0], 5, [3, 4])
+
+
+def test_i20_all_pieces_succeeding_is_ok_without_errors(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(read=_i20_issue(
+        parent=_i20_ref(5), blockers=[_i20_ref(3), _i20_ref(4)],
+        field_values={STATUS_FIELD: STATUS_OPTIONS[0], PRIORITY_FIELD: PRIORITY_OPTIONS[0]}))
+    code, out, err = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    assert code == 0 and "errors" not in out and "error" not in out
+    assert out["observed"]["parent"] == 5 and out["observed"]["blocked_by"] == [3, 4]
+    assert out["requested"]["parent"] == 5 and out["requested"]["blocked_by"] == [3, 4]
+    assert out["drift"] == []
+
+
+def test_i20_the_recovery_line_is_quoted_for_the_shell() -> None:
+    report = github._repair_report(7, [("size", "boom"), ("blocked_by:#3", "boom")], {"size": "Very Large"})
+    assert report["recovery"] == "set-fields 7 --size 'Very Large' --blocked-by 3"
+    (recovery,) = _i20_recovery("  " + report["recovery"])
+    assert recovery.size == "Very Large" and recovery.blocked_by == [3]
+    assert github._repair_report(7, [("status", "x")], {})["recovery"] is None
+
+
+# ── D4 read-back ────────────────────────────────────────────────────────────
+
+def test_i20_a_link_the_read_back_does_not_show_is_drift(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(read=_i20_issue(blockers=[_i20_ref(4), _i20_ref(9)]))
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file,
+                               "--parent", "5", "--blocked-by", "4", "--blocked-by", "3")
+    assert code == 0
+    assert "parent: requested 5, observed None" in out["drift"]
+    assert "blocked_by requested but not linked: [3]" in out["drift"]
+    assert not any("9" in d for d in out["drift"]), "an existing extra blocker is not drift"
+
+
+def test_i20_a_parent_in_another_repository_is_not_this_one(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(read=_i20_issue(parent=_i20_ref(5, repo="other/repo", node="other-5")))
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5")
+    assert out["observed"]["parent"] == "other/repo#5"
+    assert "parent: requested 5, observed 'other/repo#5'" in out["drift"]
+
+
+def test_i20_get_issue_carries_the_links(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(parent=_i20_ref(5), blockers=[_i20_ref(4), _i20_ref(3, repo="x/y")]))
+    code = _run(monkeypatch, fake, ["get-issue", "7"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0 and out["parent"] == 5 and out["blocked_by"] == [4, "x/y#3"]
+    assert out["blocked_by_truncated"] is False
+    assert set(out) == {"number", "title", "node_id", "url", "type", "labels", "project",
+                        "parent", "blocked_by", "blocked_by_truncated"}, "internal node ids leaked"
+
+
+@pytest.mark.parametrize("mangle", [
+    lambda i: i.pop("parent"), lambda i: i.pop("blockedBy"),
+    lambda i: i.__setitem__("parent", {}), lambda i: i.__setitem__("parent", "x"),
+    lambda i: i.__setitem__("blockedBy", {"nodes": []}),
+    lambda i: i.__setitem__("blockedBy", {"totalCount": 1, "nodes": [{"id": "n"}]}),
+])
+def test_i20_an_unreadable_link_field_is_not_an_absent_link(monkeypatch, capsys, mangle) -> None:
+    payload = _i20_issue()
+    mangle(payload["data"]["repository"]["issue"])
+    code = _run(monkeypatch, _i20_create_fake(read=payload), ["get-issue", "7"])
+    capsys.readouterr()
+    assert code == 2
+
+
+def test_i20_a_truncated_blocker_list_does_not_block_other_reads(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(blockers=[_i20_ref(3)], total=150))
+    assert _run(monkeypatch, fake, ["get-issue", "7"]) == 0
+    assert json.loads(capsys.readouterr().out)["blocked_by_truncated"] is True
+    code = _run(monkeypatch, fake, ["set-fields", "7", "--priority", PRIORITY_OPTIONS[1]])
+    capsys.readouterr()
+    assert code == 0
+
+
+def test_i20_only_the_one_issue_query_selects_the_links() -> None:
+    issue, listing = github._ISSUE_META_QUERY, github._LIST_ISSUES_QUERY
+    for token in ("parent {", "blockedBy(first:", "totalCount", "nameWithOwner"):
+        assert token in issue, f"the read-back no longer selects {token!r}"
+        assert token not in listing, f"the list query selects {token!r}; audit-fields would change"
+
+
+def test_i20_iter_issue_meta_keeps_its_seven_keys(monkeypatch) -> None:
+    monkeypatch.setattr(github, "run_gh", FakeGh(list_issues=_issue_list_page([1, 2], has_next=False)))
+    metas = github.iter_issue_meta("<owner>", "<repo>", project_number=4, field_names=FIELD_NAMES)
+    assert metas and all(set(m) == {"number", "title", "node_id", "url", "type", "labels", "project"}
+                         for m in metas)
+
+
+# ── D5 set-fields: identity is the node id ──────────────────────────────────
+
+def _i20_set(monkeypatch, capsys, fake, *argv):
+    code = _run(monkeypatch, fake, ["set-fields", "7", *argv])
+    captured = capsys.readouterr()
+    return code, (json.loads(captured.out) if captured.out.strip() else None), captured.err
+
+
+def test_i20_the_same_parent_is_success_without_a_write(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(parent=_i20_ref(5)))
+    code, out, _ = _i20_set(monkeypatch, capsys, fake, "--parent", "5")
+    assert code == 0 and fake.mutations() == []
+    assert "parent: already under #5" in out["drift"]
+
+
+def test_i20_another_parent_refuses_before_any_write(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(parent=_i20_ref(6)))
+    code, out, err = _i20_set(monkeypatch, capsys, fake, "--parent", "5", "--type", TYPE_NAMES[0])
+    assert code == 2 and out is None and fake.mutations() == []
+    assert "already under #6" in err
+
+
+def test_i20_a_same_number_parent_in_another_repository_is_another_parent(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(parent=_i20_ref(5, repo="other/repo", node="other-5")))
+    code, _, err = _i20_set(monkeypatch, capsys, fake, "--parent", "5")
+    assert code == 2 and fake.mutations() == [] and "other/repo#5" in err
+
+
+def test_i20_a_blocker_already_there_is_not_written_again(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(blockers=[_i20_ref(3), _i20_ref(4, repo="other/repo", node="other-4")]))
+    code, out, _ = _i20_set(monkeypatch, capsys, fake, "--blocked-by", "3", "--blocked-by", "4")
+    assert code == 0
+    assert [_i20_vars(c["argv"])["blocker"] for c in fake.calls if c["kind"] == "add_blocked_by"] == [
+        "target-node-4"], "the same-number blocker of another repository was taken as this one"
+
+
+def test_i20_links_already_in_place_change_nothing(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(parent=_i20_ref(5), blockers=[_i20_ref(3)]))
+    code, out, _ = _i20_set(monkeypatch, capsys, fake, "--parent", "5", "--blocked-by", "3")
+    assert code == 0 and fake.mutations() == []
+    assert "parent: already under #5" in out["drift"] and "blocked_by: #3 already recorded" in out["drift"]
+
+
+def test_i20_set_fields_collects_its_failures_and_names_the_links(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(), patch="{}")
+    fake.fail("patch", github.GhError(["api"], 1, "type boom"))
+    fake.fail("add_sub_issue", github.GhError(["api", "graphql"], 1, "parent boom"))
+    code, out, err = _i20_set(monkeypatch, capsys, fake, "--type", TYPE_NAMES[0], "--parent", "5",
+                              "--blocked-by", "3")
+    assert code == 3 and out["observed"] is None
+    assert _i20_pieces(out) == ["type", "parent"] and out["applied"] == ["blocked_by:#3"]
+    (recovery,) = _i20_recovery(err)
+    assert (recovery.type, recovery.parent, recovery.blocked_by) == (TYPE_NAMES[0], 5, [])
+
+
+def test_i20_no_call_ever_replaces_a_parent(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake()
+    _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    fake2 = _i20_create_fake(read=_i20_issue())
+    _i20_set(monkeypatch, capsys, fake2, "--parent", "5", "--blocked-by", "3")
+    assert fake.calls and fake2.calls
+    for call in fake.calls + fake2.calls:
+        assert not any("replaceParent" in tok for tok in call["argv"]), call["argv"]
+
+
+# ── D6 mutation shape ───────────────────────────────────────────────────────
+
+def test_i20_the_mutations_bind_parent_child_and_blocker_the_right_way(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake()
+    _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5", "--blocked-by", "3")
+    sub = next(c for c in fake.calls if c["kind"] == "add_sub_issue")
+    blocked = next(c for c in fake.calls if c["kind"] == "add_blocked_by")
+    assert _i20_bindings(sub["argv"]) == {"issueId": "target-node-5", "subIssueId": _I20_NEW}
+    assert _i20_bindings(blocked["argv"]) == {"issueId": _I20_NEW, "blockingIssueId": "target-node-3"}
+
+
+@pytest.mark.parametrize("query", [
+    github._ADD_SUB_ISSUE_MUTATION, github._ADD_BLOCKED_BY_MUTATION, github._LINK_TARGET_QUERY,
+])
+def test_i20_every_variable_used_is_declared(query) -> None:
+    header = _i20_re.search(r"(?:query|mutation)\s*\(([^)]*)\)", query)
+    declared = set(_i20_re.findall(r"\$(\w+)\s*:", header.group(1)))
+    used = set(_i20_re.findall(r"\$(\w+)", query[header.end():]))
+    assert used == declared
+
+
+@pytest.mark.parametrize("kind, empty", [
+    ("add_sub_issue", {"data": {"addSubIssue": {"issue": {"id": "x"}}}}),
+    ("add_blocked_by", {"data": {"addBlockedBy": {"issue": {"id": _I20_NEW}}}}),
+])
+def test_i20_a_link_without_its_confirming_node_is_a_failed_piece(monkeypatch, capsys, body_file, kind, empty) -> None:
+    fake = _i20_create_fake(**{kind: empty})
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5", "--blocked-by", "3")
+    assert code == 3 and _i20_pieces(out) == ["parent" if kind == "add_sub_issue" else "blocked_by:#3"]
+
+
+# ── D8 nothing changes without the new flags; links do not need a board ────
+
+@pytest.mark.parametrize("extra, kinds", [
+    # Recorded from the code before #20 (the RED step), not from this code.
+    (("--label", "BE", "--priority", PRIORITY_OPTIONS[0], "--size", SIZE_OPTIONS[0]),
+     ["types", "fields", "create", "add_item", "set_option", "set_option", "set_option", "read_issue", "read_issue"]),
+    (("--no-project",), ["types", "create", "read_issue"]),
+])
+def test_i20_without_links_the_calls_are_as_before(monkeypatch, capsys, body_file, extra, kinds) -> None:
+    fake = FakeGh(types=_types_response(), fields=_fields_response(), create=_created(number=7),
+                  add_item={"data": {"addProjectV2ItemById": {"item": {"id": "item-1"}}}},
+                  set_option={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "item-1"}}}},
+                  read_issue=_issue_response(number=7))
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file, *extra])
+    capsys.readouterr()
+    assert code == 0 and fake.kinds() == kinds
+
+
+@pytest.mark.parametrize("overrides, extra", [({}, ("--no-project",)), ({"project_number": None}, ())])
+def test_i20_links_are_written_without_a_board(monkeypatch, capsys, body_file, overrides, extra) -> None:
+    fake = _i20_create_fake()
+    fake.responses["read_issue"] = _i20_issue(project_number=None, parent=_i20_ref(5), blockers=[_i20_ref(3)])
+    code = _run(monkeypatch, fake, ["create-issue", "--title", "t", "--body-file", body_file, *extra,
+                                    "--parent", "5", "--blocked-by", "3"], **overrides)
+    capsys.readouterr()
+    assert code == 0, "links without a board are a clean create"
+    assert "add_item" not in fake.kinds()
+    assert fake.kinds().count("add_sub_issue") == 1 and fake.kinds().count("add_blocked_by") == 1
+
+
+# ── review follow-ups: what the first mutation round did not guard ─────────
+
+@pytest.mark.parametrize("value", ["1_0", " 5", "+5", "٥", "5 "])
+def test_i20_an_issue_number_is_ascii_digits_only(monkeypatch, capsys, value) -> None:
+    fake = _i20_create_fake()
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, fake, ["set-fields", "7", "--parent", value])
+    capsys.readouterr()
+    assert fake.calls == []
+
+
+def test_i20_the_same_parent_at_the_cap_is_still_success(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(targets={5: _i20_target(5, sub_issues=github.SUB_ISSUE_LIMIT)},
+                            read=_i20_issue(parent=_i20_ref(5)))
+    code, out, _ = _i20_set(monkeypatch, capsys, fake, "--parent", "5", "--priority", PRIORITY_OPTIONS[1])
+    assert code == 0 and "parent: already under #5" in out["drift"]
+    assert "set_option" in fake.kinds(), "the priority was dropped with the parent"
+
+
+def test_i20_a_full_parent_the_issue_is_not_under_is_refused(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(targets={5: _i20_target(5, sub_issues=github.SUB_ISSUE_LIMIT)}, read=_i20_issue())
+    code, _, err = _i20_set(monkeypatch, capsys, fake, "--parent", "5")
+    assert code == 2 and fake.mutations() == [] and "most sub-issues" in err
+
+
+def test_i20_identity_is_the_node_id_not_the_repository_name(monkeypatch, capsys) -> None:
+    """A renamed repository still answers with the same node id: the same parent."""
+    fake = _i20_create_fake(read=_i20_issue(parent=_i20_ref(5, repo="<owner>/renamed")))
+    code, out, _ = _i20_set(monkeypatch, capsys, fake, "--parent", "5")
+    assert code == 0 and fake.mutations() == []
+    fake = _i20_create_fake(read=_i20_issue(blockers=[_i20_ref(3, repo="<owner>/renamed")]))
+    code, _, _ = _i20_set(monkeypatch, capsys, fake, "--blocked-by", "3")
+    assert code == 0 and "add_blocked_by" not in fake.kinds()
+
+
+def test_i20_the_repository_compare_ignores_case(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(parent=_i20_ref(5, repo="<OWNER>/<REPO>")))
+    _run(monkeypatch, fake, ["get-issue", "7"])
+    assert json.loads(capsys.readouterr().out)["parent"] == 5
+
+
+def test_i20_blockers_are_sorted_with_their_ids(monkeypatch, capsys) -> None:
+    blockers = [_i20_ref(10, repo="o/r", node="o-10"), _i20_ref(4), _i20_ref(9, repo="o/r", node="o-9"),
+                _i20_ref(3)]
+    monkeypatch.setattr(github, "run_gh", _i20_create_fake(read=_i20_issue(blockers=blockers)))
+    meta = github.read_issue_meta("<owner>", "<repo>", 7, project_number=4, field_names=FIELD_NAMES)
+    assert meta["blocked_by"] == [3, 4, "o/r#9", "o/r#10"]
+    assert meta["blocked_by_node_ids"] == ["target-node-3", "target-node-4", "o-9", "o-10"]
+
+
+@pytest.mark.parametrize("errors", [
+    [{"type": "NOT_FOUND", "path": ["repository", "issueOrPullRequest"]}, {"type": "FORBIDDEN", "path": ["x"]}],
+    [{"type": "NOT_FOUND", "path": ["repository"]}],
+    [{"type": "FORBIDDEN", "path": ["repository", "issueOrPullRequest"]}],
+])
+def test_i20_only_a_pure_not_found_on_the_target_means_it_does_not_exist(monkeypatch, capsys, body_file, errors) -> None:
+    exc = github.GhError(["api", "graphql"], 1, "x", stdout=json.dumps({"data": None, "errors": errors}))
+    fake = _i20_create_fake(targets={5: exc})
+    code, _, err = _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5")
+    assert code == 2 and "could not be read" in err and "does not exist" not in err
+
+
+def test_i20_create_incomplete_keeps_the_read_back_and_its_drift(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(read=_i20_issue(blockers=[_i20_ref(4)]))
+    fake.fail("add_sub_issue", github.GhError(["api", "graphql"], 1, "boom"))
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, *_I20_ALL)
+    assert code == 3 and out["observed"]["blocked_by"] == [4]
+    assert "parent: requested 5, observed None" in out["drift"]
+    assert fake.kinds().count("read_issue") == 1, "a failed create re-read as if waiting for a race"
+
+
+def test_i20_a_failed_re_read_leaves_no_stale_drift(monkeypatch, capsys, body_file) -> None:
+    reads = iter([_i20_issue(), github.GhError(["api", "graphql"], 1, "second read boom")])
+    def read(fake, argv, stdin):
+        answer = next(reads)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    fake = _i20_create_fake(read_issue=read)
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5")
+    assert code == 3 and out["observed"] is None and out["drift"] == []
+    assert [e["piece"] for e in out["errors"]] == ["read_back"]
+
+
+@pytest.mark.parametrize("command", ["create", "set"])
+def test_i20_a_truncated_list_makes_a_missing_blocker_unknown_not_drift(monkeypatch, capsys, body_file, command) -> None:
+    read = _i20_issue(blockers=[_i20_ref(9)], total=150)
+    fake = _i20_create_fake(read=read)
+    if command == "create":
+        code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, "--no-project", "--blocked-by", "3")
+    else:
+        code, out, _ = _i20_set(monkeypatch, capsys, fake, "--blocked-by", "3")
+    assert code == 0
+    assert not any(d.startswith("blocked_by requested but not linked") for d in out["drift"])
+    assert any("more blockers than one page reads" in d for d in out["drift"])
+    assert "blocked_by not confirmed: [3]" in out["drift"]
+
+
+def test_i20_set_fields_reports_its_notes_even_when_incomplete(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(targets={3: _i20_target(3, state="CLOSED"), 4: _i20_target(4)},
+                            read=_i20_issue(blockers=[_i20_ref(4)]))
+    fake.fail("add_blocked_by", github.GhError(["api", "graphql"], 1, "boom"))
+    code, out, _ = _i20_set(monkeypatch, capsys, fake, "--blocked-by", "3", "--blocked-by", "4")
+    assert code == 3
+    assert "blocker #3 is closed" in out["drift"] and "blocked_by: #4 already recorded" in out["drift"]
+
+
+def test_i20_set_fields_refuses_an_unlinkable_target_before_writing(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(targets={5: _i20_not_found()}, read=_i20_issue())
+    code, out, err = _i20_set(monkeypatch, capsys, fake, "--parent", "5", "--type", TYPE_NAMES[0])
+    assert code == 2 and out is None and fake.mutations() == [] and "does not exist" in err
+
+
+def test_i20_set_fields_links_without_a_project_and_reads_them_back(monkeypatch, capsys) -> None:
+    fake = _i20_create_fake(read=_i20_issue(project_number=None))
+    code = _run(monkeypatch, fake, ["set-fields", "7", "--parent", "5", "--blocked-by", "3"], project_number=None)
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0 and fake.kinds().count("add_sub_issue") == 1 and fake.kinds().count("add_blocked_by") == 1
+    assert out["observed"]["parent"] is None and "parent: requested 5, observed None" in out["drift"]
+
+
+def test_i20_set_fields_names_a_failed_read_back_and_what_was_applied(monkeypatch, capsys) -> None:
+    reads = iter([_i20_issue(), github.GhError(["api", "graphql"], 1, "after boom")])
+    def read(fake, argv, stdin):
+        answer = next(reads)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    fake = _i20_create_fake(read_issue=read)
+    code, out, err = _i20_set(monkeypatch, capsys, fake, "--parent", "5", "--blocked-by", "3")
+    assert code == 3 and out["applied"] == ["parent", "blocked_by:#3"]
+    assert [e["piece"] for e in out["errors"]] == ["read_back"] and _i20_recovery(err) == []
+
+
+def test_i20_project_item_alone_is_named_as_not_repairable() -> None:
+    report = github._repair_report(7, [("project_item", "x"), ("status", "skipped")], {})
+    assert report["recovery"] is None and report["unrepairable"] == ["project_item", "status"]
+
+
+@pytest.mark.parametrize("kind, answer", [
+    ("add_sub_issue", {"data": {"addSubIssue": {"issue": {"id": "x"}, "subIssue": {"id": "someone-else"}}}}),
+    ("add_blocked_by", {"data": {"addBlockedBy": {"issue": {"id": _I20_NEW}, "blockingIssue": {"id": "someone-else"}}}}),
+])
+def test_i20_a_link_confirming_another_issue_is_not_confirmed(monkeypatch, capsys, body_file, kind, answer) -> None:
+    fake = _i20_create_fake(**{kind: answer})
+    code, out, _ = _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5", "--blocked-by", "3")
+    assert code == 3 and len(out["errors"]) == 1
+
+
+def test_i20_every_variable_sent_is_declared(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake()
+    _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5", "--blocked-by", "3")
+    for call in fake.calls:
+        if call["kind"] not in ("link_target", "add_sub_issue", "add_blocked_by"):
+            continue
+        query = next(tok for tok in call["argv"] if tok.startswith("query="))
+        header = _i20_re.search(r"(?:query|mutation)\s*\(([^)]*)\)", query)
+        declared = set(_i20_re.findall(r"\$(\w+)\s*:", header.group(1)))
+        assert set(_i20_vars(call["argv"])) == declared, call["argv"]
+
+
+def test_i20_warnings_are_reported_once(monkeypatch, capsys, body_file) -> None:
+    fake = _i20_create_fake(targets={5: _i20_target(5, state="CLOSED")}, read=_i20_issue(parent=_i20_ref(5)))
+    _, out, err = _i20_create(monkeypatch, capsys, fake, body_file, "--parent", "5")
+    assert out["drift"].count("parent #5 is closed") == 1 and err.count("parent #5 is closed") == 1
+
