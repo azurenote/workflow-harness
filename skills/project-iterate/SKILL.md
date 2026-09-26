@@ -37,10 +37,10 @@ project-iterate <id> [in-place] [adr]
 
 - `<task description>`: task description (required for a new run)
 - `<id>`: an issue that already exists — re-entry, including an issue that has no plan yet (see below)
-- `[in-place]`: branch in the main checkout itself; Phase 3 calls `project-start` without `worktree`
+- `[in-place]`: branch in the main checkout itself; Phase 3 calls `project-start <id> in-place`
 - `[adr]`: include ADR writing, passed to both start and done
 
-Branching defaults to a worktree: unless `in-place` is given, Phase 3 calls `project-start <id> worktree`.
+Branching defaults to a worktree: unless `in-place` is given, Phase 3 calls `project-start <id>`, whose default is a worktree.
 The `worktree` token is accepted as an alias of that default and changes nothing; when it is given, say in one line that a worktree is already the default.
 
 Argument rules:
@@ -208,41 +208,13 @@ MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse 
 
 ### Phase 3: Start + Implementation
 
-1. Before calling `project-start`, run these checks from the main checkout. Run each fence below as one shell call; `could not resolve the main checkout` from either fence means stop and report.
+1. Before calling `project-start`:
    - If Phase 1 was skipped ("Issue" re-entry), show the parsed flags before any check or branch — branch mode `worktree` (default) or `in-place`, and whether `adr` is set.
-   - Read the plan's base the way `project-start` Step 1-B does: `<harness_cli> get-base <id>`, or without a harness_cli the leading `base_branch:` line of the plan's frontmatter in the main worktree.
-   - If the plan declares no base, or declares the project default base, the main checkout must be on the project default base; if it is not, stop and report.
-   - This base check holds in both modes: a branch cut while another session's in-place run has left the main checkout on a feature branch would stack on that feature. Stacking on purpose is what plan frontmatter `base_branch` is for.
-   - A declared base other than the project default base skips this base check only; `project-start` then branches from that base. Fill `<project default base>` below with the `base_branch` that Read Settings found in `skill-config.yaml`.
-
-```bash
-FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
-MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
-[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
-  echo "could not resolve the main checkout"; exit 1; }
-CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"
-[ "$CURRENT" = "<project default base>" ] || {
-  echo "main checkout is on '${CURRENT:-a detached HEAD}', not <project default base>"; exit 1; }
-```
-
-   - In worktree mode, check that the main checkout ignores `.claude/worktrees/`, whether or not the base check was skipped. The trailing slash is required: without it a directory-only pattern does not match.
-   - Read the printed `check-ignore rc=<n>` line. `rc=0`: nothing to say.
-   - `rc=1`: warn in one line and continue — an unignored worktree directory can be staged as a gitlink by `git add -A` in an in-place run; the line to add is `.claude/worktrees/` in `.gitignore` or `.git/info/exclude`.
-   - Any other `rc=`: warn that ignoring could not be decided, and continue.
-   - This check writes to no file and is not a gate.
-
-```bash
-FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
-MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
-[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
-  echo "could not resolve the main checkout"; exit 1; }
-git -C "$MAIN_CHECKOUT" check-ignore -q .claude/worktrees/
-echo "check-ignore rc=$?"
-```
+   - The Phase 3 checks are that flag display and `project-start` Step 1-C, which runs the base check and the ignore check from the main checkout; iterate does not run them a second time.
 
 2. Run the `start` skill procedure with the issue ID from Phase 2:
-   - by default, or with `worktree`: call `project-start <id> worktree [adr]`, and run Phase 4 with the new worktree as the CWD
-   - with `in-place`: call `project-start <id> [adr]`, which branches in the main checkout
+   - by default, or with `worktree`: call `project-start <id> [adr]`, and run Phase 4 with the new worktree as the CWD
+   - with `in-place`: call `project-start <id> in-place [adr]`, which branches in the main checkout
    - pass the `adr` argument when applicable, to write an ADR before implementation
    - read the Intent Summary and Drift Guards
    - print the Task Cards checklist and start implementation
@@ -276,5 +248,5 @@ echo "check-ignore rc=$?"
 
 To resume after interruption, call the relevant skill directly:
 - From Phase 2: `project-issue <plan-path>`, or `project-issue <plan-path> --issue <id>` when the issue already exists. Always name the path: discovery without it can pick up a draft that belongs to other work.
-- From Phase 3: `project-start <id> worktree`, or `project-start <id>` for a run that was `in-place` — either one called from the main checkout. `project-iterate <id>` resumes the same point through the "Issue" state and also runs the Phase 3 checks.
+- From Phase 3: `project-start <id>`, or `project-start <id> in-place` for a run that was `in-place` (from the main checkout — `project-start` Step 1-C refuses `in-place` anywhere else). `project-iterate <id>` resumes the same point through the "Issue" state.
 - From Phase 4: `project-done <id>`

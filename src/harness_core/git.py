@@ -110,21 +110,38 @@ def create_branch(branch_name: str, base_ref: str | None = None) -> str:
 def create_worktree(
     worktree_path: str, branch_name: str, base_ref: str | None = None
 ) -> str:
-    """Create a git worktree with a new branch. Returns worktree path.
+    """Create a git worktree with a new branch, rooted at the main checkout.
 
-    ``base_ref`` behaves as in :func:`create_branch`. ``--no-track`` is used for
-    the same reason; on a git too old to accept it on ``worktree add`` (rejected
-    before any worktree is created), we fall back to creating the worktree and
-    then unsetting the upstream.
+    Returns the worktree's absolute path.
+
+    The worktree is placed and cut from the main checkout, whatever the CWD: a
+    relative ``worktree_path`` is taken under :func:`main_worktree_root`, and
+    ``worktree add`` runs there, so an undeclared base branches from the main
+    checkout's HEAD. Called from a linked worktree, the CWD would otherwise
+    nest the new worktree inside it and branch from its feature. A layout with
+    no main work tree raises :class:`MainWorktreeUnresolvedError` before
+    anything is fetched or created.
+
+    ``base_ref`` behaves as in :func:`create_branch`, and is resolved from the
+    CWD: refs and remotes are shared by every worktree of a repository (a
+    per-worktree ref such as ``HEAD`` is not a base a plan declares).
+    ``--no-track`` is used on both paths, for the reason :func:`create_branch`
+    gives, and because ``branch.autoSetupMerge=always`` would otherwise make
+    the default base the new branch's upstream too. On a git too old to accept
+    it on ``worktree add`` (rejected before any worktree is created), we fall
+    back to creating the worktree and then unsetting the upstream.
     """
-    if base_ref is None:
-        _run_git("worktree", "add", worktree_path, "-b", branch_name)
-        return worktree_path
+    root = main_worktree_root()
+    # Like harness_core.local.abs_under_main (`~` expanded, an absolute path
+    # kept), but normalized lexically; local imports this module.
+    path = Path(worktree_path).expanduser()
+    worktree_path = os.path.normpath(path if path.is_absolute() else root / path)
+    start = [] if base_ref is None else [_resolve_base_ref(base_ref)]
 
-    resolved = _resolve_base_ref(base_ref)
     try:
         _run_git(
-            "worktree", "add", "--no-track", "-b", branch_name, worktree_path, resolved
+            "-C", str(root),
+            "worktree", "add", "--no-track", "-b", branch_name, worktree_path, *start,
         )
     except GitError as exc:
         # Only fall back when this git is too old to accept --no-track on
@@ -134,7 +151,7 @@ def create_worktree(
         stderr = (exc.stderr or "").lower()
         if not any(s in stderr for s in ("--no-track", "unknown option", "usage:")):
             raise
-        _run_git("worktree", "add", "-b", branch_name, worktree_path, resolved)
+        _run_git("-C", str(root), "worktree", "add", "-b", branch_name, worktree_path, *start)
         try:
             _run_git("-C", worktree_path, "branch", "--unset-upstream", branch_name)
         except GitError:

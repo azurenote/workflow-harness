@@ -16,7 +16,7 @@ Codex invokes a skill with a `$`-prefixed name:
 ```
 $project-plan <task description>
 $project-issue [<plan-path>] [--issue <id>]
-$project-start <issue-id> [worktree] [adr]
+$project-start <issue-id> [in-place] [adr]
 $project-done <issue-id> [adr]
 $project-adr <issue-id>
 $project-clean

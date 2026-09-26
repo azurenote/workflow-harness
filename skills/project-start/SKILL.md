@@ -47,12 +47,22 @@ Running under Codex: read `~/.claude/skills/_shared/references/codex.md` for the
 ## Usage
 
 ```
-project-start <issue-id> [worktree] [adr]
+project-start <issue-id> [in-place] [adr]
 ```
 
 - `<issue-id>`: GitHub issue number or Jira ticket ID (required)
-- `[worktree]`: git worktree mode
+- `[in-place]`: branch in the main checkout itself (Step 2-A) instead of in a worktree
 - `[adr]`: write ADR before implementation (`project-adr` internal call)
+
+Branching defaults to a worktree: unless `in-place` is given, Step 2-B creates one under the main checkout.
+The `worktree` token is accepted as an alias of that default and changes nothing; when it is given, say in one line that a worktree is already the default.
+
+Argument rules:
+- The first token is the issue id — an issue number or a Jira key; a flag (`in-place`, `worktree`, `adr`) as the first token is an error — stop and show the correct order.
+- The id is followed only by flags; if any other token follows it, stop and ask what was meant.
+- A flag counts only as a standalone token after the id, in exact lowercase, in any order.
+- A token that is a near spelling of a flag (`--in-place`, `inplace`, `In-place`, `--worktree`) is not guessed — ask the user which was meant.
+- `in-place` and `worktree` together are a conflict — stop and have the user pick one.
 
 ## Instructions
 
@@ -118,10 +128,54 @@ Read the base declared in plan frontmatter. `/start` does **not infer** the base
 Here, **"project default base"** means whatever `base_branch` the project's `skill-config.yaml` declares, read during "Read Settings". Do not compare against any literal branch name — this skill is shared by projects whose defaults differ, and naming one of them here is the bug the comparison is trying to avoid.
 
 - If `base_branch` is **non-null and different from the project default base**, that branch is both the PR review/merge target and the branch base. Pass `--base-ref "<base_branch>"` in 2-A/2-B below.
-- If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use **existing behavior** (branch from current HEAD, assuming the task starts on the default base). Do not add a new prompt.
+- If `base_branch` is `null` or equals the project default base, omit `--base-ref` and branch from the main checkout's HEAD, which Step 1-C requires to be on the project default base. Do not add a new prompt.
 - Fallback without harness: inspect the leading `base_branch:` line in the frontmatter of `<plan-path>`. If absent, use the project default base.
 
-**2-A. Normal Branch (default)**
+**1-C. Pre-branch checks**
+
+These run before any branch, worktree, status change or ADR. Run each fence below as one shell call — shell variables do not survive to the next call; `could not resolve the main checkout` from any fence means stop and report. The resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`.
+
+- With `in-place` only: the CWD must be the main checkout, because 2-A branches wherever it runs; from any other CWD, stop and print the main checkout path. A worktree needs no such check: 2-B creates it under the main checkout from any CWD.
+
+```bash
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {
+  echo "not the main checkout — rerun from: $MAIN_CHECKOUT"; exit 1; }
+```
+
+- In both modes, read the base Step 1-B found. If the plan declares no base, or declares the project default base, the main checkout must be on the project default base; if it is not, stop and report.
+- This base check holds in both modes: a branch cut while another session's in-place run has left the main checkout on a feature branch would stack on that feature. Stacking on purpose is what plan frontmatter `base_branch` is for.
+- A declared base other than the project default base skips this base check only; 2-A or 2-B then branches from that base. Fill `<project default base>` below with the `base_branch` that Read Settings found in `skill-config.yaml`.
+
+```bash
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"
+[ "$CURRENT" = "<project default base>" ] || {
+  echo "main checkout is on '${CURRENT:-a detached HEAD}', not <project default base>"; exit 1; }
+```
+
+- In worktree mode, check that the main checkout ignores `.claude/worktrees/`, whether or not the base check was skipped. The trailing slash is required: without it a directory-only pattern does not match.
+- Read the printed `check-ignore rc=<n>` line. `rc=0`: nothing to say.
+- `rc=1`: warn in one line and continue — an unignored worktree directory can be staged as a gitlink by `git add -A` in an in-place run; the line to add is `.claude/worktrees/` in `.gitignore` or `.git/info/exclude`.
+- Any other `rc=`: warn that ignoring could not be decided, and continue.
+- This check writes to no file and is not a gate.
+
+```bash
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+git -C "$MAIN_CHECKOUT" check-ignore -q .claude/worktrees/
+echo "check-ignore rc=$?"
+```
+
+**2-A. In-place branch (with `in-place`)**
 
 ```bash
 # When base is declared
@@ -134,15 +188,43 @@ Here, **"project default base"** means whatever `base_branch` the project's `ski
 
 Branch push happens during `project-done`. Do not push here.
 
-**2-B. Worktree mode (when `worktree` argument is present)**
+**2-B. Worktree (default)**
 
 ```bash
 # When base is declared
 <harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>" --base-ref "<base_branch>"
 # When base is undeclared (default)
 <harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>"
-# fallback: git worktree add [--no-track] ".claude/worktrees/<project>-issue-<id>" -b "<branch-name>" ["<base_branch | origin/base_branch>"]
 ```
+
+`create-worktree` takes the relative path under the main checkout and runs there, from any CWD, and prints the worktree's absolute path. It stops before creating anything when the layout has no main work tree.
+
+Without a harness_cli, use this fence — **run it as one shell invocation**; the four resolving lines are the canonical block in `~/.claude/skills/_shared/references/worktree.md`. Fill `BASE` by Step 1-B's rule: empty when the plan declares no base or declares the project default base, so the worktree branches from the main checkout's HEAD; otherwise the declared base, which is resolved as a local branch first, then as `origin/<base>`, fetching that one branch when neither exists; a base written as `origin/<base>` skips the local branch. `--no-track` keeps either one from becoming the new branch's upstream.
+
+```bash
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+WORKTREE_PATH="$MAIN_CHECKOUT/.claude/worktrees/<project>-issue-<id>"
+BASE='<base_branch, or empty>'
+if [ -z "$BASE" ]; then
+  git -C "$MAIN_CHECKOUT" worktree add --no-track "$WORKTREE_PATH" -b "<branch-name>" || exit 1
+else
+  B="${BASE#origin/}"
+  if [ "$B" = "$BASE" ] && git -C "$MAIN_CHECKOUT" show-ref --verify -q "refs/heads/$B"; then
+    REF="refs/heads/$B"
+  else
+    REF="refs/remotes/origin/$B"
+    git -C "$MAIN_CHECKOUT" show-ref --verify -q "$REF" ||
+      git -C "$MAIN_CHECKOUT" fetch origin "+refs/heads/$B:$REF" || exit 1
+  fi
+  git -C "$MAIN_CHECKOUT" worktree add --no-track "$WORKTREE_PATH" -b "<branch-name>" "$REF" || exit 1
+fi
+printf 'WORKTREE_PATH=%s\n' "$WORKTREE_PATH"
+```
+
+`$WORKTREE_PATH` is the absolute path either form printed — `create-worktree` bare, the fallback as `WORKTREE_PATH=<path>`; substitute it as a literal from here on.
 
 After this, perform all work inside `$WORKTREE_PATH`.
 
