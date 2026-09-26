@@ -65,7 +65,8 @@ git branch -a --list "*issue-<id>-*" "*/<id>-*"
 
 The plan check is rooted at the main worktree: `.task/plan/` is gitignored and exists only there, so a
 check relative to the CWD reports every plan as missing from a linked worktree. `<harness_cli> plan-file
-<id>` does the same for an integer id; it parses the id as an integer, so use this form for a Jira key:
+<id>` does the same for either id form, but only in a project that has a harness_cli; this form needs
+only `harness_core`:
 
 ```bash
 python -c '

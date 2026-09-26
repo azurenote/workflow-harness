@@ -530,7 +530,7 @@ reach it across a turn: a check made in another call protects nothing when what 
 different. The id check is here for the same reason as Step 1-L's — an empty number, the Forgejo
 section's silent parse failure, would otherwise become `plan-.md`.
 
-- `<harness_cli> rename-plan` is not used here: it checks neither that its source is a draft file nor its id, so an empty path renames the main worktree itself, and it parses its number as an integer, so a Jira key is an argument error.
+- `<harness_cli> rename-plan` is not used here: this step has to run in projects that have no harness_cli, and the command above reaches the same `rename_plan_to_issue`, which itself refuses a source that is not a draft in the plan directory and an id that is not an issue number or ticket key.
 - If `plan-<id>.md` already exists, the command stops with a non-zero exit and leaves the draft where it was: report it and stop, never overwrite the existing plan, and never delete the draft to finish the rename.
 
 `mv` is not used either: it overwrites an existing destination without a word, and a destination
