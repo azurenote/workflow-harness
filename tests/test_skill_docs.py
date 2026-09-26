@@ -3515,3 +3515,309 @@ def test_no_skill_still_says_comments_have_no_fj_contract() -> None:
             if re.search(r"no `?fj`? contract|계약이 없|계약 밖|웹 UI 가 1순위", lowered):
                 offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {line.strip()}")
     assert not offenders, "comments are declared uncontracted again:\n" + "\n".join(offenders)
+
+
+# --------------------------------------------------------------------------
+# #38 — whether `.task/plan/` is ignored is asked of git, not of `.gitignore`'s
+# text. A string comparison saw only its own literal line and appended a
+# duplicate under an existing `.task/` (PR #44 did). These tests run the
+# documented fence rather than read it: a wording check passes a snippet that
+# is spelled right and behaves wrong.
+# --------------------------------------------------------------------------
+
+import os
+import shutil
+import subprocess
+
+import pytest
+
+_IGNORE_CHECK_START = "git check-ignore -q --no-index .task/plan/ && rc=0 || rc=$?"
+_IGNORE_CHECK_STEPS = {
+    "project-done": ("skills/project-done/SKILL.md", "**5. Commit source changes**"),
+    "project-plan": ("skills/project-plan/SKILL.md", "**3. Create plan-draft-<slug>.md**"),
+}
+
+
+def _fence_blocks(text: str) -> list[list[str]]:
+    """Each fenced block's lines, markers excluded, trailing space stripped.
+
+    A fence closes only on a bare run of at least as many backticks as opened
+    it, so a four-backtick fence holding a nested three-backtick one (as in
+    project-release-doc) stays one block instead of flipping inside and out.
+    """
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    opener = ""
+    for line in text.splitlines():
+        marker = re.match(r"\s*(`{3,})(.*)$", line)
+        if current is None:
+            if marker:
+                current, opener = [], marker.group(1)
+            continue
+        if marker and marker.group(1).startswith(opener) and not marker.group(2).strip():
+            blocks.append(current)
+            current = None
+            continue
+        current.append(line.rstrip())
+    return blocks
+
+
+def _ignore_check_spans(block: list[str]) -> list[tuple[int, int]]:
+    """(start, end) line indexes, inclusive, of each ignore check in one block."""
+    spans = []
+    for i, line in enumerate(block):
+        if line.strip() == _IGNORE_CHECK_START:
+            end = next((k for k in range(i + 1, len(block)) if block[k].strip() == "esac"), None)
+            assert end is not None, f"an ignore check has no closing `esac`: {block[i:]}"
+            spans.append((i, end))
+    return spans
+
+
+def _ignore_check_block(skill: str) -> tuple[int, list[str], list[list[str]]]:
+    """The step's one ignore check: (its block index, its lines, all the step's blocks)."""
+    path, heading = _IGNORE_CHECK_STEPS[skill]
+    section = skill_section(read_skill(path), heading)
+    assert section, f"{path} has no step starting {heading!r}"
+    blocks = _fence_blocks(section)
+    found = [(bi, s, e) for bi, block in enumerate(blocks) for s, e in _ignore_check_spans(block)]
+    assert len(found) == 1, f"{skill}: expected one ignore check in {heading}, found {len(found)}"
+    bi, start, end = found[0]
+    return bi, blocks[bi][start:end + 1], blocks
+
+
+def _ignore_check(skill: str) -> str:
+    lines = _ignore_check_block(skill)[1]
+    assert len(lines) > 2, f"{skill}: the ignore check is empty"
+    return "\n".join(lines) + "\n"
+
+
+def test_ignore_check_is_one_snippet_shared_by_both_steps() -> None:
+    assert _ignore_check("project-done") == _ignore_check("project-plan"), (
+        "project-done Step 5 and project-plan Step 3 drifted apart"
+    )
+
+
+def test_no_skill_decides_the_plan_ignore_by_reading_gitignore() -> None:
+    """Fenced commands and inline code only — prose may name `.gitignore`."""
+    offenders: list[str] = []
+    for md in _skill_docs():
+        text = md.read_text(encoding="utf-8")
+        candidates = [l for block in _fence_blocks(text) for l in _logical_lines("\n".join(block))]
+        candidates += [
+            span for line, in_fence in _outside_fences(text) if not in_fence
+            for span in re.findall(r"`([^`]+)`", line)
+        ]
+        for c in candidates:
+            c = c.replace("\\", "")  # `\.task\/plan` is still task/plan
+            if re.search(r"\b(grep|rg|awk|sed)\b", c) and ".gitignore" in c and "task/plan" in c:
+                offenders.append(f"{md.relative_to(ROOT)}: {c}")
+    assert not offenders, "the ignore is decided by .gitignore's text again:\n" + "\n".join(offenders)
+
+
+def test_every_gitignore_write_in_the_skills_is_the_shared_check() -> None:
+    """A stale second copy next to the snippet would run too."""
+    snippets = 0
+    offenders: list[str] = []
+    for md in _skill_docs():
+        for block in _fence_blocks(md.read_text(encoding="utf-8")):
+            spans = _ignore_check_spans(block)
+            snippets += len(spans)
+            for i, line in enumerate(block):
+                writes = re.search(r">>\s*\S*\.gitignore|\btee\b[^|]*\.gitignore", line)
+                if ("check-ignore" in line or writes) and not any(
+                    s <= i <= e for s, e in spans
+                ):
+                    offenders.append(f"{md.relative_to(ROOT)}: {line.strip()}")
+    assert not offenders, "a .gitignore check or write outside the shared snippet:\n" + "\n".join(offenders)
+    assert snippets == len(_IGNORE_CHECK_STEPS), f"expected {len(_IGNORE_CHECK_STEPS)} snippets, found {snippets}"
+
+
+def test_ignore_check_runs_before_anything_it_guards() -> None:
+    bi, lines, blocks = _ignore_check_block("project-done")
+    assert [l for l in blocks[bi] if l.strip()] == lines, (
+        "project-done's ignore check shares its fence; its stop exit must not sit among the commit lines"
+    )
+    adds = [k for k, block in enumerate(blocks) if any(l.strip() == "git add -A" for l in block)]
+    assert len(adds) == 1 and bi < adds[0], "the ignore check no longer runs before `git add -A`"
+
+    bi, lines, blocks = _ignore_check_block("project-plan")
+    block = [l.strip() for l in blocks[bi]]
+    start = block.index(_IGNORE_CHECK_START)
+    assert "mkdir -p .task/plan" in block[:start], "project-plan checks before creating the plan dir"
+    assert any(l.startswith("PLAN_FILE=") for l in block[start:]), "the plan is written before the check"
+
+
+def test_ignore_check_prose_says_to_stop_and_to_run_it_whole() -> None:
+    done = _done_step("**5. Commit source changes**")
+    line = assert_rule(done, "leaves `.gitignore` untouched", starts_with="- **Only exit 1 appends.**")
+    assert "do not go on to the commit below" in line, "the stop branch no longer stops the commit"
+    line = assert_rule(
+        done, "because the `case` reads the `rc` its first line sets",
+        starts_with="`.task/plan/` must stay ignored; never stage it.",
+    )
+    assert "**run this fence as one shell invocation**" in line
+    plan = skill_section(read_skill("skills/project-plan/SKILL.md"), "**3. Create plan-draft-<slug>.md**")
+    line = assert_rule(
+        plan, "stop and report it before writing any plan",
+        starts_with="The ignore check is the same fence as `project-done` Step 5",
+    )
+    assert "**Run this fence as one shell invocation**" in line
+
+
+# (name, starting .gitignore or None for absent, setup, expected .gitignore or
+# None for unchanged, expected exit). `.task/plan` is absent unless a setup
+# creates it: the trailing slash only matters while the directory is missing.
+_ABSENT = None
+_UNCHANGED = None
+
+
+def _exclude_task(repo: Path, env: dict) -> None:
+    (repo / ".git" / "info" / "exclude").write_text(".task/\n")
+
+
+def _track_under_plan(repo: Path, env: dict) -> None:
+    (repo / ".task" / "plan").mkdir(parents=True)
+    (repo / ".task" / "plan" / "x").write_text("x\n")
+    subprocess.run(["git", "add", "-f", ".task/plan/x"], cwd=repo, env=env, check=True)
+
+
+_IGNORE_SCENARIOS = [
+    ("absent", _ABSENT, None, b".task/plan/\n", 0),
+    ("empty", b"", None, b".task/plan/\n", 0),
+    ("ancestor", b".task/\n", None, _UNCHANGED, 0),
+    ("directory-only rule", b".task/plan/\n", None, _UNCHANGED, 0),
+    ("re-included", b".task/*\n!.task/plan/\n", None, b".task/*\n!.task/plan/\n.task/plan/\n", 0),
+    ("other entry", b".venv\n", None, b".venv\n.task/plan/\n", 0),
+    ("no final newline", b"node_modules", None, b"node_modules\n.task/plan/\n", 0),
+    ("info/exclude", b"", _exclude_task, _UNCHANGED, 0),
+    ("tracked under ignored", b".task/\n", _track_under_plan, _UNCHANGED, 0),
+    ("not a repository", b"x\n", "no-repo", _UNCHANGED, 1),
+]
+
+
+def _isolated_git_env(tmp: Path) -> dict:
+    """No global, system or user excludes: a `.task` in them would decide rows."""
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(tmp),
+        "XDG_CONFIG_HOME": str(tmp),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CEILING_DIRECTORIES": str(tmp),
+    }
+
+
+def _ignore_check_failures(snippet: str, shell: list[str], tmp: Path) -> list[str]:
+    """Run the snippet through every scenario; describe each row it gets wrong."""
+    tmp = tmp.resolve()
+    env = _isolated_git_env(tmp)
+    failures: list[str] = []
+    for n, (name, start, setup, expected, rc) in enumerate(_IGNORE_SCENARIOS):
+        repo = tmp / f"case-{n}"
+        repo.mkdir()
+        if setup != "no-repo":
+            subprocess.run(["git", "init", "-q"], cwd=repo, env=env, check=True)
+        if start is not None:
+            (repo / ".gitignore").write_bytes(start)
+        if callable(setup):
+            setup(repo, env)
+        runs = 2 if rc == 0 else 1  # a second run must change nothing
+        for attempt in range(runs):
+            result = subprocess.run([*shell, "-c", snippet], cwd=repo, env=env, capture_output=True)
+            gi = repo / ".gitignore"
+            got = gi.read_bytes() if gi.exists() else None
+            want = start if expected is _UNCHANGED else expected
+            if result.returncode != rc or got != want:
+                failures.append(
+                    f"{name} (run {attempt + 1}): exit {result.returncode} (want {rc}), "
+                    f".gitignore {got!r} (want {want!r}), stderr {result.stderr!r}"
+                )
+                break
+    return failures
+
+
+def _shells() -> list[list[str]]:
+    shells = [["sh"], ["sh", "-e"]]
+    if shutil.which("dash"):
+        shells += [["dash"], ["dash", "-e"]]
+    return shells
+
+
+@pytest.mark.parametrize("skill", sorted(_IGNORE_CHECK_STEPS))
+def test_ignore_check_behaves_in_every_scenario(skill: str, tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    snippet = _ignore_check(skill)
+    assert ["sh", "-e"] in _shells(), "the `set -e` run is what catches an rc captured with `;`"
+    for k, shell in enumerate(_shells()):
+        work = tmp_path / f"shell-{k}"
+        work.mkdir()
+        failures = _ignore_check_failures(snippet, shell, work)
+        assert not failures, f"{skill} under {' '.join(shell)}:\n" + "\n".join(failures)
+
+
+def _mutants(snippet: str) -> dict[str, str]:
+    """Each way of getting the check wrong that a reviewer or a regression could introduce."""
+    guard = re.findall(r"if \[ -s \.gitignore \].*?; fi", snippet)
+    assert len(guard) == 1, "the newline guard is not one `if … fi`; update the mutant"
+    mutants = {
+        "string comparison": 'grep -q "^\\.task/plan/" .gitignore || echo ".task/plan/" >> .gitignore\n',
+        "no trailing slash": snippet.replace("--no-index .task/plan/ &&", "--no-index .task/plan &&"),
+        "exit status via ||": 'git check-ignore -q --no-index .task/plan/ || echo ".task/plan/" >> .gitignore\n',
+        # Only the guard goes; its line also carries the `1)` label, and
+        # dropping that too would be caught by a syntax error, not a scenario.
+        "no newline guard": snippet.replace(guard[0], ""),
+        "no --no-index": snippet.replace("check-ignore -q --no-index", "check-ignore -q"),
+        "exit status via ;": snippet.replace(" && rc=0 || rc=$?", "; rc=$?"),
+        "stop arm continues": snippet.replace(">&2; exit 1 ;;", ">&2; : ;;"),
+        "stop arm appends": snippet.replace(">&2; exit 1 ;;", '>&2; echo ".task/plan/" >> .gitignore; exit 1 ;;'),
+    }
+    for name, mutant in mutants.items():
+        assert mutant != snippet, f"mutant {name!r} did not change the snippet"
+    return mutants
+
+
+# Each mutant and the scenario row, under the shell, that exists to catch it.
+_MUTANT_CATCHERS = {
+    "string comparison": ("ancestor", ("sh",)),
+    "no trailing slash": ("directory-only rule", ("sh",)),
+    "exit status via ||": ("not a repository", ("sh",)),
+    "no newline guard": ("no final newline", ("sh",)),
+    "no --no-index": ("tracked under ignored", ("sh",)),
+    "exit status via ;": ("absent", ("sh", "-e")),
+    "stop arm continues": ("not a repository", ("sh",)),
+    "stop arm appends": ("not a repository", ("sh",)),
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_MUTANT_CATCHERS))
+def test_ignore_check_scenarios_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
+    """A guard that stays green when its rule is broken proves nothing.
+
+    Caught by the row meant for it, not by any failure: a mutant that merely
+    breaks the syntax fails every row and would prove no row works.
+    """
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    assert set(_MUTANT_CATCHERS) == set(_mutants(_ignore_check("project-done")))
+    snippet = _mutants(_ignore_check("project-done"))[mutant]
+    row, shell = _MUTANT_CATCHERS[mutant]
+    failures = _ignore_check_failures(snippet, list(shell), tmp_path)
+    assert any(f.startswith(f"{row} (") for f in failures), (
+        f"the {row!r} row does not reject the {mutant!r} mutant under {' '.join(shell)}: {failures}"
+    )
+    assert not any("syntax error" in f for f in failures), f"the {mutant!r} mutant does not parse: {failures}"
+
+
+def test_repo_gitignore_has_no_redundant_plan_entry(tmp_path: Path) -> None:
+    """PR #44 appended `.task/plan/` under `.task/`; the entry `.task/` already covers it."""
+    lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ".task/" in lines, "the repo no longer ignores .task/"
+    assert ".task/plan/" not in lines, "a redundant .task/plan/ entry is back"
+    if not shutil.which("git") or not (ROOT / ".git").exists():
+        pytest.skip("not a git checkout, or git is not installed")
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", ".task/plan/"],
+        cwd=ROOT, env={**_isolated_git_env(tmp_path), "GIT_CEILING_DIRECTORIES": ""},
+    )
+    assert result.returncode == 0, f"the repo's rules no longer cover .task/plan/ (exit {result.returncode})"

@@ -4,4 +4,3 @@ dist/
 build/
 .pytest_cache/
 .task/
-.task/plan/

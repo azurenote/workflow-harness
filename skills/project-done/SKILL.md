@@ -168,11 +168,25 @@ Four pieces each carry load, so do not fold them back together.
 
 If `.claude/skill-config.yaml` has `hooks.pre_commit`, run it through Bash first. Absent, empty, or null -> skip silently. On failure, print a warning and continue. See `~/.claude/skills/_shared/references/hooks.md`.
 
-`.task/plan/` is ignored by `.gitignore`; never stage it.
+`.task/plan/` must stay ignored; never stage it. Ask git whether it already is before touching `.gitignore` — **run this fence as one shell invocation**, because the `case` reads the `rc` its first line sets:
 
 ```bash
-grep -q "^\.task/plan/" .gitignore || echo ".task/plan/" >> .gitignore
+git check-ignore -q --no-index .task/plan/ && rc=0 || rc=$?
+case "$rc" in
+  0) ;;
+  1) if [ -s .gitignore ] && [ -n "$(tail -c 1 .gitignore)" ]; then echo >> .gitignore; fi
+     echo ".task/plan/" >> .gitignore ;;
+  *) echo "stop: git check-ignore exited $rc; .gitignore not touched" >&2; exit 1 ;;
+esac
+```
 
+- **Ask git, not the file.** A string comparison against `.gitignore` sees one literal line and nothing else: an ancestor entry such as `.task/`, a `**/` pattern, `.git/info/exclude` and a global excludes file all ignore the directory without it, so the check appended a redundant entry — PR #44 added one under an existing `.task/`.
+- **Keep the trailing slash.** It tells git the path is a directory even before `.task/plan/` exists. Without it, while the directory is absent, a directory-only rule (`.task/plan/`) answers 1 and a re-included one (`.task/*` then `!.task/plan/`) answers 0 — wrong both ways.
+- **Keep `--no-index`.** The question is whether the rules cover the directory, not whether something under it is tracked: without the flag, a tracked file under an ignored `.task/` makes the directory answer 1 and the duplicate comes back.
+- **Only exit 1 appends.** Any other non-zero exit means git could not answer (128: not a repository), so the fence exits 1 and leaves `.gitignore` untouched — do not go on to the commit below; report it.
+- **The append guards the last line.** A `.gitignore` that ends without a newline gets one first; otherwise the new entry is glued onto the last line and breaks it (`.task` became `.task.task/plan/`).
+
+```bash
 git add -A
 git restore --staged ".task/plan/" 2>/dev/null || true
 
