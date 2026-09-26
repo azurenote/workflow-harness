@@ -8985,3 +8985,27 @@ def test_i67_slug_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
     assert failures, f"the {row!r} row does not reject the {mutant!r} mutant under {' '.join(shell)}, LC_ALL={locale}"
     # dash reports "Syntax error", bash and zsh "syntax error".
     assert not any("syntax error" in f.lower() for f in failures), f"the {mutant!r} mutant does not parse: {failures}"
+
+
+# #20 — create-issue's exit 3 names the pieces to repair
+#
+# With links, a bare `set-fields <number>` repairs nothing: the command prints a
+# recovery line carrying only the failed pieces it can repair, and names the
+# ones it cannot. Step 6 sends the agent to that line; the exit-code table says
+# the same for both commands.
+# --------------------------------------------------------------------------
+
+_I20_STEP6_EXIT3 = '- On exit 3 the issue already exists: never re-run create-issue; run the recovery line it printed on stderr as `<harness_cli> <line>` — `set-fields <number>` carrying only the pieces that failed — and handle each piece it names as not repairable by `set-fields` the way that line says.'
+_I20_STEP6_CODE3 = '- **3** `INCOMPLETE` — the issue exists but its fields or links did not all apply.'
+_I20_ROW_CREATE = '| `create-issue` | `OK` · `REFUSED` · `INCOMPLETE` · `UNKNOWN` | `REFUSED`: 만들기 전에 거부했고 stdout 이 비었다(`--parent`·`--blocked-by` 대상이 없거나 풀 리퀘스트거나 읽을 수 없을 때, 부모가 GitHub 의 하위 이슈 상한에 이미 찼을 때 포함). `INCOMPLETE`: 이슈는 생겼고 메타데이터나 링크가 불완전하다 — 모든 조각을 시도한 뒤다. stderr 의 복구 줄(실패한 조각만 담은 `set-fields`)을 실행하고, `set-fields` 로 고칠 수 없다고 적힌 조각은 그 줄대로 처리한다. `UNKNOWN`: 생성 요청이 이슈가 생겼는지 말하지 않고 실패했다 — 제목으로 검색하기 전에는 다시 만들지 않는다 |'
+_I20_ROW_SET_FIELDS = '| `set-fields` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 첫 쓰기 전에 거부했다(링크 대상이 없거나 풀 리퀘스트거나 읽을 수 없음, 다른 부모가 이미 있음, 새로 붙일 부모가 하위 이슈 상한에 참 포함). `INCOMPLETE`: 첫 쓰기 뒤에 실패했다 — 모든 조각을 시도한 뒤이고, stdout 에 적용된 것, stderr 에 복구 줄이 있다. 요청한 링크가 이미 되어 있으면 `OK` 다(`NOOP` 아님 — 복구 호출자는 성공을 성공으로 읽는다) |'
+
+
+def test_i20_step6_sends_exit_3_to_the_printed_recovery_line() -> None:
+    issue = read_skill("skills/project-issue/SKILL.md")
+    assert_whole_line(issue, _I20_STEP6_EXIT3)
+    assert "run set-fields <number> instead" not in issue, "the bare repair that fixes no link is back"
+    assert_whole_line(issue, _I20_STEP6_CODE3)
+    table = read_skill("skills/_shared/references/exit-codes.md")
+    assert_whole_line(table, _I20_ROW_CREATE)
+    assert_whole_line(table, _I20_ROW_SET_FIELDS)

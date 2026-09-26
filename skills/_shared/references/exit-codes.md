@@ -34,9 +34,9 @@ harness 의 모든 명령은 아래 열거형의 값으로 끝난다. 이 표가
 | `create-worktree` | `OK` · `REFUSED` | `REFUSED`: main checkout 해석 불가. git 실패는 `CRASH` |
 | `push-branch` | `OK` | git 실패는 `CRASH` |
 | `clean-up` | `OK` · `REFUSED` | `REFUSED`: main checkout 해석 불가 |
-| `create-issue` | `OK` · `REFUSED` · `INCOMPLETE` · `UNKNOWN` | `REFUSED`: 만들기 전에 거부했고 stdout 이 비었다. `INCOMPLETE`: 이슈는 생겼고 메타데이터가 불완전하다 — stdout 의 번호로 `set-fields` 를 부른다. `UNKNOWN`: 생성 요청이 이슈가 생겼는지 말하지 않고 실패했다 — 제목으로 검색하기 전에는 다시 만들지 않는다 |
+| `create-issue` | `OK` · `REFUSED` · `INCOMPLETE` · `UNKNOWN` | `REFUSED`: 만들기 전에 거부했고 stdout 이 비었다(`--parent`·`--blocked-by` 대상이 없거나 풀 리퀘스트거나 읽을 수 없을 때, 부모가 GitHub 의 하위 이슈 상한에 이미 찼을 때 포함). `INCOMPLETE`: 이슈는 생겼고 메타데이터나 링크가 불완전하다 — 모든 조각을 시도한 뒤다. stderr 의 복구 줄(실패한 조각만 담은 `set-fields`)을 실행하고, `set-fields` 로 고칠 수 없다고 적힌 조각은 그 줄대로 처리한다. `UNKNOWN`: 생성 요청이 이슈가 생겼는지 말하지 않고 실패했다 — 제목으로 검색하기 전에는 다시 만들지 않는다 |
 | `get-issue` | `OK` · `REFUSED` | `REFUSED`: 이슈나 그 메타데이터를 읽지 못했다 — 입력이 아니라 읽기가 실패한 것이라, 원인(권한·네트워크)을 확인하고 다시 실행한다. 아무것도 쓰지 않았으므로 다시 실행해도 안전하다 |
-| `set-fields` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 첫 쓰기 전에 거부했다. `INCOMPLETE`: 첫 쓰기 뒤에 실패했다 — stdout 에 적용된 것이 있다 |
+| `set-fields` | `OK` · `REFUSED` · `INCOMPLETE` | `REFUSED`: 첫 쓰기 전에 거부했다(링크 대상이 없거나 풀 리퀘스트거나 읽을 수 없음, 다른 부모가 이미 있음, 새로 붙일 부모가 하위 이슈 상한에 참 포함). `INCOMPLETE`: 첫 쓰기 뒤에 실패했다 — 모든 조각을 시도한 뒤이고, stdout 에 적용된 것, stderr 에 복구 줄이 있다. 요청한 링크가 이미 되어 있으면 `OK` 다(`NOOP` 아님 — 복구 호출자는 성공을 성공으로 읽는다) |
 | `audit-fields` | `OK` · `REFUSED` · `INCOMPLETE` · `FINDINGS` | `OK`: 모든 축을 읽었다(drift 가 있어도, `--fail-on-drift` 가 없으면). `REFUSED`: 이슈 목록을 읽지 못했다, stdout 이 비었다. `INCOMPLETE`: 읽지 못한 축이 있다 — `warnings` 가 이름을 댄다. `FINDINGS`: `--fail-on-drift` 이고 drift 가 1건 이상이다 |
 | `plan_body` | `OK` · `REFUSED` · `NOOP` | `python -m harness_core.plan_body`. `REFUSED`: 플랜이 없거나 이름·위치가 틀림, id·rev 불일치, 인코딩이 UTF-8 이 아니거나 빈 파일, 요약도 한도를 넘음, 트래커 읽기 파일을 읽지 못함, main checkout 해석 불가. `NOOP`: 같은 내용이 이미 트래커에 있다(`SEEN=`) |
 | `scaffold` | `OK` · `REFUSED` | `harness-init`·`harness-update`. `REFUSED`: 프리플라이트 실패 또는 `error:` 경고 — 파일을 쓰기 전에 돌아온다 |
