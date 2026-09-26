@@ -389,3 +389,360 @@ def test_cli_stops_when_the_main_checkout_cannot_be_resolved(monkeypatch: pytest
         assert main(argv) == ExitCode.REFUSED
         err = capsys.readouterr().err
         assert err.startswith("stop (main checkout):") and err.count("\n") == 1
+
+
+# ── Step 2 screen (#65) ──────────────────────────────────────────────────────
+#
+# `--screen` prints project-issue Step 2's screen and a SCREEN= line. The
+# goldens pin every byte but the hash (the path is a tmp path); the hash is
+# checked by recomputing it here from what was printed, so a gap between what
+# is shown and what is hashed goes red.
+
+import os
+import subprocess
+import sys
+
+from harness_core.local import read_plan_preview
+
+SCREEN_PLAN = "# Plan: 화면 예시\n\n## Intent Summary\n의도.\n"
+SCREEN_PLAN_FM = "---\nbase_branch: feat/x   # 통합 브랜치\n---\n" + SCREEN_PLAN
+_CREATE_Q = "Are the Intent Summary and base branch correct? Create an issue from this file? [yes/no]"
+_LINK_Q = "Are the Intent Summary and base branch correct? Link this file to #65 and post it as a comment? [yes/no]"
+_LINK_ONLY_Q = "Are the Intent Summary and base branch correct? Link this file to #65? [yes/no]"
+_I = "⁨"
+_J = "⁩"
+
+
+def _fj_read(title: str, number: str = "65", state: str = "Open", *, pull: bool = False) -> str:
+    """`fj --style minimal issue view` as measured on #65 (issue) and #77 (pull request), 2026-09-26."""
+    head = f"{_I}{_J}{_I}{title}{_J} {_I}{_J}#{_I}{number}{_J}{_I}{_J}"
+    by = f"By {_I}{_J}{_I}my{_J}{_I}{_J} — {_I}{_I}{_J}{state}{_I}{_J}{_J}"
+    if pull:
+        return (f"{head}\n{by} — {_I}{_J}+{_I}1093{_J} {_I}{_J}-{_I}12{_J}{_I}{_J}\n"
+                f"{_I}From `{_I}feat/x{_J}` into `{_I}main{_J}`{_J}\n\n")
+    return f'{head}"\n{by}\npriority/1\n\n> 본문\n> By x — Closed\n'
+
+
+def _gh_read(title: str, number: int = 65, state: str = "OPEN") -> str:
+    return json.dumps({"number": number, "title": title, "state": state, "url": f"https://h/o/r/issues/{number}",
+                       "body": "b", "labels": []})
+
+
+def _split_screen(out: str) -> tuple[str, str, str | None]:
+    """(screen body, SCREEN= value, SCREEN_MATCH= value or None) — the SCREEN= line exactly once."""
+    lines = out.split("\n")
+    assert lines[-1] == ""
+    marks = [i for i, l in enumerate(lines) if l.startswith("SCREEN=")]
+    assert len(marks) == 1, out
+    i = marks[0]
+    match = lines[i + 1].removeprefix("SCREEN_MATCH=") if lines[i + 1].startswith("SCREEN_MATCH=") else None
+    assert lines[i + 1 + (match is not None):] == [""], out
+    return "\n".join(lines[:i]) + "\n", lines[i].removeprefix("SCREEN="), match
+
+
+def _own_hash(body: str, rev: str) -> str:
+    return hashlib.sha256(("rev:" + rev + "\n" + body).encode("utf-8")).hexdigest()[:12]
+
+
+def _screen(capsys, argv: list[str]) -> tuple[str, str, str | None]:
+    assert main(argv) == ExitCode.OK
+    return _split_screen(capsys.readouterr().out)
+
+
+def test_i65_screen_readers_cover_the_trackers_with_limits() -> None:
+    assert set(plan_body.ISSUE_READERS) == set(LIMITS)
+
+
+@pytest.mark.parametrize("tracker", ["forgejo", "github"])
+@pytest.mark.parametrize("text, base", [(SCREEN_PLAN, "main (default)"), (SCREEN_PLAN_FM, "feat/x")])
+def test_i65_create_screen_golden(tracker: str, text: str, base: str, main_root: Path, capsys) -> None:
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-s.md", text)
+    body, value, match = _screen(capsys, [tracker, str(plan), "--screen", "--default-base", "main"])
+    head = "---\nbase_branch: feat/x   # 통합 브랜치\n---\n" if text is SCREEN_PLAN_FM else ""
+    assert body == (
+        f"file: {plan.resolve()}\n"
+        "title: 화면 예시\n"
+        f"base branch: {base}\n"
+        "human preview:\n"
+        f"{head}# Plan: 화면 예시\n\n## Intent Summary\n의도.\n"
+        "\n"
+        f"{_CREATE_Q}\n"
+    )
+    assert value == _own_hash(body, revision(plan.read_bytes())) and match is None
+
+
+@pytest.mark.parametrize("tracker, read, state", [
+    ("forgejo", _fj_read("이슈 제목 — #12 를 잇는다"), "Open"),
+    ("github", _gh_read("이슈 제목 — #12 를 잇는다"), "OPEN"),
+])
+def test_i65_link_screen_golden(tracker: str, read: str, state: str, tmp_path: Path, main_root: Path, capsys) -> None:
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN)
+    issue_read = _write(tmp_path / "read", read)
+    rev = revision(plan.read_bytes())
+    body, value, _ = _screen(capsys, [tracker, str(plan), "--issue", "65", "--screen", "--issue-read", str(issue_read),
+                                      "--default-base", "main"])
+    chars = len(marker("65", rev)) + 2 + len(SCREEN_PLAN)
+    assert body == (
+        f"file: {plan.resolve()}\n"
+        "title: 화면 예시\n"
+        "base branch: main (default)\n"
+        "human preview:\n"
+        "# Plan: 화면 예시\n\n## Intent Summary\n의도.\n"
+        "\n"
+        f"issue: #65 이슈 제목 — #12 를 잇는다 ({state})\n"
+        f"comment: plan-65.md after the rename — full, {chars}/65536 characters, rev {rev}\n"
+        "\n"
+        f"{_LINK_Q}\n"
+    )
+    assert value == _own_hash(body, rev)
+
+
+@pytest.mark.parametrize("tracker", ["forgejo", "github"])
+def test_i65_link_screen_over_the_limit_carries_the_refusal(tracker: str, tmp_path: Path, main_root: Path, limits,
+                                                            capsys) -> None:
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN)
+    read = _fj_read("제목") if tracker == "forgejo" else _gh_read("제목")
+    issue_read = _write(tmp_path / "read", read)
+    limits(**{tracker: 40})
+    body, value, _ = _screen(capsys, [tracker, str(plan), "--issue", "65", "--screen", "--issue-read", str(issue_read),
+                                      "--default-base", "main"])
+    lines = body.split("\n")
+    assert lines[-4].startswith("comment: stop (too large): the summary is ")
+    assert lines[-4].endswith(f"over the {tracker} limit of 40; nothing is posted")
+    assert lines[-3:] == ["", _LINK_ONLY_Q, ""]
+    assert value == _own_hash(body, revision(plan.read_bytes()))
+
+
+def test_i65_screen_preview_is_the_step2_preview(main_root: Path, capsys) -> None:
+    """The same 30 lines `local.read_plan_preview` gives, trailing blank lines aside."""
+    long_plan = "---\nbase_branch: feat/x\n---\n\n# Plan: 긴 플랜\n" + "".join(f"줄 {i}\n" for i in range(1, 40))
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-long.md", long_plan)
+    body, _, _ = _screen(capsys, ["forgejo", str(plan), "--screen"])
+    shown = body.split("\n")
+    start = shown.index("human preview:") + 1
+    expected = read_plan_preview(plan).split("\n")
+    assert shown[start:start + len(expected)] == expected
+    assert expected[-1] == "줄 29" and shown[start + len(expected)] == ""
+
+
+def test_i65_screen_is_the_same_for_the_same_inputs_and_moves_with_each(tmp_path: Path, main_root: Path,
+                                                                        capsys) -> None:
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN + "".join(f"줄 {i}\n" for i in range(40)))
+    read = _write(tmp_path / "read", _fj_read("제목"))
+    link = ["forgejo", str(plan), "--issue", "65", "--screen", "--issue-read", str(read), "--default-base", "main"]
+    create = ["forgejo", str(plan), "--screen", "--default-base", "main"]
+    first = _screen(capsys, link)
+    assert _screen(capsys, link) == first, "the same inputs gave another screen"
+    created = _screen(capsys, create)
+
+    # An edit past the 30 preview lines leaves the create screen's text as it
+    # was: only the revision in the hash can see it.
+    _write(plan, plan.read_text(encoding="utf-8") + "끝에 더한 줄\n")
+    edited = _screen(capsys, create)
+    assert edited[0] == created[0] and edited[1] != created[1]
+
+    _write(plan, SCREEN_PLAN + "".join(f"줄 {i}\n" for i in range(40)))
+    assert _screen(capsys, link) == first
+    for changed in (_fj_read("다른 제목"), _fj_read("제목", state="Closed")):
+        _write(read, changed)
+        assert _screen(capsys, link)[1] != first[1], changed
+    _write(read, _fj_read("제목"))
+    moved = _write(main_root / ".task" / "plan" / "plan-draft-t.md", plan.read_text(encoding="utf-8"))
+    assert _screen(capsys, [a if a != str(plan) else str(moved) for a in link])[1] != first[1]
+
+
+def test_i65_comment_line_is_what_dry_run_reports(tmp_path: Path, main_root: Path, capsys) -> None:
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-s.md", PLAN)
+    read = _write(tmp_path / "read", _gh_read("제목"))
+    body, _, _ = _screen(capsys, ["github", str(plan), "--issue", "65", "--screen", "--issue-read", str(read)])
+    assert main(["github", str(plan), "--issue", "65", "--dry-run"]) == ExitCode.OK
+    info = dict(kv.split("=") for kv in capsys.readouterr().out.split())
+    comment = next(l for l in body.split("\n") if l.startswith("comment: "))
+    assert comment == (f"comment: plan-65.md after the rename — {info['KIND']}, {info['CHARS']}/{info['LIMIT']} "
+                       f"characters, rev {info['REV']}")
+
+
+def test_i65_expect_screen_says_whether_it_matches(tmp_path: Path, main_root: Path, capsys) -> None:
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN)
+    argv = ["forgejo", str(plan), "--screen", "--default-base", "main"]
+    body, value, _ = _screen(capsys, argv)
+    assert _screen(capsys, argv + ["--expect-screen", value]) == (body, value, "yes")
+    assert _screen(capsys, argv + ["--expect-screen", "0" * 12]) == (body, value, "no")
+    for near in ("", value[:6], value + "0", value.upper()):  # only the whole value, exactly
+        assert _screen(capsys, argv + ["--expect-screen", near]) == (body, value, "no"), near
+
+
+@pytest.mark.parametrize("read, expected", [
+    (_fj_read("제목"), ("65", "제목", "Open")),
+    (_fj_read("닫힌 제목", "40", "Closed"), ("40", "닫힌 제목", "Closed")),
+    (_fj_read("제목 #12 — 그리고 #3", "7"), ("7", "제목 #12 — 그리고 #3", "Open")),
+    (_fj_read("풀 리퀘스트", "77", pull=True), ("77", "풀 리퀘스트", "Open")),
+    (_fj_read("By x — Closed — 제목이 By 로 시작한다"), ("65", "By x — Closed — 제목이 By 로 시작한다", "Open")),
+    (_fj_read("끝에 공백 둘  "), ("65", "끝에 공백 둘", "Open")),
+])
+def test_i65_forgejo_read(read: str, expected: tuple[str, str, str]) -> None:
+    got = plan_body.ISSUE_READERS["forgejo"](read)
+    assert (got.number, got.title, got.state) == expected
+
+
+@pytest.mark.parametrize("read", [
+    "",
+    "Error: not found\n",
+    _fj_read("제목", state="Merged"),
+    _fj_read("제목").replace("By ", "> By "),  # only the quoted body's `> By x — Closed` is left
+    _fj_read("제목").replace("#", ""),  # no number after the title
+])
+def test_i65_forgejo_read_refuses_what_it_cannot_read(read: str) -> None:
+    with pytest.raises(plan_body.PlanBodyError, match="stop \\(read\\)"):
+        plan_body.ISSUE_READERS["forgejo"](read)
+
+
+def test_i65_github_read() -> None:
+    got = plan_body.ISSUE_READERS["github"](_gh_read("제목", 65, "CLOSED"))
+    assert (got.number, got.title, got.state) == ("65", "제목", "CLOSED")
+    for bad in ("not json", json.dumps({"number": "65", "title": "t", "state": "OPEN"}),
+                json.dumps({"number": 65, "title": " ", "state": "OPEN"}), json.dumps({"title": "t"}), "[]",
+                _gh_read("제목\nSCREEN=deadbeef0000"), _gh_read("제목\r"), json.dumps({"number": True, "title": "t", "state": "OPEN"}),
+                _gh_read("제목", state="")):
+        with pytest.raises(plan_body.PlanBodyError, match="stop \\(read\\)"):
+            plan_body.ISSUE_READERS["github"](bad)
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["forgejo", "--issue", "65", "--screen", "--issue-read", "{read}"], "reject (plan)"),
+    (["forgejo", "{draft}", "--issue", "65", "--screen", "--default-base", "main"], "reject (read)"),
+    (["forgejo", "{draft}", "--screen", "--issue-read", "{read}", "--default-base", "main"], "reject (read)"),
+    (["forgejo", "{plan65}", "--issue", "65", "--screen", "--issue-read", "{read}", "--default-base", "main"],
+     "reject (name)"),
+    (["forgejo", "{draft}", "--screen"], "reject (base)"),
+    (["forgejo", "{draft}", "--issue", "65", "--screen", "--issue-read", "{missing}", "--default-base", "main"],
+     "stop (read)"),
+    (["forgejo", "{draft}", "--issue", "65", "--screen", "--issue-read", "{garbled}", "--default-base", "main"],
+     "stop (read)"),
+    (["forgejo", "{draft}", "--issue", "66", "--screen", "--issue-read", "{read}", "--default-base", "main"],
+     "stop (read): the read is issue #65, not #66"),
+])
+def test_i65_screen_refusals(argv: list[str], message: str, tmp_path: Path, main_root: Path, capsys) -> None:
+    paths = {
+        "draft": _write(main_root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN),
+        "plan65": _write(main_root / ".task" / "plan" / "plan-65.md", SCREEN_PLAN),
+        "read": _write(tmp_path / "read", _fj_read("제목")),
+        "garbled": _write(tmp_path / "garbled", "제목만 있다\n"),
+        "missing": tmp_path / "no-such-read",
+    }
+    assert main([a.format(**paths) for a in argv]) == ExitCode.REFUSED
+    err = capsys.readouterr()
+    assert message in err.err and "SCREEN=" not in err.out
+
+
+@pytest.mark.parametrize("extra", [
+    ["--out", "x"], ["--dry-run"], ["--seen", "x"], ["--expect-rev", "abcd1234"],
+])
+def test_i65_screen_takes_no_body_flags(extra: list[str], main_root: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["forgejo", "/abs/plan-draft-s.md", "--screen", "--default-base", "main", *extra])
+    assert exc.value.code == ExitCode.REFUSED
+
+
+@pytest.mark.parametrize("extra", [
+    ["--issue-read", "x"], ["--default-base", "main"], ["--expect-screen", "abc"],
+])
+def test_i65_screen_flags_need_screen(extra: list[str], main_root: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["forgejo", "/abs/plan-draft-s.md", "--dry-run", *extra])
+    assert exc.value.code == ExitCode.REFUSED
+
+
+def test_i65_bom_and_crlf_plans_read_the_same(main_root: Path, capsys) -> None:
+    plain = _write(main_root / ".task" / "plan" / "plan-draft-a.md", SCREEN_PLAN_FM)
+    odd = main_root / ".task" / "plan" / "plan-draft-b.md"
+    odd.write_bytes(b"\xef\xbb\xbf" + SCREEN_PLAN_FM.replace("\n", "\r\n").encode("utf-8"))
+    a, _, _ = _screen(capsys, ["forgejo", str(plain), "--screen"])
+    b, _, _ = _screen(capsys, ["forgejo", str(odd), "--screen"])
+    assert b.replace("plan-draft-b.md", "plan-draft-a.md") == a
+    assert "base branch: feat/x\n" in b and "title: 화면 예시\n" in b
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+def test_i65_screen_is_the_same_from_any_checkout_and_locale(tmp_path: Path) -> None:
+    """A real repository with a linked worktree: relative or absolute path, main or linked CWD, any locale."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
+    _git(root, "worktree", "add", "-q", str(tmp_path / "linked"), "-b", "side")
+    plan = _write(root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN)
+    src = str(Path(plan_body.__file__).resolve().parents[1])
+
+    def run(cwd: Path, path: str, **env: str) -> str:
+        base = {"PATH": os.environ["PATH"], "PYTHONPATH": src, "HOME": str(tmp_path)}
+        done = subprocess.run([sys.executable, "-m", "harness_core.plan_body", "forgejo", path, "--screen",
+                               "--default-base", "main"], cwd=cwd, env={**base, **env}, capture_output=True)
+        assert done.returncode == 0, done.stderr
+        return done.stdout.decode("utf-8")
+
+    expected = run(root, str(plan))
+    assert f"file: {plan.resolve()}\n" in expected
+    assert run(root, ".task/plan/plan-draft-s.md") == expected
+    assert run(tmp_path / "linked", ".task/plan/plan-draft-s.md") == expected
+    assert run(tmp_path / "linked", str(plan), LC_ALL="C", LANG="C") == expected
+
+
+def test_i65_screen_takes_only_a_draft_in_the_plan_directory(main_root: Path, capsys) -> None:
+    """Step 1's checks, on the resolved file: a draft-named link to plan-65.md, or a draft elsewhere, is refused."""
+    plan65 = _write(main_root / ".task" / "plan" / "plan-65.md", SCREEN_PLAN)
+    link = main_root / ".task" / "plan" / "plan-draft-link.md"
+    link.symlink_to(plan65)
+    stray = _write(main_root / "elsewhere" / "plan-draft-s.md", SCREEN_PLAN)
+    for path in (link, stray):
+        assert main(["forgejo", str(path), "--screen", "--default-base", "main"]) == ExitCode.REFUSED
+        captured = capsys.readouterr()
+        assert "reject (name)" in captured.err and "SCREEN=" not in captured.out
+
+
+def test_i65_screen_bytes_do_not_depend_on_the_output_encoding(tmp_path: Path) -> None:
+    """A Latin-1 locale neither crashes the screen nor changes a byte of it."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    plan = _write(root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN)
+    src = str(Path(plan_body.__file__).resolve().parents[1])
+    outs = []
+    for extra in ({}, {"LC_ALL": "en_US.ISO8859-1", "PYTHONIOENCODING": "latin-1"}):
+        done = subprocess.run([sys.executable, "-m", "harness_core.plan_body", "forgejo", str(plan), "--screen",
+                               "--default-base", "main"], cwd=root, capture_output=True,
+                              env={"PATH": os.environ["PATH"], "PYTHONPATH": src, "HOME": str(tmp_path), **extra})
+        assert done.returncode == 0, done.stderr
+        outs.append(done.stdout)
+    assert outs[0] == outs[1] and "화면 예시".encode("utf-8") in outs[1]
+
+
+def test_i65_file_line_is_the_real_path(main_root: Path, capsys) -> None:
+    """A draft reached through a symlinked directory shows, and hashes, the path Step 1 prints."""
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN)
+    alias = main_root / "alias"
+    alias.symlink_to(main_root / ".task" / "plan", target_is_directory=True)
+    real = _screen(capsys, ["forgejo", str(plan), "--screen", "--default-base", "main"])
+    through = _screen(capsys, ["forgejo", str(alias / "plan-draft-s.md"), "--screen", "--default-base", "main"])
+    assert through == real and real[0].startswith(f"file: {plan.resolve()}\n")
+
+
+def test_i65_screen_refuses_a_read_that_is_not_utf8(tmp_path: Path, main_root: Path, capsys) -> None:
+    plan = _write(main_root / ".task" / "plan" / "plan-draft-s.md", SCREEN_PLAN)
+    read = tmp_path / "read"
+    read.write_bytes(_fj_read("제목").encode("utf-16"))
+    argv = ["forgejo", str(plan), "--issue", "65", "--screen", "--issue-read", str(read), "--default-base", "main"]
+    assert main(argv) == ExitCode.REFUSED
+    assert "stop (read)" in capsys.readouterr().err
+
+
+def test_i65_screen_stops_when_the_main_checkout_cannot_be_resolved(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    def unresolved() -> Path:
+        raise MainWorktreeUnresolvedError("the first worktree entry /x has no work tree")
+    monkeypatch.setattr(plan_body, "main_worktree_root", unresolved)
+    assert main(["forgejo", "/abs/plan-draft-s.md", "--screen", "--default-base", "main"]) == ExitCode.REFUSED
+    captured = capsys.readouterr()
+    assert captured.err.startswith("stop (main checkout):") and "SCREEN=" not in captured.out

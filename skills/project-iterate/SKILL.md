@@ -199,7 +199,7 @@ MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse 
    - review the plan according to `Review Profile` policy
 3. **User confirmation**: show the plan summary and get approval.
    - Confirm first that the Intent Summary and base branch are correct.
-   - Carry on this same screen the Step 2 screen of the `issue` skill that Phase 2 will run — the create or link form that matches the run, down to its question line — so that one yes can answer both; Step 2 states when that yes counts.
+   - Carry on this same screen the Step 2 screen of the `issue` skill that Phase 2 will run, so that one yes can answer both; Step 2 states when that yes counts. On a tracker with a row in that skill's `## Plan Body Rules`, run Step 2's screen fence for the run's mode — the draft path Phase 2 will pass, and `<id>` in link mode — and put its output on this screen as printed, `SCREEN=` line included, never retyped, running it again after any change; on any other tracker, carry the create or link form that matches the run, down to its question line.
    - Show the parsed task description and the parsed flags on separate lines — branch mode `worktree` (default) or `in-place`, and whether `adr` is set — so a misread argument is corrected at approval.
    - If changes are requested, apply them and confirm again.
    - On approval, continue to Phase 2.
@@ -211,7 +211,7 @@ MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse 
 1. Run the `issue` skill procedure:
    - Phase 1 이 방금 만든 플랜 경로를 `project-issue` 에 위치 인자로 그대로 넘긴다. 경로는 이미 알려져 있으므로 자동 탐색을 다시 돌리지 않는다 — 초안이 여럿이면 그 탐색은 자기가 만든 파일조차 고르지 못하고 멈춘다.
    - `## Re-entry After Interruption` 의 "Issue only" 상태에서 왔다면 새 이슈를 만들지 않고 `project-issue <plan-path> --issue <id>` 로 연결 모드를 부른다 — 이슈가 이미 있는데 생성 모드로 부르면 같은 작업의 티켓이 둘이 된다.
-   - Phase 1 승인이 `issue` 스킬 Step 2 의 대체 조건을 모두 채웠으면 Step 2 를 다시 묻지 않고, 하나라도 채우지 못했으면 Step 2 를 그대로 묻는다.
+   - Phase 1 승인이 `issue` 스킬 Step 2 의 대체 판정을 통과하면 — 행이 있는 트래커에서는 화면 펜스를 `--expect-screen` 과 함께 다시 실행해 `SCREEN_MATCH=yes` 가 나오면 — Step 2 를 다시 묻지 않고, 통과하지 못하면 Step 2 를 그대로 묻는다. 그 물음은 `## Questions After Plan Approval` 조건 6 의 물음이다.
    - register `plan-draft-<slug>.md` or an existing `plan-<uuid>.md` draft as an issue-tracker ticket (link mode: attach it to `<id>` instead)
    - rename the draft plan to `plan-<id>.md`
 2. Print the issue ID / ticket URL, then automatically continue to Phase 3.
