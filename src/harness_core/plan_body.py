@@ -18,6 +18,15 @@ reads and writes local files only and never calls a tracker. It exits ``OK``
 with the body chosen, ``REFUSED`` on a plan, id, revision or size it will not
 post, and ``NOOP`` when the tracker already holds the content (``SEEN=``); see
 ``skills/_shared/references/exit-codes.md``.
+
+With ``--screen`` it prints `project-issue` Step 2's confirmation screen for a
+draft instead, and a last ``SCREEN=<hash>`` line over that screen and the plan's
+revision. A screen that carries Step 2's in its place (``project-iterate``
+Phase 1) is this output as printed, never a copy typed by hand; running it
+again with the same inputs gives the same value, so whether that approval
+still stands is one comparison (``--expect-screen``). The issue's title and
+state come from the tracker read itself (``--issue-read``), not from an
+argument someone typed — a mistyped title repeated twice would hash the same.
 """
 
 from __future__ import annotations
@@ -33,7 +42,14 @@ from pathlib import Path
 from .config import is_draft_plan
 from .exitcodes import ExitCode
 from .git import MainWorktreeUnresolvedError, main_worktree_root
-from .local import InvalidIssueIdError, _checked_issue_id, abs_under_main, plan_file_for_issue, split_frontmatter
+from .local import (
+    InvalidIssueIdError,
+    _checked_issue_id,
+    abs_under_main,
+    parse_frontmatter,
+    plan_file_for_issue,
+    split_frontmatter,
+)
 
 # Characters. The skill's `## Plan Body Rules` table carries the same numbers,
 # and a test compares the two. A tracker without a row here has no plan body
@@ -291,6 +307,136 @@ def seen(read: str, *, tracker: str, issue_id: str | None, rev: str, bodies: tup
     return None
 
 
+# ── Step 2 screen ─────────────────────────────────────────────────────────────
+#
+# The lines below are `project-issue` Step 2's screen as that step writes it; a
+# test reads them back out of the skill, so a change on one side goes red.
+
+QUESTION_CREATE = "Are the Intent Summary and base branch correct? Create an issue from this file? [yes/no]"
+QUESTION_LINK = "Are the Intent Summary and base branch correct? Link this file to #{id}? [yes/no]"
+QUESTION_LINK_COMMENT = (
+    "Are the Intent Summary and base branch correct? Link this file to #{id} and post it as a comment? [yes/no]"
+)
+ISSUE_LINE = "issue: #{id} {title} ({state})"
+COMMENT_LINE = "comment: plan-{id}.md after the rename — {kind}, {chars}/{limit} characters, rev {rev}"
+PREVIEW_LINES = 30
+
+
+@dataclass(frozen=True)
+class IssueRead:
+    number: str
+    title: str
+    state: str
+
+
+_FORGEJO_STATES = ("Open", "Closed")
+
+
+def _forgejo_issue(read: str) -> IssueRead:
+    """Number, title and state from `fj --style minimal issue view` output.
+
+    The first line is `<title> #<number>`, wrapped in U+2068/U+2069 and ending
+    in a stray `"`; the state is the field after the first ` — ` of the next
+    line, which starts `By ` (a pull request adds ` — +<n> -<n>` after it).
+    Only that line counts: a title may itself start `By `, and a body line
+    quoted `> By …` is never the state line.
+    """
+    lines = [l.strip() for l in read.translate(_ISOLATES).split("\n") if l.strip()]
+    first, second = (lines + ["", ""])[:2]
+    head = re.fullmatch(r'(.*\S) +#([0-9]+)"?', first)
+    fields = second.split(" — ") if second.startswith("By ") else []
+    state = fields[1].strip() if len(fields) > 1 else ""
+    if not head or state not in _FORGEJO_STATES:
+        raise PlanBodyError("stop (read): no `<title> #<number>` line and `By … — <state>` line in the Forgejo read")
+    return IssueRead(head.group(2), head.group(1), state)
+
+
+def _github_issue(read: str) -> IssueRead:
+    """Number, title and state from `gh issue view --json number,title,state,…`, as GitHub gives them."""
+    try:
+        data = json.loads(read)
+        number, title, state = data["number"], data["title"], data["state"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise PlanBodyError("stop (read): the GitHub read is not `--json number,title,state` output") from exc
+    if type(number) is not int or not isinstance(title, str) or not title.strip() or not isinstance(state, str) or not state:
+        raise PlanBodyError("stop (read): the GitHub read has no number, title or state")
+    if any(c in title + state for c in "\r\n"):
+        raise PlanBodyError("stop (read): a line break in the GitHub title or state would add lines to the screen")
+    return IssueRead(str(number), title, state)
+
+
+# One reader per tracker with plan body rules; a test holds the keys to LIMITS.
+ISSUE_READERS = {"github": _github_issue, "forgejo": _forgejo_issue}
+
+
+def _screen_title(body: str) -> str:
+    """`local.extract_plan_title`, on text already read."""
+    first = next((line for line in body.split("\n") if line.strip()), "")
+    if first.startswith("# Plan: "):
+        return first[len("# Plan: "):].strip()
+    title = first.lstrip("# ").strip()
+    return "" if title and set(title) <= {"-"} else title
+
+
+def _screen_preview(block: str, body: str) -> list[str]:
+    """`local.read_plan_preview`, on text already read, without trailing blank lines."""
+    lines = body.split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    lines = lines[:PREVIEW_LINES]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    head = ["---", block, "---"] if block else []
+    return head + lines
+
+
+def screen(
+    text: str,
+    *,
+    path: Path,
+    base: str,
+    issue_id: str | None = None,
+    issue: IssueRead | None = None,
+    comment: PlanBody | str | None = None,
+) -> str:
+    """Step 2's screen for a draft, ending in a newline, without the SCREEN= line.
+
+    `base` is the base branch line as shown. In link mode `issue` is what the
+    tracker read returned, and `comment` the body the link would post — or,
+    as a string, why none can be posted, which turns the question into the
+    link-only form.
+    """
+    block, body = split_frontmatter(_normalized(text))
+    out = [
+        f"file: {path}",
+        f"title: {_screen_title(body)}",
+        f"base branch: {base}",
+        "human preview:",
+        *_screen_preview(block, body),
+        "",
+    ]
+    if issue_id is None:
+        out.append(QUESTION_CREATE)
+    elif issue is None or comment is None:
+        raise ValueError("a link screen needs the issue read and the comment")
+    else:
+        out.append(ISSUE_LINE.format(id=issue_id, title=issue.title, state=issue.state))
+        if isinstance(comment, PlanBody):
+            out.append(COMMENT_LINE.format(
+                id=issue_id, kind=comment.kind, chars=comment.chars, limit=comment.limit, rev=comment.rev))
+            question = QUESTION_LINK_COMMENT
+        else:
+            out.append(f"comment: {comment}")
+            question = QUESTION_LINK
+        out += ["", question.format(id=issue_id)]
+    return "\n".join(out) + "\n"
+
+
+def screen_hash(text: str, rev: str) -> str:
+    """The SCREEN= value: the screen as printed, and the plan revision it was made from."""
+    return hashlib.sha256(f"rev:{rev}\n{text}".encode("utf-8")).hexdigest()[:12]
+
+
 def resolve_plan(path_arg: str | None, issue_id: str | None) -> Path:
     """The plan to post: a draft Step 1 validated, or plan-<id>.md in the main checkout."""
     try:
@@ -318,7 +464,8 @@ def resolve_plan(path_arg: str | None, issue_id: str | None) -> Path:
 def main(argv: list[str] | None = None) -> ExitCode:
     parser = argparse.ArgumentParser(
         prog="python -m harness_core.plan_body",
-        description="Choose the body project-issue posts for a plan (full or summary).",
+        description="Choose the body project-issue posts for a plan (full or summary), "
+        "or print its Step 2 screen (--screen).",
     )
     parser.add_argument("tracker", choices=sorted(LIMITS))
     parser.add_argument("plan", nargs="?", help="plan file; omitted with --issue: plan-<id>.md")
@@ -327,15 +474,33 @@ def main(argv: list[str] | None = None) -> ExitCode:
     parser.add_argument("--seen", help="a tracker read of the issue body and comments")
     parser.add_argument("--expect-rev", help="the revision the approval screen showed")
     parser.add_argument("--dry-run", action="store_true", help="print the choice, write nothing")
+    parser.add_argument("--screen", action="store_true", help="print Step 2's screen for a draft and SCREEN=")
+    parser.add_argument("--issue-read", help="--screen with --issue: the tracker read of that issue")
+    parser.add_argument("--default-base", help="--screen: the project default base, for a plan that declares none")
+    parser.add_argument("--expect-screen", help="--screen: the SCREEN= value to compare with (SCREEN_MATCH=)")
     args = parser.parse_args(argv)
     if not args.plan and not args.issue:
         parser.error("give a plan file, --issue <id>, or both")
-    if not args.dry_run and not args.out:
+    if args.screen:
+        if args.out or args.dry_run or args.seen is not None or args.expect_rev is not None:
+            parser.error("--screen writes nothing and reads no --seen: drop --out, --dry-run, --seen, --expect-rev")
+    elif args.issue_read is not None or args.default_base is not None or args.expect_screen is not None:
+        parser.error("--issue-read, --default-base and --expect-screen go with --screen")
+    elif not args.dry_run and not args.out:
         parser.error("--out is required unless --dry-run")
 
     try:
         issue_id = _checked_issue_id(args.issue) if args.issue else None
+        if args.screen and not args.plan:
+            raise PlanBodyError("reject (plan): --screen needs the draft Step 1 resolved")
+        if args.screen and (issue_id is None) != (args.issue_read is None):
+            raise PlanBodyError("reject (read): --screen takes --issue-read exactly when it takes --issue")
         plan = resolve_plan(args.plan, issue_id)
+        if args.screen:
+            # Step 1's checks on the path it prints: the resolved file is a draft in the plan directory.
+            plan = plan.resolve()
+            if not is_draft_plan(plan.name) or plan.parent != (main_worktree_root() / ".task" / "plan").resolve():
+                raise PlanBodyError(f"reject (name): Step 2 shows a draft in the plan directory, not {plan}")
         raw = plan.read_bytes()
         try:
             text = raw.decode("utf-8")
@@ -344,6 +509,34 @@ def main(argv: list[str] | None = None) -> ExitCode:
         if not text.strip():
             raise PlanBodyError(f"reject (empty): {plan.name} has no content")
         rev = revision(raw)
+        if args.screen:
+            declared = parse_frontmatter(_normalized(text)).get("base_branch", "").strip()
+            if not declared and not args.default_base:
+                raise PlanBodyError(f"reject (base): {plan.name} declares no base_branch and there is no --default-base")
+            issue, comment = None, None
+            if issue_id is not None:
+                try:
+                    read = Path(args.issue_read).read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as exc:
+                    raise PlanBodyError(f"stop (read): cannot read {args.issue_read}") from exc
+                issue = ISSUE_READERS[args.tracker](read)
+                if issue.number != issue_id:
+                    raise PlanBodyError(f"stop (read): the read is issue #{issue.number}, not #{issue_id}")
+                try:
+                    comment = build(text, args.tracker, rev, issue_id)
+                except PlanBodyError as exc:
+                    if not str(exc).startswith("stop (too large)"):
+                        raise
+                    comment = str(exc)
+            shown = screen(text, path=plan, base=declared or f"{args.default_base} (default)",
+                           issue_id=issue_id, issue=issue, comment=comment)
+            value = screen_hash(shown, rev)
+            shown += f"SCREEN={value}\n"
+            if args.expect_screen is not None:
+                shown += f"SCREEN_MATCH={'yes' if args.expect_screen == value else 'no'}\n"
+            sys.stdout.flush()
+            sys.stdout.buffer.write(shown.encode("utf-8"))  # UTF-8 whatever the locale: the hash is over these bytes
+            return ExitCode.OK
         if args.expect_rev is not None and args.expect_rev != rev:
             raise PlanBodyError(
                 f"stop (rev): {plan.name} changed since the screen: expected {args.expect_rev}, now {rev}"

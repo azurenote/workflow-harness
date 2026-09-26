@@ -291,7 +291,7 @@ path resolves to the main worktree root.
 
 4. **Confirm, then rename.** Step 2 runs with its link-mode additions, and the first line of Step 3 sends the flow to Step 8; nothing is inferred or created on the way, so the issue's type, labels, priority and size stay as the tracker has them.
 
-   - On a tracker with a row in `## Plan Body Rules`, first print the comment line for Step 2's screen, and for any screen that carries Step 2's screen in its place. `<draft-plan-path>` is the path Step 1 printed, and the `REV=` value is the `<rev>` item 5 posts:
+   - On a tracker with a row in `## Plan Body Rules`, first print the comment line for Step 2's screen; a screen that carries Step 2's screen in its place takes that line from Step 2's screen fence instead. `<draft-plan-path>` is the path Step 1 printed, and the `REV=` value is the `<rev>` item 5 posts:
 
      ```bash
      python -m harness_core.plan_body '<issue_tracker>' '<draft-plan-path>' --issue '<id>' --dry-run
@@ -374,7 +374,36 @@ Are the Intent Summary and base branch correct? Link this file to #<id> and post
 The issue title is the check no command above can make: it is how a human notices that `<id>` names
 the wrong issue, or a pull request.
 
-From `project-iterate`, Phase 1's approval is this step's confirmation only when that same run's Phase 1 screen carried this step's screen as written above — the create or link form that matches the mode, down to its question line — and the user answered yes; ask this step again instead if the plan file was edited after that yes (review fixes included), Step 1 resolved a different path than the screen showed, the Step 1-L read returns a title or state other than the screen's, this run had no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step 1-L comment follows the screen: posted on that yes where the screen carried the comment line, and asked on its own where it did not.
+On a tracker with a row in `## Plan Body Rules`, the screen fence prints this step's screen for the mode — the lines above, filled in — and a last line `SCREEN=<hash>` over that screen and the plan's rev. A screen that carries this step's screen in its place shows that output as printed, `SCREEN=` line included, never retyped; run on its own, this step shows its screen as above, and the fence serves only a carried screen and the check below. `<draft-plan-path>` is the draft's path, and `<project default base>` is the `base_branch` from `.claude/skill-config.yaml`, shown only when the plan's frontmatter declares none. A link fence reads the issue again into a file the module parses, so the title and state on the screen are the tracker's own; when that read fails there is no screen. **Run each fence as one shell invocation.**
+
+**GitHub** link screen:
+
+```bash
+READ="$(mktemp)" || exit 1
+trap 'rm -f "$READ"' EXIT
+gh issue view "<id>" --json number,title,state,url >| "$READ" || { echo "stop: the issue read failed; no screen"; exit 1; }
+python -m harness_core.plan_body github '<draft-plan-path>' --issue '<id>' --screen --issue-read "$READ" --default-base '<project default base>'
+```
+
+**Forgejo** link screen:
+
+```bash
+READ="$(mktemp)" || exit 1
+trap 'rm -f "$READ"' EXIT
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$READ" || { echo "stop: the issue read failed; no screen"; exit 1; }
+python -m harness_core.plan_body forgejo '<draft-plan-path>' --issue '<id>' --screen --issue-read "$READ" --default-base '<project default base>'
+```
+
+Create screen, on either tracker:
+
+```bash
+python -m harness_core.plan_body '<issue_tracker>' '<draft-plan-path>' --screen --default-base '<project default base>'
+```
+
+From `project-iterate`, Phase 1's approval is this step's confirmation only when that same run's Phase 1 screen carried this step's screen, the user answered yes, and the check below for its tracker holds; ask this step again instead if that check fails, this run had no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step 1-L comment follows the screen: posted on that yes where the screen carried the comment line, and asked on its own where it did not.
+
+- On a tracker with a row in `## Plan Body Rules`, the carried screen is the screen fence's output for the mode, as printed, and the check is one run: this step's fence for the mode again, with the path Step 1 resolved and the same `<id>`, and `--expect-screen '<SCREEN>'` added to its `plan_body` line, where `<SCREEN>` is the `SCREEN=` value on the screen that received the yes, must print `SCREEN_MATCH=yes`. A plan edited after that yes (review fixes included), another path, or an issue title or state other than the screen's each print `SCREEN_MATCH=no`; this step then asks with the screen that run printed, `SCREEN=` line included.
+- On a tracker without a row, the carried screen is this step's screen as written above — the create or link form that matches the mode, down to its question line — and the check is that the plan file was not edited after that yes (review fixes included), Step 1 resolved the path the screen showed, and the Step 1-L read returns the screen's title and state.
 
 **3. Infer Issue Type** (GitHub only)
 

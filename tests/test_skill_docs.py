@@ -4705,13 +4705,13 @@ _I40_PROVENANCE = (
 _I40_LABEL = 'fj -H <forgejo_host> issue edit "<forgejo_repo>#<ISSUE_NUMBER>" labels -a "<area tag>"'
 _I40_VIEW = 'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<ISSUE_NUMBER>"'
 
+# #65 moved the conditions into two items below it, one per kind of tracker
+# (`_I65_SUBSTITUTE_ROW`, `_I65_SUBSTITUTE_NO_ROW`); this line keeps the rest.
 _I40_STEP2_SUBSTITUTE = (
     "From `project-iterate`, Phase 1's approval is this step's confirmation only when that same run's "
-    "Phase 1 screen carried this step's screen as written above — the create or link form that matches "
-    "the mode, down to its question line — and the user answered yes; ask this step again instead if the "
-    "plan file was edited after that yes (review fixes included), Step 1 resolved a different path than "
-    "the screen showed, the Step 1-L read returns a title or state other than the screen's, this run had "
-    "no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own. Steps 1 and 1-L still run "
+    "Phase 1 screen carried this step's screen, the user answered yes, and the check below for its tracker "
+    "holds; ask this step again instead if that check fails, this run had no Phase 1 approval (re-entry at "
+    "Phase 2), or this skill runs on its own. Steps 1 and 1-L still run "
     "either way, so a refusal after that yes costs an approval but never bypasses a check, and the Step "
     "1-L comment follows the screen: posted on that yes where the screen carried the comment line, and "
     "asked on its own where it did not."
@@ -4723,13 +4723,17 @@ _I40_STEP2_KEPT = (
     "is correct."
 )
 _I40_ITERATE_PHASE1 = (
-    "- Carry on this same screen the Step 2 screen of the `issue` skill that Phase 2 will run — the "
-    "create or link form that matches the run, down to its question line — so that one yes can answer "
-    "both; Step 2 states when that yes counts."
+    "- Carry on this same screen the Step 2 screen of the `issue` skill that Phase 2 will run, so that one "
+    "yes can answer both; Step 2 states when that yes counts. On a tracker with a row in that skill's "
+    "`## Plan Body Rules`, run Step 2's screen fence for the run's mode — the draft path Phase 2 will pass, and "
+    "`<id>` in link mode — and put its output on this screen as printed, `SCREEN=` line included, never "
+    "retyped, running it again after any change; on any other tracker, carry the create or link form that "
+    "matches the run, down to its question line."
 )
 _I40_ITERATE_PHASE2 = (
-    "- Phase 1 승인이 `issue` 스킬 Step 2 의 대체 조건을 모두 채웠으면 Step 2 를 다시 묻지 않고, "
-    "하나라도 채우지 못했으면 Step 2 를 그대로 묻는다."
+    "- Phase 1 승인이 `issue` 스킬 Step 2 의 대체 판정을 통과하면 — 행이 있는 트래커에서는 화면 펜스를 "
+    "`--expect-screen` 과 함께 다시 실행해 `SCREEN_MATCH=yes` 가 나오면 — Step 2 를 다시 묻지 않고, "
+    "통과하지 못하면 Step 2 를 그대로 묻는다. 그 물음은 `## Questions After Plan Approval` 조건 6 의 물음이다."
 )
 
 _I40_READ = re.compile(r"\$\{?([A-Z_][A-Z0-9_]*)")
@@ -6160,7 +6164,7 @@ _I45_RULES_FENCES = 'The check fence reads the issue and prints what a comment w
 _I45_INSTRUCTIONS_REVISION = '- With `--issue <id>` and no `<plan-path>`, go straight to Step 1-R: Steps 1, 1-L and 2–8 do not run, and the flow ends at Step 9.'
 _I45_USAGE_REVISION = '- **Given alone, when `plan-<id>.md` already exists** — revision mode: that plan is posted to `<id>` again as a new comment; Step 1-R below runs.'
 _I45_L2_POINTER = '- On a tracker with a row in `## Plan Body Rules`, to post that existing plan to `<id>` again instead, run `project-issue --issue <id>` with no plan path (Step 1-R).'
-_I45_L4_SCREEN = "- On a tracker with a row in `## Plan Body Rules`, first print the comment line for Step 2's screen, and for any screen that carries Step 2's screen in its place. `<draft-plan-path>` is the path Step 1 printed, and the `REV=` value is the `<rev>` item 5 posts:"
+_I45_L4_SCREEN = "- On a tracker with a row in `## Plan Body Rules`, first print the comment line for Step 2's screen; a screen that carries Step 2's screen in its place takes that line from Step 2's screen fence instead. `<draft-plan-path>` is the path Step 1 printed, and the `REV=` value is the `<rev>` item 5 posts:"
 _I45_L4_ONELINER = "python -m harness_core.plan_body '<issue_tracker>' '<draft-plan-path>' --issue '<id>' --dry-run"
 _I45_L4_REFUSED = '- If it refuses because even the summary is over the limit, the screen carries that refusal as its comment line, the question is the link-only form, and item 5 reports the comment as 미반영.'
 _I45_STEP2_ROW = 'On a tracker with a row in `## Plan Body Rules`, the link screen also carries the comment line Step 1-L item 4 printed, and one yes answers both:'
@@ -6685,8 +6689,13 @@ def test_i45_revision_mode() -> None:
 
 
 def test_i45_step2_substitution_changed_only_its_last_clause() -> None:
-    cut = _I45_STEP2_BEFORE.index("and the Step 1-L comment")
-    assert _I40_STEP2_SUBSTITUTE[:cut] == _I45_STEP2_BEFORE[:cut], "the #40 conditions changed"
+    # #65 moved #40's conditions into the item for a tracker without a row,
+    # turned from reasons to ask into the check that must hold; #45's last
+    # clause stays where #45 put it.
+    for kept in ("the create or link form that matches the mode, down to its question line",
+                 "(review fixes included)", "this run had no Phase 1 approval (re-entry at Phase 2), or this skill runs on its own."):
+        assert kept in _I45_STEP2_BEFORE and kept in _I40_STEP2_SUBSTITUTE + _I65_SUBSTITUTE_NO_ROW, kept
+    cut = _I40_STEP2_SUBSTITUTE.index("and the Step 1-L comment")
     assert _I40_STEP2_SUBSTITUTE[cut:] == (
         "and the Step 1-L comment follows the screen: posted on that yes where the screen carried the "
         "comment line, and asked on its own where it did not."
@@ -7851,6 +7860,13 @@ _I41_FACTS = (
     ), (
         '- **Forgejo**: the read contract from `~/.claude/skills/SKILL-CONFIG.md`. Strip the directional isolates from the wrapped fields (number, title, state) before comparing them, as the Forgejo section of Step 6 explains. Measured once (2026-09-26): a number that does not exist prints `Error: not found` and exits 1, and a pull request number prints the pull request with a `From … into …` line. One measurement is not a contract — the content rule below still decides.',
     )),
+    # #65: the `issue view` layout plan_body's Forgejo reader parses; measured, never stated elsewhere.
+    ('view-head', '조회 표면', (
+        '첫 줄은 격리 문자를 걷어 내면',
+    ), ()),
+    ('view-state', '조회 표면', (
+        '둘째 줄은 `By <작성자> — <상태>`',
+    ), ()),
     ('edit-body', '편집과 코멘트', (
         '위치 인자뿐',
     ), (
@@ -7989,6 +8005,9 @@ _I41_REFERENCE = (
         '- `comments` 표면에서 코멘트 본문의 모든 줄은 `> ` 로 인용되고 빈 줄은 `> `(공백 포함)이다. 코멘트 사이의 작성자 줄은 인용되지 않고 격리 문자로 감싸인다. 격리 문자는 작성자 줄에만 있다. (실측, #28·#45)',
         '- 코멘트가 없는 이슈의 `comments` 읽기는 0 바이트를 출력하고 종료 0 이다. (실측, #45)',
         '- 없는 번호의 `issue view` 는 `Error: not found` 를 출력하고 종료 1 이다. 풀 리퀘스트 번호는 그 PR 을 `From … into …` 줄과 함께 보여 준다. 한 번의 측정이다. (실측, 2026-09-26)',
+        # #65
+        '- `issue view` 기본 표면의 첫 줄은 격리 문자를 걷어 내면 `<제목> #<번호>` 이고, 이슈에서는 줄 끝에 `"` 하나가 더 붙는다. 풀 리퀘스트에는 그 `"` 가 없다. 제목 안의 ` — `·` #12` 는 그대로 찍힌다. (실측, 2026-09-26 #65·#40·#77)',
+        '- 둘째 줄은 `By <작성자> — <상태>` 이고 상태는 이슈에서 `Open`·`Closed` 로 찍혔다. 풀 리퀘스트는 그 뒤에 ` — +<추가> -<삭제>` 가 붙고 다음 줄이 `From … into …` 다. 본문 줄은 `> ` 로 인용되므로 본문 속 `By …` 는 이 줄과 구별된다. (실측, 2026-09-26 #65·#40·#77)',
     )),
     ('편집과 코멘트', (
         '- `issue edit <N> body` 에는 `--body-file` 이 없다. 본문은 위치 인자뿐이라 파일 기반 갱신 경로가 없다. (도움말, #45)',
@@ -9276,3 +9295,256 @@ def test_i75_git_command_rows_are_meaning_only() -> None:
         meaning = rows[0].rstrip("|").rsplit("|", 1)[1]
         found = _I75_ACTION.search(meaning)
         assert not found, f"{command}: a caller's action is back in the row ({found[0]!r}); it belongs in the skill"
+
+
+# --------------------------------------------------------------------------
+# #65 — Step 2's screen is generated, and iterate's approval is one comparison
+#
+# iterate Phase 1 used to copy project-issue Step 2's screen by hand, and a
+# copy drifts (a mistyped issue title, a format #62 changed), which re-asked
+# Step 2 after the plan was approved. On a tracker with a Plan Body Rules row
+# the screen now comes from `plan_body --screen`, which reads the issue title
+# and state out of the tracker read itself and ends in `SCREEN=<hash>`; Step 2
+# runs the same fence again with `--expect-screen` and takes the approval only
+# on `SCREEN_MATCH=yes`. A tracker without a row keeps #40's conditions.
+# --------------------------------------------------------------------------
+
+_I65_FENCE_INTRO = (
+    "On a tracker with a row in `## Plan Body Rules`, the screen fence prints this step's screen for the "
+    "mode — the lines above, filled in — and a last line `SCREEN=<hash>` over that screen and the plan's rev. "
+    "A screen that carries this step's screen in its place shows that output as printed, `SCREEN=` line "
+    "included, never retyped; run on its own, this step shows its screen as above, and the fence serves only a "
+    "carried screen and the check below. `<draft-plan-path>` is the draft's path, and `<project default base>` is the "
+    "`base_branch` from `.claude/skill-config.yaml`, shown only when the plan's frontmatter declares none. A "
+    "link fence reads the issue again into a file the module parses, so the title and state on the screen are "
+    "the tracker's own; when that read fails there is no screen. **Run each fence as one shell invocation.**"
+)
+_I65_DIRECTIVES = {
+    "github": "**GitHub** link screen:",
+    "forgejo": "**Forgejo** link screen:",
+    "create": "Create screen, on either tracker:",
+}
+_I65_READ_HEAD = ('READ="$(mktemp)" || exit 1', "trap 'rm -f \"$READ\"' EXIT")
+_I65_READ_FAILED = '|| { echo "stop: the issue read failed; no screen"; exit 1; }'
+_I65_FENCES = {
+    "github": (
+        *_I65_READ_HEAD,
+        f'gh issue view "<id>" --json number,title,state,url >| "$READ" {_I65_READ_FAILED}',
+        "python -m harness_core.plan_body github '<draft-plan-path>' --issue '<id>' --screen --issue-read \"$READ\" "
+        "--default-base '<project default base>'",
+    ),
+    "forgejo": (
+        *_I65_READ_HEAD,
+        f'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$READ" {_I65_READ_FAILED}',
+        "python -m harness_core.plan_body forgejo '<draft-plan-path>' --issue '<id>' --screen --issue-read \"$READ\" "
+        "--default-base '<project default base>'",
+    ),
+    "create": (
+        "python -m harness_core.plan_body '<issue_tracker>' '<draft-plan-path>' --screen --default-base "
+        "'<project default base>'",
+    ),
+}
+_I65_SUBSTITUTE_ROW = (
+    "- On a tracker with a row in `## Plan Body Rules`, the carried screen is the screen fence's output for the "
+    "mode, as printed, and the check is one run: this step's fence for the mode again, with the path Step 1 resolved and the "
+    "same `<id>`, and `--expect-screen '<SCREEN>'` added to its `plan_body` line, where `<SCREEN>` is the "
+    "`SCREEN=` value on the screen that received the yes, must print `SCREEN_MATCH=yes`. A plan edited after "
+    "that yes (review fixes included), another path, or an issue title or state other than the screen's each "
+    "print `SCREEN_MATCH=no`; this step then asks with the screen that run printed, `SCREEN=` line included."
+)
+_I65_SUBSTITUTE_NO_ROW = (
+    "- On a tracker without a row, the carried screen is this step's screen as written above — the create or "
+    "link form that matches the mode, down to its question line — and the check is that the plan file was not "
+    "edited after that yes (review fixes included), Step 1 resolved the path the screen showed, and the Step "
+    "1-L read returns the screen's title and state."
+)
+_I65_EXIT_ROW = (
+    "| `plan_body` | `OK` · `REFUSED` · `NOOP` | `python -m harness_core.plan_body`. `REFUSED`: 플랜이 없거나 "
+    "이름·위치가 틀림, id·rev 불일치, 인코딩이 UTF-8 이 아니거나 빈 파일, 요약도 한도를 넘음, 트래커 읽기 파일을 "
+    "읽지 못함, main checkout 해석 불가. `--screen`(Step 2 화면)에서는 초안이 아닌 플랜, `--issue` 와 "
+    "`--issue-read` 가 짝이 맞지 않음, base 를 정할 수 없음(frontmatter 도 `--default-base` 도 없음), 이슈 읽기 "
+    "파일을 해석하지 못함, 읽은 번호가 `--issue` 와 다름도 `REFUSED` 다 — 화면 모드는 `OK`(화면과 `SCREEN=` "
+    "출력) 아니면 `REFUSED` 이고 `NOOP` 은 없다. `NOOP`: 같은 내용이 이미 트래커에 있다(`SEEN=`) |"
+)
+_I65_FORGEJO_FACTS = (
+    "- `issue view` 기본 표면의 첫 줄은 격리 문자를 걷어 내면 `<제목> #<번호>` 이고, 이슈에서는 줄 끝에 `\"` 하나가 "
+    "더 붙는다. 풀 리퀘스트에는 그 `\"` 가 없다. 제목 안의 ` — `·` #12` 는 그대로 찍힌다. (실측, 2026-09-26 "
+    "#65·#40·#77)",
+    "- 둘째 줄은 `By <작성자> — <상태>` 이고 상태는 이슈에서 `Open`·`Closed` 로 찍혔다. 풀 리퀘스트는 그 뒤에 "
+    "` — +<추가> -<삭제>` 가 붙고 다음 줄이 `From … into …` 다. 본문 줄은 `> ` 로 인용되므로 본문 속 `By …` 는 "
+    "이 줄과 구별된다. (실측, 2026-09-26 #65·#40·#77)",
+)
+_I65_TITLE = "`x` it's $(touch pwned) — #12 제목"
+
+
+def _i65_step2() -> str:
+    step2 = skill_section(_issue_skill(), "**2. User Confirmation**")
+    assert step2, "project-issue has no Step 2"
+    return step2
+
+
+def test_i65_step2_carries_the_screen_fences_before_the_substitution() -> None:
+    step2 = _i65_step2()
+    for line in (_I65_FENCE_INTRO, _I40_STEP2_SUBSTITUTE, _I65_SUBSTITUTE_ROW, _I65_SUBSTITUTE_NO_ROW):
+        assert_whole_line(step2, line)
+    for key, directive in _I65_DIRECTIVES.items():
+        assert tuple(_i40_fence_after(step2, directive)) == _I65_FENCES[key], f"the {key} screen fence changed"
+    lines = [l.strip() for l in step2.splitlines()]
+    order = [lines.index(_I65_FENCE_INTRO), *(lines.index(d) for d in _I65_DIRECTIVES.values()),
+             lines.index(_I40_STEP2_SUBSTITUTE), lines.index(_I65_SUBSTITUTE_ROW), lines.index(_I65_SUBSTITUTE_NO_ROW)]
+    assert order == sorted(order), "the fences, the rule and its two items are out of order"
+
+
+def test_i65_the_substitution_is_the_fence_run_again() -> None:
+    """Dropping the comparison breaks the link from the rule to a fence that can make it, not only a pinned string."""
+    row = _I65_SUBSTITUTE_ROW
+    assert "the screen fence's output for the mode, as printed" in row
+    assert "`--expect-screen '<SCREEN>'`" in row and "must print `SCREEN_MATCH=yes`" in row
+    assert "the path Step 1 resolved" in row and "the same `<id>`" in row
+    for key in ("github", "forgejo", "create"):
+        module = [l for l in _I65_FENCES[key] if "harness_core.plan_body" in l]
+        assert len(module) == 1 and " --screen " in module[0] and "--default-base '<project default base>'" in module[0]
+        if key != "create":
+            assert "--issue '<id>'" in module[0] and '--issue-read "$READ"' in module[0]
+    # No other Step 2 line lets a tracker with a row pass on a screen carried "as written".
+    written = [l.strip() for l in _i65_step2().splitlines() if "as written above" in l and "carried" in l]
+    assert written == [_I65_SUBSTITUTE_NO_ROW], written
+    phase1 = _iterate_phase(_iterate_skill(), 1)
+    assert_whole_line(phase1, _I40_ITERATE_PHASE1)
+    assert "run Step 2's screen fence" in _I40_ITERATE_PHASE1 and "`SCREEN=` line included, never retyped" in _I40_ITERATE_PHASE1
+    phase2 = _iterate_phase(_iterate_skill(), 2)
+    assert_whole_line(phase2, _I40_ITERATE_PHASE2)
+    assert "`--expect-screen`" in _I40_ITERATE_PHASE2 and "`SCREEN_MATCH=yes`" in _I40_ITERATE_PHASE2
+    assert "`## Questions After Plan Approval` 조건 6" in _I40_ITERATE_PHASE2
+    assert "6. A called skill asks a question its own document states" in _iterate_skill(), "condition 6 moved"
+
+
+def test_i65_link_mode_points_the_carried_comment_line_at_the_fence() -> None:
+    assert "takes that line from Step 2's screen fence instead" in _I45_L4_SCREEN
+    assert_whole_line(_link_mode(), _I45_L4_SCREEN)
+
+
+def test_i65_generator_says_what_step2_says() -> None:
+    """The module's question, issue and comment lines are the ones Step 2 writes."""
+    from harness_core import plan_body
+    step2 = [l.strip() for l in _i65_step2().splitlines()]
+    assert plan_body.QUESTION_CREATE in step2
+    assert plan_body.QUESTION_LINK.format(id="<id>") in step2
+    assert plan_body.QUESTION_LINK_COMMENT.format(id="<id>") in step2
+    assert plan_body.ISSUE_LINE.format(id="<id>", title="<issue title>", state="<state>") in step2
+    assert plan_body.COMMENT_LINE.format(id="<id>", kind="<KIND>", chars="<CHARS>", limit="<LIMIT>", rev="<REV>") in step2
+    assert f"first {plan_body.PREVIEW_LINES} body lines" in "\n".join(step2)
+
+
+def test_i65_reference_rows() -> None:
+    assert_whole_line(read_skill(_I37_REFERENCE), _I65_EXIT_ROW)
+    forgejo = read_skill("skills/_shared/references/forgejo.md")
+    for fact in _I65_FORGEJO_FACTS:
+        assert_whole_line(forgejo, fact)
+
+
+def _i65_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    """Fake `fj` and `gh` that log their argv, print a read for the number asked, and fail on FAKE_READ=fail."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = tmp_path / "fake_read.py"
+    fake.write_text(
+        "import json, os, re, sys\n"
+        "tool, args = sys.argv[1], sys.argv[2:]\n"
+        "with open(os.environ['CALLS'], 'a', encoding='utf-8') as log:\n"
+        "    log.write(json.dumps([tool, *args]) + '\\n')\n"
+        "if os.environ.get('FAKE_READ') == 'fail':\n"
+        "    print('Error: not found', file=sys.stderr); sys.exit(1)\n"
+        "title, state = os.environ['FAKE_TITLE'], os.environ['FAKE_STATE']\n"
+        "if tool == 'gh':\n"
+        "    print(json.dumps({'number': int(args[2]), 'title': title, 'state': state.upper(), 'url': 'u'}))\n"
+        "else:\n"
+        "    n = re.search(r'#([0-9]+)$', args[-1]).group(1)\n"
+        "    I, J = '\\u2068', '\\u2069'\n"
+        "    sys.stdout.write(f'{I}{J}{I}{title}{J} {I}{J}#{I}{n}{J}{I}{J}\"\\nBy {I}{J}{I}my{J}{I}{J} — {I}{I}{J}{state}{I}{J}{J}\\n\\n> 본문\\n')\n",
+        encoding="utf-8",
+    )
+    for tool in ("fj", "gh"):
+        shim = bin_dir / tool
+        shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" {tool} "$@"\n')
+        shim.chmod(0o755)
+    shim = bin_dir / "python"
+    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    shim.chmod(0o755)
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    shim = bin_dir / "mktemp"  # macOS mktemp with no template ignores TMPDIR
+    shim.write_text(f'#!/bin/sh\nexec /usr/bin/mktemp "{tmp}/tmp.XXXXXXXX"\n')
+    shim.chmod(0o755)
+    main = tmp_path / "main"
+    (main / ".task" / "plan").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path), "TMPDIR": str(tmp),
+           "CALLS": str(tmp_path / "calls"), "FAKE_TITLE": _I65_TITLE, "FAKE_STATE": "Open"}
+    return env, main, tmp
+
+
+def _i65_fence_script(key: str, draft: Path) -> str:
+    return _i45_script(list(_I65_FENCES[key]), **{
+        "<id>": "65", "<draft-plan-path>": str(draft), "<project default base>": "main", "<issue_tracker>": "forgejo",
+    })
+
+
+@pytest.mark.parametrize("shell", _i40_shells())
+@pytest.mark.parametrize("tracker", ["github", "forgejo"])
+def test_i65_link_fence_prints_the_module_screen(shell: str, tracker: str, tmp_path: Path) -> None:
+    from harness_core import plan_body
+    env, main, tmp = _i65_env(tmp_path)
+    draft = main / ".task" / "plan" / "plan-draft-s.md"
+    draft.write_text(_I45_PLAN, encoding="utf-8")
+    script = _i65_fence_script(tracker, draft)
+
+    first = _i45_run(shell, script, env, main)
+    assert first.returncode == 0, first.stderr
+    calls = [json.loads(c) for c in (tmp_path / "calls").read_text(encoding="utf-8").splitlines()]
+    assert calls == [{
+        "github": ["gh", "issue", "view", "65", "--json", "number,title,state,url"],
+        "forgejo": ["fj", "-H", "forge.test", "--style", "minimal", "issue", "view", "o/r#65"],
+    }[tracker]]
+    assert not (tmp_path / "pwned").exists() and not (main / "pwned").exists()
+    assert list(tmp.iterdir()) == [], "the fence left its read behind"
+
+    # What the module prints for a read the test writes itself.
+    rev = plan_body.revision(draft.read_bytes())
+    issue = plan_body.IssueRead("65", _I65_TITLE, "OPEN" if tracker == "github" else "Open")
+    shown = plan_body.screen(_I45_PLAN, path=draft.resolve(), base="main (default)", issue_id="65",
+                             issue=issue, comment=plan_body.build(_I45_PLAN, tracker, rev, "65"))
+    assert first.stdout == shown + f"SCREEN={plan_body.screen_hash(shown, rev)}\n"
+    assert [l for l in first.stdout.splitlines() if l.startswith("SCREEN=")] == [
+        f"SCREEN={plan_body.screen_hash(shown, rev)}"]
+
+    assert _i45_run(shell, script, env, main).stdout == first.stdout, "the same inputs gave another screen"
+    for change in ({"FAKE_TITLE": "다른 제목"}, {"FAKE_STATE": "Closed"}):
+        moved = _i45_run(shell, script, {**env, **change}, main)
+        assert moved.returncode == 0 and moved.stdout.splitlines()[-1] != first.stdout.splitlines()[-1], change
+
+
+@pytest.mark.parametrize("shell", _i40_shells())
+@pytest.mark.parametrize("tracker", ["github", "forgejo"])
+def test_i65_link_fence_without_a_read_prints_no_screen(shell: str, tracker: str, tmp_path: Path) -> None:
+    env, main, tmp = _i65_env(tmp_path)
+    draft = main / ".task" / "plan" / "plan-draft-s.md"
+    draft.write_text(_I45_PLAN, encoding="utf-8")
+    ran = _i45_run(shell, _i65_fence_script(tracker, draft), {**env, "FAKE_READ": "fail"}, main)
+    assert ran.returncode != 0 and "SCREEN=" not in ran.stdout
+    assert "stop: the issue read failed; no screen" in ran.stdout
+    assert list(tmp.iterdir()) == []
+
+
+def test_i65_create_fence_prints_the_create_screen(tmp_path: Path) -> None:
+    from harness_core import plan_body
+    env, main, _ = _i65_env(tmp_path)
+    draft = main / ".task" / "plan" / "plan-draft-s.md"
+    draft.write_text(_I45_PLAN, encoding="utf-8")
+    ran = _i45_run("bash", _i65_fence_script("create", draft), env, main)
+    assert ran.returncode == 0, ran.stderr
+    rev = plan_body.revision(draft.read_bytes())
+    shown = plan_body.screen(_I45_PLAN, path=draft.resolve(), base="main (default)")
+    assert ran.stdout == shown + f"SCREEN={plan_body.screen_hash(shown, rev)}\n"
+    assert shown.endswith(plan_body.QUESTION_CREATE + "\n")
+    assert not (tmp_path / "calls").exists(), "the create screen read a tracker"
