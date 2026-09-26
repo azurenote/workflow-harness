@@ -2942,7 +2942,8 @@ def test_iterate_reentry_never_counts_a_draft_as_the_plan() -> None:
         "| Branch, no plan | branch/worktree for `<id>` exists, `plan-<id>.md` does not | the two checks below | stop and report |",
         "| Start | branch/worktree for `<id>` exists and `plan-<id>.md` exists | the two checks below | Phase 4 |",
         "| Issue | `plan-<id>.md` exists, no branch/worktree | the plan check below | Phase 3 |",
-        "| Issue only | none of the above | — | Phase 1 from the issue body, then Phase 2 in link mode |",
+        "| Issue only | none of the above | the restore below | Phase 3 when the restore below brings the plan back; "
+        "otherwise Phase 1 from the issue body, then Phase 2 in link mode |",
     ], "the re-entry state table changed"
     assert_whole_line(text, (
         "- 브랜치/워크트리는 있는데 `plan-<id>.md` 가 없으면 멈추고 사용자에게 보고한다. "
@@ -3136,6 +3137,46 @@ _GOLDEN_DONE_STEP11_FORGEJO = (
     '- 체크가 돌지 않았으면 CI 가 돌렸어야 할 스위트를 로컬에서 돌린 결과를 함께 적는다 — 대체 게이트일 뿐 CI 결과를 대신하지 않는다.',
 )
 
+# #70: what the restore fences add to the end of `## Plan Body Rules`, as the two
+# goldens that pin that region whole read it (stripped lines; #41's prose units).
+_I70_LINK_TAIL = (
+    '**Restore, from the tracker to the local plan.** `project-issue` never runs these fences: `project-iterate` runs one when it re-enters an issue that has no `plan-<id>.md` (its `## Re-entry After Interruption`). Each reads the issue and the signed-in user, and hands both to `python -m harness_core.plan_restore`, which writes `plan-<id>.md` in the main checkout only from the plan this user put on the issue. A tracker without a row here has no restore fence:',
+    "- The candidate is the last comment, in read order, whose first line is this issue's marker. The issue body is never one: a create-mode body carries no rev to check it against.",
+    '- Its author must be the user the tracker CLI is signed in as, because anyone who can comment could post a marker with a matching rev. The check is who wrote the comment, not who last edited it.',
+    "- The text below the marker must hash to the marker's rev, as read or with one trailing newline. A summary, a changed text or another author refuses the restore, and an earlier marker never stands in for a refused last one.",
+    "- A failed read is not an empty one: the fence ends on `RESTORE=미확인 (read failed)` without running the module, never on `RESTORE=none`. Whether either tracker's read returns every comment of a long thread is unverified; a missing last comment would restore an older revision by the same user.",
+    "- Every outcome the module or the fence decides ends on a `RESTORE=` line: `restored` or `none` (`OK`), `refused (author|summary|rev)` (`FINDINGS`), `stopped (<why>)` (`REFUSED`), or the fence's own `미확인 (read failed)`. Each also carries `MARKERS=`, the comments with this issue's marker, and `FOREIGN=`, those by someone else; `restored` and `refused` carry the `REV=` they judged. The names are in `~/.claude/skills/_shared/references/exit-codes.md`.",
+    '**GitHub** restore:',
+    '```bash',
+    'SEEN="$(mktemp)" || exit 1',
+    'WHO="$(mktemp)" || exit 1',
+    'trap \'rm -f "$SEEN" "$WHO"\' EXIT',
+    'gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "RESTORE=미확인 (read failed)"; exit 1; }',
+    'gh api user --jq .login >| "$WHO" || { echo "RESTORE=미확인 (read failed)"; exit 1; }',
+    'python -m harness_core.plan_restore github --issue \'<id>\' --read "$SEEN" --whoami "$WHO"',
+    '```',
+    '**Forgejo** restore:',
+    '```bash',
+    'SEEN="$(mktemp)" || exit 1',
+    'WHO="$(mktemp)" || exit 1',
+    'trap \'rm -f "$SEEN" "$WHO"\' EXIT',
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$SEEN" || { echo "RESTORE=미확인 (read failed)"; exit 1; }',
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" || { echo "RESTORE=미확인 (read failed)"; exit 1; }',
+    'fj -H <forgejo_host> whoami >| "$WHO" || { echo "RESTORE=미확인 (read failed)"; exit 1; }',
+    'python -m harness_core.plan_restore forgejo --issue \'<id>\' --read "$SEEN" --whoami "$WHO"',
+    '```',
+)
+_I70_RULES_TAIL = (
+    '**Restore, from the tracker to the local plan.** `project-issue` never runs these fences: `project-iterate` runs one when it re-enters an issue that has no `plan-<id>.md` (its `## Re-entry After Interruption`). Each reads the issue and the signed-in user, and hands both to `python -m harness_core.plan_restore`, which writes `plan-<id>.md` in the main checkout only from the plan this user put on the issue. A tracker without a row here has no restore fence:',
+    "- The candidate is the last comment, in read order, whose first line is this issue's marker. The issue body is never one: a create-mode body carries no rev to check it against.",
+    '- Its author must be the user the tracker CLI is signed in as, because anyone who can comment could post a marker with a matching rev. The check is who wrote the comment, not who last edited it.',
+    "- The text below the marker must hash to the marker's rev, as read or with one trailing newline. A summary, a changed text or another author refuses the restore, and an earlier marker never stands in for a refused last one.",
+    "- A failed read is not an empty one: the fence ends on `RESTORE=미확인 (read failed)` without running the module, never on `RESTORE=none`. Whether either tracker's read returns every comment of a long thread is unverified; a missing last comment would restore an older revision by the same user.",
+    "- Every outcome the module or the fence decides ends on a `RESTORE=` line: `restored` or `none` (`OK`), `refused (author|summary|rev)` (`FINDINGS`), `stopped (<why>)` (`REFUSED`), or the fence's own `미확인 (read failed)`. Each also carries `MARKERS=`, the comments with this issue's marker, and `FOREIGN=`, those by someone else; `restored` and `refused` carry the `REV=` they judged. The names are in `~/.claude/skills/_shared/references/exit-codes.md`.",
+    '**GitHub** restore:',
+    '**Forgejo** restore:',
+)
+
 _GOLDEN_ISSUE_LINK_FORGEJO = (
     '**Forgejo** check:',
     '```bash',
@@ -3163,6 +3204,7 @@ _GOLDEN_ISSUE_LINK_FORGEJO = (
     '```',
     '- The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.',
     "- The module splits a Forgejo read into one entry per run of quoted lines — how `fj` prints bodies and comments is in `~/.claude/skills/_shared/references/forgejo.md` — and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.",
+    *_I70_LINK_TAIL,
 )
 
 _GOLDEN_DONE_STEP8_FORGEJO = '**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Review 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이고, `fj` 에 상태 명령이 없다는 사실은 `~/.claude/skills/_shared/references/forgejo.md` 에 있다.'
@@ -3917,6 +3959,30 @@ _G_USAGE = (
     '- `in-place` and `worktree` together are a conflict — stop and have the user pick one.',
 )
 
+# #70: the restore step the "Issue only" state runs before Phase 1, pinned here
+# because `_G_REENTRY` and #59's section read it before the #70 block at the end.
+_I70_RESTORE_BLOCK = (
+    '"Issue only" 상태는 Phase 1 로 가기 전에 이슈에 올라간 플랜으로 `plan-<id>.md` 를 복원해 본다. '
+    '`## Instructions` 의 "Main checkout first" 확인을 통과한 뒤, Phase 1 1단계가 쓰는 `project-issue` Step 1-L '
+    '읽기와 내용 규칙으로 이슈를 판정하고(거부면 거기서 멈춘다), 같은 문서 `## Plan Body Rules` 의 그 트래커 '
+    'restore 펜스를 한 셸 호출로 돌린다. 그 표에 행이 없는 트래커는 restore 펜스가 없으니 지금처럼 Phase 1 로 간다. '
+    '펜스의 마지막 줄로 가른다.',
+    '- `RESTORE=restored`: 그 줄을 보이고 "Issue" 상태로 다시 판정해 Phase 3 으로 간다. 복원한 플랜의 승인은 '
+    '`## Questions After Plan Approval` 이 정한다.',
+    '- `RESTORE=none`: 이 이슈 번호의 마커 코멘트가 없다. Phase 1(이슈 본문)과 Phase 2 연결 모드로 간다.',
+    '- `RESTORE=refused (…)`: 마지막 마커 코멘트가 다른 사람의 것이거나, 요약본이거나, rev 가 맞지 않는다. '
+    '이유를 보이고 이슈 본문으로 새 플랜을 쓸지 한 번 묻는다 — 예면 Phase 1, 아니오면 멈춘다. 플랜 승인 전의 질문이다.',
+    '- `RESTORE=stopped (…)`, `RESTORE=미확인 (read failed)`, 또는 그 밖의 마지막 줄(트레이스백 등): 멈추고 보고한다. '
+    '읽지 못한 것을 "코멘트 없음" 으로 보지 않는다.',
+)
+_I70_REENTRY_APPROVAL = (
+    "On re-entry at Phase 3 or Phase 4, that approval is the one the issue skill took when it put "
+    "`plan-<id>.md` on the issue — Step 2 when it registered the plan, Step 1-R when it posted a revision — "
+    "and a plan brought back with `RESTORE=restored` (`## Re-entry After Interruption`) is that plan, not one "
+    "placed by hand; when the plan was edited after that, or placed by hand, show its summary and ask once "
+    "before going on."
+)
+
 _G_REENTRY = (
     '"Start" 상태에서는 Phase 4 를 브랜치가 이미 체크아웃된 자리에서 잇는다. 그 자리는 아래 순서로 정한다.',
     '1. 로컬 브랜치만 접두 표지 없이 나열한다:',
@@ -3974,6 +4040,7 @@ _G_REENTRY = (
     '- `detached`: 그 브랜치를 rebase 하는 중인 checkout(main checkout 포함)이거나, 표준 경로의 워크트리가 rebase·bisect 같은 작업 중이다. 멈추고 보고한다.',
     '- `none`: 어디에도 체크아웃돼 있지 않다. 1의 로컬 0개와 같이 두 선택지를 보이고 멈춘다.',
     '3. 이 경로에서는 브랜치도 워크트리도 새로 만들지 않고, 분기 방식 플래그도 쓰지 않는다. 적용 중인 분기 방식(플래그가 없으면 기본값인 워크트리)이 기존 자리와 다르면 기존 자리를 따른다고 알린다.',
+    *_I70_RESTORE_BLOCK,
     '"Issue" 상태의 Phase 3 은 새 실행과 같은 인자 규칙과 Phase 3 사전 확인을 따른다.',
 )
 
@@ -4297,7 +4364,8 @@ def test_readme_iterate_row_names_the_worktree_default() -> None:
         "| `project-iterate` | plan → issue → start → done 을 한 번에 실행. "
         "플랜 승인 뒤로는 `## Questions After Plan Approval` 의 조건에서만 묻는다. "
         "기본은 워크트리에서 분기하고, `in-place` 를 붙이면 main checkout 에서 제자리 분기한다. "
-        "`project-iterate <id>` 는 기존 이슈에서 출발하며, 플랜이 없으면 이슈 본문으로 쓰고 연결 모드로 붙인다 |"
+        "`project-iterate <id>` 는 기존 이슈에서 출발하며, 로컬 플랜이 없으면 먼저 이슈에 본인이 올린 플랜 "
+        "코멘트로 복원하고(rev 대조), 그것도 없으면 이슈 본문으로 쓰고 연결 모드로 붙인다 |"
     ))
 
 
@@ -7086,9 +7154,7 @@ _I59_CONDITIONS = (
 
 _I59_SECTION = (
     "The plan approval opens the run: after it, this skill asks only when one of the conditions below holds.",
-    "On re-entry at Phase 3 or Phase 4, that approval is the one the issue skill's Step 2 took when it "
-    "registered `plan-<id>.md`; when the plan was edited after that, or placed by hand, show its summary "
-    "and ask once before going on.",
+    _I70_REENTRY_APPROVAL,
     *_I59_CONDITIONS,
     "When one holds, show which one and ask.",
     "This list is the only statement of these conditions; every rule in Phase 3 and Phase 4 that carries "
@@ -8152,6 +8218,7 @@ _I41_PROSE = {
         '**Forgejo** post:',
         '- The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.',
         "- The module splits a Forgejo read into one entry per run of quoted lines — how `fj` prints bodies and comments is in `~/.claude/skills/_shared/references/forgejo.md` — and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.",
+        *_I70_RULES_TAIL,
     ),
     'config/tracker': (
         '### 이슈 트래커',
@@ -9548,3 +9615,220 @@ def test_i65_create_fence_prints_the_create_screen(tmp_path: Path) -> None:
     assert ran.stdout == shown + f"SCREEN={plan_body.screen_hash(shown, rev)}\n"
     assert shown.endswith(plan_body.QUESTION_CREATE + "\n")
     assert not (tmp_path / "calls").exists(), "the create screen read a tracker"
+
+
+# ---------------------------------------------------------------------------
+# #70: "Issue only" re-entry restores `plan-<id>.md` from the user's own last
+# plan comment before Phase 1 writes a new plan. The restore fences live in
+# project-issue's `## Plan Body Rules` (iterate names no tracker command), and
+# `harness_core.plan_restore` decides; tests/test_plan_restore.py holds the
+# module. These hold the fences — run against the #45 fake tracker, taught
+# authors, `whoami` and a base-read-only failure — and the words iterate cites.
+# Helpers carry an `_i70_` prefix (see the #40 name-uniqueness test).
+# ---------------------------------------------------------------------------
+
+_I70_RULES = (
+    "**Restore, from the tracker to the local plan.** `project-issue` never runs these fences: `project-iterate` "
+    "runs one when it re-enters an issue that has no `plan-<id>.md` (its `## Re-entry After Interruption`). Each "
+    "reads the issue and the signed-in user, and hands both to `python -m harness_core.plan_restore`, which "
+    "writes `plan-<id>.md` in the main checkout only from the plan this user put on the issue. A tracker "
+    "without a row here has no restore fence:",
+    "- The candidate is the last comment, in read order, whose first line is this issue's marker. The issue "
+    "body is never one: a create-mode body carries no rev to check it against.",
+    "- Its author must be the user the tracker CLI is signed in as, because anyone who can comment could post a "
+    "marker with a matching rev. The check is who wrote the comment, not who last edited it.",
+    "- The text below the marker must hash to the marker's rev, as read or with one trailing newline. A summary, "
+    "a changed text or another author refuses the restore, and an earlier marker never stands in for a refused "
+    "last one.",
+    "- A failed read is not an empty one: the fence ends on `RESTORE=미확인 (read failed)` without running the "
+    "module, never on `RESTORE=none`. Whether either tracker's read returns every comment of a long thread is "
+    "unverified; a missing last comment would restore an older revision by the same user.",
+    "- Every outcome the module or the fence decides ends on a `RESTORE=` line: `restored` or `none` (`OK`), "
+    "`refused (author|summary|rev)` (`FINDINGS`), `stopped (<why>)` (`REFUSED`), or the fence's own "
+    "`미확인 (read failed)`. Each also carries `MARKERS=`, the comments with this issue's marker, and `FOREIGN=`, "
+    "those by someone else; `restored` and `refused` carry the `REV=` they judged. The names are in "
+    "`~/.claude/skills/_shared/references/exit-codes.md`.",
+)
+_I70_READ_FAILED = '|| { echo "RESTORE=미확인 (read failed)"; exit 1; }'
+_I70_FENCES = {
+    "github": (
+        'SEEN="$(mktemp)" || exit 1',
+        'WHO="$(mktemp)" || exit 1',
+        'trap \'rm -f "$SEEN" "$WHO"\' EXIT',
+        f'gh issue view "<id>" --json body,comments >| "$SEEN" {_I70_READ_FAILED}',
+        f'gh api user --jq .login >| "$WHO" {_I70_READ_FAILED}',
+        'python -m harness_core.plan_restore github --issue \'<id>\' --read "$SEEN" --whoami "$WHO"',
+    ),
+    "forgejo": (
+        'SEEN="$(mktemp)" || exit 1',
+        'WHO="$(mktemp)" || exit 1',
+        'trap \'rm -f "$SEEN" "$WHO"\' EXIT',
+        f'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$SEEN" {_I70_READ_FAILED}',
+        f'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" {_I70_READ_FAILED}',
+        f'fj -H <forgejo_host> whoami >| "$WHO" {_I70_READ_FAILED}',
+        'python -m harness_core.plan_restore forgejo --issue \'<id>\' --read "$SEEN" --whoami "$WHO"',
+    ),
+}
+
+# The #45 fake, taught three things: a comment's author (FAKE_AUTHOR, "me" by
+# default) in both trackers' output, the signed-in user, and two more failure
+# modes — Forgejo's base read alone, and the `whoami` read.
+_I70_FAKE_TRACKER = (
+    _I45_FAKE_TRACKER
+    .replace(
+        'if "--body-file" in args:',
+        'AUTHOR = os.environ.get("FAKE_AUTHOR", "me")\n'
+        'if "whoami" in args or args[:2] == ["api", "user"]:\n'
+        '    if os.environ.get("FAKE_READ") in ("fail", "fail-whoami"):\n'
+        '        print("Error: unauthorized", file=sys.stderr)\n'
+        '        sys.exit(1)\n'
+        '    print("currently signed into ⁨me⁩@forge.test" if tool == "fj" else "me")\n'
+        '    sys.exit(0)\n'
+        'if "--body-file" in args:', 1)
+    .replace('(mode == "fail-comments" and args[-1] == "comments")',
+             '(mode == "fail-comments" and args[-1] == "comments") '
+             'or (mode == "fail-base" and args[-1] != "comments")', 1)
+    .replace('[{"body": read(c)} for c in comments]', '[{"author": {"login": AUTHOR}, "body": read(c)} for c in comments]', 1)
+    .replace('"⁨⁩⁨W⁩⁨⁩ said:\\n"', '"⁨⁩⁨W⁩⁨⁩ ⁨⁩(⁨" + AUTHOR + "⁩)⁨⁩ said:\\n"', 1)
+    # fj ends the issue view on its comment count (forgejo-cli `view_issue`).
+    .replace('quoted(body) + "\\n")', 'quoted(body) + "\\n\\n⁨%d⁩ comments\\n" % len(comments))', 1)
+)
+
+_I70_PLAN = _I45_PLAN + "\n## Validation Plan\n- 복원한 뒤 대조한다\n"
+
+
+def _i70_fences() -> dict[str, list[str]]:
+    rules = _i45_rules()
+    return {t: _i40_fence_after(rules, f"**{label}** restore:") for t, label in (("github", "GitHub"), ("forgejo", "Forgejo"))}
+
+
+def _i70_env(tmp_path: Path, **extra: str) -> tuple[dict[str, str], Path, Path]:
+    env, main, store = _i45_env(tmp_path, **extra)
+    (tmp_path / "fake_tracker.py").write_text(_I70_FAKE_TRACKER, encoding="utf-8")
+    return env, main, store
+
+
+def _i70_post(store: Path, text: str) -> None:
+    n = len(list((store / "comments").iterdir()))
+    (store / "comments" / str(n)).write_text(text, encoding="utf-8")
+
+
+def _i70_own_comment(store: Path, plan: str = _I70_PLAN) -> str:
+    from harness_core.plan_body import build, revision
+    rev = revision(plan.encode("utf-8"))
+    _i70_post(store, build(plan, "forgejo", rev, "45").text)
+    return rev
+
+
+def _i70_last(ran: subprocess.CompletedProcess) -> str:
+    return ran.stdout.strip().splitlines()[-1] if ran.stdout.strip() else ""
+
+
+def test_i70_restore_rules_and_fences_are_pinned() -> None:
+    rules = _i45_rules()
+    for line in _I70_RULES:
+        assert_whole_line(rules, line)
+    assert {t: tuple(f) for t, f in _i70_fences().items()} == _I70_FENCES
+
+
+def test_i70_restore_reads_are_the_check_fences_reads() -> None:
+    """Up to `||`: the restore reads the issue exactly as the check fence does."""
+    def reads(fence) -> list[str]:
+        return [l.split(" ||", 1)[0] for l in fence if " issue view " in l]
+    for tracker, fence in _i70_fences().items():
+        assert reads(fence) == reads(_i45_fences()[tracker, "check"]) != []
+        assert all(l.endswith(_I70_READ_FAILED) for l in fence if " >" in l and "mktemp" not in l), tracker
+
+
+def test_i70_restore_fences_leave_the_main_checkout_to_the_module() -> None:
+    for tracker, fence in _i70_fences().items():
+        found = [(t, l) for l in fence for t in _I45_MAIN_TOKENS if t in l]
+        assert not found, f"the {tracker} restore fence resolves the main checkout itself: {found}"
+
+
+def test_i70_iterate_cites_exactly_the_outcomes_the_fence_prints() -> None:
+    import inspect
+    from harness_core import plan_restore
+    module = set(re.findall(r"RESTORE=(\w+)", inspect.getsource(plan_restore)))
+    fence = {m for f in _i70_fences().values() for l in f for m in re.findall(r"RESTORE=(\w+)", l)}
+    assert module == {"restored", "none", "refused", "stopped"} and fence == {"미확인"}
+    cited = [m.group(1) for l in _I70_RESTORE_BLOCK[1:] for m in [re.match(r"- `RESTORE=(\w+)", l)] if m]
+    assert sorted(cited) == sorted(module - {"미확인"}), cited
+    assert "`RESTORE=미확인 (read failed)`" in _I70_RESTORE_BLOCK[-1]
+    iterate = _iterate_skill()
+    for line in _I70_RESTORE_BLOCK:
+        assert_whole_line(iterate, line)
+    assert "`## Questions After Plan Approval`" in _I70_RESTORE_BLOCK[1], "restored no longer points at the section"
+
+
+# (scenario, FAKE_READ, FAKE_AUTHOR, last line, fence exit, restored?)
+_I70_SCENARIOS = {
+    "restored": ("", "me", "RESTORE=restored", 0, True),
+    "none": ("", "me", "RESTORE=none MARKERS=0 FOREIGN=0", 0, False),
+    "author": ("", "someone", "RESTORE=refused (author)", 6, False),
+    "summary": ("", "me", "RESTORE=refused (summary)", 6, False),
+    "exists": ("", "me", "RESTORE=stopped (exists)", 2, False),
+    "fail": ("fail", "me", "RESTORE=미확인 (read failed)", 1, False),
+    "fail-base": ("fail-base", "me", "RESTORE=미확인 (read failed)", 1, False),
+    "fail-comments": ("fail-comments", "me", "RESTORE=미확인 (read failed)", 1, False),
+    "fail-whoami": ("fail-whoami", "me", "RESTORE=미확인 (read failed)", 1, False),
+}
+
+
+def _i70_scenario(tmp_path: Path, tracker: str, scenario: str, fence: list[str],
+                  shell: str = "bash", prefix: str = "") -> tuple[subprocess.CompletedProcess, Path, bool]:
+    from harness_core.plan_body import SUMMARY_LEAD, marker
+    mode, author, _, _, _ = _I70_SCENARIOS[scenario]
+    env, main, store = _i70_env(tmp_path, FAKE_READ=mode, FAKE_AUTHOR=author)
+    target = main / ".task" / "plan" / "plan-45.md"
+    if scenario == "summary":
+        _i70_post(store, f"{marker('45', '0badc0de')}\n\n# Plan: 요약\n\n{SUMMARY_LEAD} 플랜 전문이 넘쳤다.\n")
+    elif scenario != "none":
+        _i70_own_comment(store)  # a restorable comment: a missing guard would restore it
+    if scenario == "exists":
+        target.write_text("로컬\n", encoding="utf-8")
+    ran = _i45_run(shell, prefix + _i45_script(fence), env, main)
+    restored = target.exists() and target.read_text(encoding="utf-8") == _I70_PLAN
+    return ran, target, restored
+
+
+# GitHub reads the comments with the body, so it has no comments-only failure.
+# Every scenario in every shell, with `noclobber` set as a user's shell may have it.
+@pytest.mark.parametrize("shell", _i40_shells())
+@pytest.mark.parametrize("tracker,scenario", [
+    (t, s) for t in ("github", "forgejo") for s in _I70_SCENARIOS if (t, s) != ("github", "fail-comments")
+])
+def test_i70_restore_fence_against_a_stateful_tracker(shell: str, tracker: str, scenario: str, tmp_path: Path) -> None:
+    _, _, last, code, restores = _I70_SCENARIOS[scenario]
+    ran, target, restored = _i70_scenario(tmp_path, tracker, scenario, _i70_fences()[tracker], shell=shell,
+                                          prefix="set -o noclobber\n")
+    assert _i70_last(ran).startswith(last) and ran.returncode == code, f"{scenario}: {ran.stdout!r} {ran.stderr!r}"
+    assert restored == restores, scenario
+    if scenario.startswith("fail"):
+        assert "RESTORE=" not in ran.stdout.replace(last, ""), "the module ran after a failed read"
+    assert not list((tmp_path / "tmp").iterdir()), "a temp file outlived the fence"
+    assert [p.name for p in target.parent.iterdir()] == (["plan-45.md"] if target.exists() else [])
+
+
+# Each guard off, and the scenario it exists for: without it the fence restores
+# from a read it never finished, or reports a stop that is really a failed read.
+_I70_MUTANTS = {
+    "forgejo base read": ("forgejo", "fail-base", '"<forgejo_repo>#<id>" >| "$SEEN" '),
+    "forgejo comments read": ("forgejo", "fail-comments", '"<forgejo_repo>#<id>" comments >> "$SEEN" '),
+    "github read": ("github", "fail-base", 'body,comments >| "$SEEN" '),
+    "forgejo whoami": ("forgejo", "fail-whoami", 'whoami >| "$WHO" '),
+    "github whoami": ("github", "fail-whoami", '.login >| "$WHO" '),
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_I70_MUTANTS))
+def test_i70_each_read_guard_is_load_bearing(mutant: str, tmp_path: Path) -> None:
+    tracker, scenario, read = _I70_MUTANTS[mutant]
+    fence = list(_i70_fences()[tracker])
+    hits = [i for i, l in enumerate(fence) if read + _I70_READ_FAILED in l]
+    assert len(hits) == 1, f"mutant {mutant!r} no longer matches one line"
+    fence[hits[0]] = fence[hits[0]].replace(" " + _I70_READ_FAILED, "")
+    ran, _, restored = _i70_scenario(tmp_path, tracker, scenario, fence)
+    _, _, last, code, _ = _I70_SCENARIOS[scenario]
+    assert restored or not (_i70_last(ran) == last and ran.returncode == code), (
+        f"mutant {mutant!r} passed: {ran.stdout!r}")

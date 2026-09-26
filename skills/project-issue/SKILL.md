@@ -135,6 +135,37 @@ python -m harness_core.plan_body forgejo --issue '<id>' --expect-rev '<rev>' --s
 - The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.
 - The module splits a Forgejo read into one entry per run of quoted lines — how `fj` prints bodies and comments is in `~/.claude/skills/_shared/references/forgejo.md` — and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.
 
+**Restore, from the tracker to the local plan.** `project-issue` never runs these fences: `project-iterate` runs one when it re-enters an issue that has no `plan-<id>.md` (its `## Re-entry After Interruption`). Each reads the issue and the signed-in user, and hands both to `python -m harness_core.plan_restore`, which writes `plan-<id>.md` in the main checkout only from the plan this user put on the issue. A tracker without a row here has no restore fence:
+
+- The candidate is the last comment, in read order, whose first line is this issue's marker. The issue body is never one: a create-mode body carries no rev to check it against.
+- Its author must be the user the tracker CLI is signed in as, because anyone who can comment could post a marker with a matching rev. The check is who wrote the comment, not who last edited it.
+- The text below the marker must hash to the marker's rev, as read or with one trailing newline. A summary, a changed text or another author refuses the restore, and an earlier marker never stands in for a refused last one.
+- A failed read is not an empty one: the fence ends on `RESTORE=미확인 (read failed)` without running the module, never on `RESTORE=none`. Whether either tracker's read returns every comment of a long thread is unverified; a missing last comment would restore an older revision by the same user.
+- Every outcome the module or the fence decides ends on a `RESTORE=` line: `restored` or `none` (`OK`), `refused (author|summary|rev)` (`FINDINGS`), `stopped (<why>)` (`REFUSED`), or the fence's own `미확인 (read failed)`. Each also carries `MARKERS=`, the comments with this issue's marker, and `FOREIGN=`, those by someone else; `restored` and `refused` carry the `REV=` they judged. The names are in `~/.claude/skills/_shared/references/exit-codes.md`.
+
+**GitHub** restore:
+
+```bash
+SEEN="$(mktemp)" || exit 1
+WHO="$(mktemp)" || exit 1
+trap 'rm -f "$SEEN" "$WHO"' EXIT
+gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "RESTORE=미확인 (read failed)"; exit 1; }
+gh api user --jq .login >| "$WHO" || { echo "RESTORE=미확인 (read failed)"; exit 1; }
+python -m harness_core.plan_restore github --issue '<id>' --read "$SEEN" --whoami "$WHO"
+```
+
+**Forgejo** restore:
+
+```bash
+SEEN="$(mktemp)" || exit 1
+WHO="$(mktemp)" || exit 1
+trap 'rm -f "$SEEN" "$WHO"' EXIT
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$SEEN" || { echo "RESTORE=미확인 (read failed)"; exit 1; }
+fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" || { echo "RESTORE=미확인 (read failed)"; exit 1; }
+fj -H <forgejo_host> whoami >| "$WHO" || { echo "RESTORE=미확인 (read failed)"; exit 1; }
+python -m harness_core.plan_restore forgejo --issue '<id>' --read "$SEEN" --whoami "$WHO"
+```
+
 ## Instructions
 
 - With `--issue <id>` and no `<plan-path>`, go straight to Step 1-R: Steps 1, 1-L and 2–8 do not run, and the flow ends at Step 9.

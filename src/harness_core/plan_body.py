@@ -60,6 +60,8 @@ _SECTION_MISSING = "(섹션 없음)"
 _NO_ITEMS = "(항목 없음)"
 _ISOLATES = str.maketrans("", "", "\u2068\u2069")
 _NO_TITLE = "(제목 없음)"
+# The line a summary opens with; `plan_restore` names a refused summary by it.
+SUMMARY_LEAD = "> 요약본이다."
 
 
 class PlanBodyError(Exception):
@@ -198,7 +200,7 @@ def summarize(text: str, *, where: str, full_chars: int, limit: int) -> str:
     out += [
         f"# Plan: {title or _NO_TITLE}",
         "",
-        f"> 요약본이다. 플랜 전문이 {full_chars:,} 문자로 한도 {limit:,} 문자를 넘어 고정 형식 요약을 올린다.",
+        f"{SUMMARY_LEAD} 플랜 전문이 {full_chars:,} 문자로 한도 {limit:,} 문자를 넘어 고정 형식 요약을 올린다.",
         "",
         "## Intent Summary",
         _trimmed(intent) if intent is not None and _trimmed(intent) else _SECTION_MISSING,
