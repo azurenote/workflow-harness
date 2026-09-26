@@ -67,10 +67,22 @@ Filename rules:
   - Example: `plan-draft-jwt-auth-lambda-2.md`
 - For compatibility with the existing harness, `/issue` still recognizes `plan-<uuid>.md` drafts, but new plans should be created as `plan-draft-<slug>.md`.
 
-The ignore check is the same fence as `project-done` Step 5, which says why each part of it is there: ask git, not `.gitignore`'s text, and append only on exit 1. **Run this fence as one shell invocation** — later lines read `rc`, `SLUG` and `PLAN_FILE` from earlier ones. Any exit other than 0 or 1 means git could not answer, and the fence then exits 1: stop and report it before writing any plan.
+The plan directory is the main checkout's, wherever this skill runs: `.task/plan/` is gitignored and exists only there, and `project-issue`, `project-start` and `project-done` look for drafts and plans nowhere else. So the fence asks git for the main checkout first — the four resolving lines are the canonical main-checkout block kept in the shared worktree reference — and builds every path from it. A path built from the CWD puts the draft inside a linked worktree, where no later skill finds it. In a layout with no main work tree (a separate-git-dir or bare repository) the fence stops rather than write the draft anywhere else.
+
+The ignore check is the same fence as `project-done` Step 5, which says why each part of it is there: ask git, not `.gitignore`'s text, and append only on exit 1. **Run this fence as one shell invocation** — later lines read `MAIN_CHECKOUT`, `SLUG` and `PLAN_FILE` from earlier ones. Any exit other than 0 or 1 means git could not answer, and the fence then exits 1: stop and report it before writing any plan.
+
+- **The check runs in the main checkout, inside a subshell.** The question is whether the directory the plan goes to is ignored, so git is asked where that directory is, and an exit-1 append lands in the main checkout's `.gitignore` — from a linked worktree the check would otherwise read the feature branch's rules and edit a tracked file on that branch. The `cd` sits in a subshell so the lines of the check stay byte for byte those of `project-done` Step 5 and the session's working directory does not move; this is not a second exception to the "do not repeat `cd`" rule in the shared worktree reference.
+- **An exit-1 answer edits (or creates) the main checkout's `.gitignore`**, whichever checkout this skill runs from, and leaves that change uncommitted there. The fence prints nothing for it, so after it runs, `git -C "<main checkout>" status --porcelain -- .gitignore` shows whether it happened; include that in the output.
+- **Write the draft to the printed path.** The last line is `PLAN_FILE=<absolute path>`; shell variables do not survive to the next call, and a relative path names a different file from a linked worktree.
 
 ```bash
-mkdir -p .task/plan
+FIRST_WORKTREE="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"
+[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+mkdir -p "$MAIN_CHECKOUT/.task/plan" || exit 1
+(
+cd "$MAIN_CHECKOUT" || exit 1
 git check-ignore -q --no-index .task/plan/ && rc=0 || rc=$?
 case "$rc" in
   0) ;;
@@ -78,14 +90,16 @@ case "$rc" in
      echo ".task/plan/" >> .gitignore ;;
   *) echo "stop: git check-ignore exited $rc; .gitignore not touched" >&2; exit 1 ;;
 esac
+) || exit 1
 SLUG="<convert-task-description-to-3-5-word-english-slug>"
-PLAN_FILE=".task/plan/plan-draft-${SLUG}.md"
+PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}.md"
 # Add a suffix on collision
 N=2
 while [ -f "$PLAN_FILE" ]; do
-  PLAN_FILE=".task/plan/plan-draft-${SLUG}-${N}.md"
+  PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}-${N}.md"
   N=$((N + 1))
 done
+printf 'PLAN_FILE=%s\n' "$PLAN_FILE"
 ```
 
 Split the file structure into two layers.
@@ -221,6 +235,6 @@ Collect feedback, revise and finalize the plan, and include in the output the se
 
 **5. Output**
 
-- full path of the created file, for example `.task/plan/plan-draft-jwt-auth-lambda.md`
+- full path of the created file — the `PLAN_FILE=` value Step 3 printed, for example `<main checkout>/.task/plan/plan-draft-jwt-auth-lambda.md`
 - flagged uncertainties
 - next step: `project-issue`

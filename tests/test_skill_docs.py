@@ -3688,7 +3688,7 @@ def test_ignore_check_runs_before_anything_it_guards() -> None:
     bi, lines, blocks = _ignore_check_block("project-plan")
     block = [l.strip() for l in blocks[bi]]
     start = block.index(_IGNORE_CHECK_START)
-    assert "mkdir -p .task/plan" in block[:start], "project-plan checks before creating the plan dir"
+    assert 'mkdir -p "$MAIN_CHECKOUT/.task/plan" || exit 1' in block[:start], "project-plan checks before creating the plan dir"
     assert any(l.startswith("PLAN_FILE=") for l in block[start:]), "the plan is written before the check"
 
 
@@ -5039,6 +5039,7 @@ _I50_COPIES = {
     "skills/project-start/SKILL.md": 5,
     "skills/project-adr/SKILL.md": 1,
     "skills/project-clean/SKILL.md": 1,
+    "skills/project-plan/SKILL.md": 1,  # #53
 }
 
 
@@ -5228,7 +5229,8 @@ def test_no_other_main_checkout_resolution_in_skill_fences() -> None:
 
 
 def test_skill_fences_have_no_cwd_relative_plan_paths() -> None:
-    scoped = ("project-done", "project-iterate", "project-start", "project-adr", "project-clean", "project-issue")
+    scoped = ("project-done", "project-iterate", "project-start", "project-adr", "project-clean", "project-issue",
+              "project-plan")
     bare = re.compile(r'(?<!\$MAIN_CHECKOUT/)(?<!\$REPORT_ROOT/)(?<!"\$MAIN_CHECKOUT"/)\.task/plan/plan-')
     for skill in scoped:
         for fence in _fences_of(read_skill(f"skills/{skill}/SKILL.md")):
@@ -5537,11 +5539,13 @@ _I50_RESOLUTION_LINES = (
     ('skills/project-iterate/SKILL.md', '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {', 1),
     ('skills/project-iterate/SKILL.md', "git worktree list --porcelain | python3 -c '", 1),
     ('skills/project-iterate/SKILL.md', 'rel = subprocess.run(["git", "-C", path, "rev-parse", "--git-path", name],', 1),
-    ('skills/project-plan/SKILL.md', 'PLAN_FILE=".task/plan/plan-draft-${SLUG}-${N}.md"', 1),
-    ('skills/project-plan/SKILL.md', 'PLAN_FILE=".task/plan/plan-draft-${SLUG}.md"', 1),
+    ('skills/project-plan/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 1),
+    ('skills/project-plan/SKILL.md', 'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"', 1),
+    ('skills/project-plan/SKILL.md', 'PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}-${N}.md"', 1),
+    ('skills/project-plan/SKILL.md', 'PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}.md"', 1),
     ('skills/project-plan/SKILL.md', 'echo ".task/plan/" >> .gitignore ;;', 1),
     ('skills/project-plan/SKILL.md', 'git check-ignore -q --no-index .task/plan/ && rc=0 || rc=$?', 1),
-    ('skills/project-plan/SKILL.md', 'mkdir -p .task/plan', 1),
+    ('skills/project-plan/SKILL.md', 'mkdir -p "$MAIN_CHECKOUT/.task/plan" || exit 1', 1),
     ('skills/project-release/SKILL.md', "REMOTE_TAG_SHA=$(git rev-parse 'FETCH_HEAD^{}')", 1),
     ('skills/project-release/SKILL.md', 'test "$(git rev-parse \'<tag>^{}\')" = "$RELEASE_SHA"', 1),
     ('skills/project-start/SKILL.md', 'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"', 5),
@@ -7320,3 +7324,314 @@ def test_i59_each_mutant_raises_the_rule_meant_for_it(mutant: str) -> None:
 def test_i59_readme_row_drops_the_per_phase_confirmation() -> None:
     row = [l for l in read_skill("README.md").splitlines() if l.startswith("| `project-iterate` |")]
     assert len(row) == 1 and "단계 사이 사용자 확인" not in row[0] and _I59_SECTION_REF in row[0]
+
+
+# --------------------------------------------------------------------------
+# #53 — project-plan Step 3 writes the draft into the main checkout
+#
+# The fence made `.task/plan`, named the draft and asked whether the
+# directory is ignored, all from the CWD. From a linked worktree the draft
+# landed where no later skill looks, and an exit-1 answer appended to the
+# feature branch's tracked `.gitignore`. The fence now starts with the
+# canonical block (#50), builds every path from `$MAIN_CHECKOUT`, and asks
+# the ignore question in a subshell that moved to the main checkout — the
+# check's own lines stay those of project-done Step 5 (#46), and the
+# caller's working directory does not move.
+#
+# The golden tuple pins the region line by line. The rows run the fence the
+# document holds, one fresh set of repositories per row: rows sharing one
+# main checkout let an earlier row's append satisfy a later row's check. Each
+# mutant names the (row, shell) meant to catch it, as `_MUTANT_CATCHERS` does.
+# --------------------------------------------------------------------------
+
+_I53_STEP3 = (
+    "The plan directory is the main checkout's, wherever this skill runs: `.task/plan/` is gitignored and exists only there, and `project-issue`, `project-start` and `project-done` look for drafts and plans nowhere else. So the fence asks git for the main checkout first — the four resolving lines are the canonical main-checkout block kept in the shared worktree reference — and builds every path from it. A path built from the CWD puts the draft inside a linked worktree, where no later skill finds it. In a layout with no main work tree (a separate-git-dir or bare repository) the fence stops rather than write the draft anywhere else.",
+    "The ignore check is the same fence as `project-done` Step 5, which says why each part of it is there: ask git, not `.gitignore`'s text, and append only on exit 1. **Run this fence as one shell invocation** — later lines read `MAIN_CHECKOUT`, `SLUG` and `PLAN_FILE` from earlier ones. Any exit other than 0 or 1 means git could not answer, and the fence then exits 1: stop and report it before writing any plan.",
+    '- **The check runs in the main checkout, inside a subshell.** The question is whether the directory the plan goes to is ignored, so git is asked where that directory is, and an exit-1 append lands in the main checkout\'s `.gitignore` — from a linked worktree the check would otherwise read the feature branch\'s rules and edit a tracked file on that branch. The `cd` sits in a subshell so the lines of the check stay byte for byte those of `project-done` Step 5 and the session\'s working directory does not move; this is not a second exception to the "do not repeat `cd`" rule in the shared worktree reference.',
+    '- **An exit-1 answer edits (or creates) the main checkout\'s `.gitignore`**, whichever checkout this skill runs from, and leaves that change uncommitted there. The fence prints nothing for it, so after it runs, `git -C "<main checkout>" status --porcelain -- .gitignore` shows whether it happened; include that in the output.',
+    '- **Write the draft to the printed path.** The last line is `PLAN_FILE=<absolute path>`; shell variables do not survive to the next call, and a relative path names a different file from a linked worktree.',
+    '```bash',
+    'FIRST_WORKTREE="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    'MAIN_CHECKOUT="$([ -n "$FIRST_WORKTREE" ] && git -C "$FIRST_WORKTREE" rev-parse --show-toplevel 2>/dev/null || :)"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    '  echo "could not resolve the main checkout"; exit 1; }',
+    'mkdir -p "$MAIN_CHECKOUT/.task/plan" || exit 1',
+    '(',
+    'cd "$MAIN_CHECKOUT" || exit 1',
+    'git check-ignore -q --no-index .task/plan/ && rc=0 || rc=$?',
+    'case "$rc" in',
+    '  0) ;;',
+    '  1) if [ -s .gitignore ] && [ -n "$(tail -c 1 .gitignore)" ]; then echo >> .gitignore; fi',
+    '     echo ".task/plan/" >> .gitignore ;;',
+    '  *) echo "stop: git check-ignore exited $rc; .gitignore not touched" >&2; exit 1 ;;',
+    'esac',
+    ') || exit 1',
+    'SLUG="<convert-task-description-to-3-5-word-english-slug>"',
+    'PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}.md"',
+    '# Add a suffix on collision',
+    'N=2',
+    'while [ -f "$PLAN_FILE" ]; do',
+    '  PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}-${N}.md"',
+    '  N=$((N + 1))',
+    'done',
+    'printf \'PLAN_FILE=%s\\n\' "$PLAN_FILE"',
+    '```',
+)
+
+_I53_HEADING = "**3. Create plan-draft-<slug>.md**"
+_I53_SLUG_PLACEHOLDER = "<convert-task-description-to-3-5-word-english-slug>"
+_I53_DRAFT = "plan-draft-x.md"
+_I53_ROWS = (
+    "main", "worktree", "worktree subdir", "collision", "plan dir is a file",
+    "check-ignore fails", "no repository", "separate git dir",
+)
+_I53_CWD = {
+    "main": "main", "worktree": "wt", "worktree subdir": "wt/sub/dir", "collision": "wt",
+    "plan dir is a file": "wt", "check-ignore fails": "wt", "no repository": "norepo",
+    "separate git dir": "sep-wt",
+}
+
+
+def _i53_step3() -> str:
+    return skill_section(read_skill("skills/project-plan/SKILL.md"), _I53_HEADING)
+
+
+def _i53_fence() -> str:
+    fences = [f for f in _fences_of(_i53_step3()) if "FIRST_WORKTREE=" in f]
+    assert len(fences) == 1, "project-plan Step 3 should hold one fence that resolves the main checkout"
+    return fences[0]
+
+
+def test_i53_step3_is_pinned() -> None:
+    lines = _i53_step3().splitlines()
+    start = next(k for k, l in enumerate(lines) if l.startswith("The plan directory is the main checkout's"))
+    end = next(k for k in range(start, len(lines)) if lines[k].startswith("Split the file structure"))
+    got = tuple(l.rstrip() for l in lines[start:end] if l.strip())
+    assert got == _I53_STEP3, "project-plan Step 3's prose or fence changed; edit _I53_STEP3 deliberately"
+
+
+_I53_STEP5_OUTPUT = (
+    "- full path of the created file — the `PLAN_FILE=` value Step 3 printed, "
+    "for example `<main checkout>/.task/plan/plan-draft-jwt-auth-lambda.md`"
+)
+
+
+def test_i53_step5_output_is_the_printed_absolute_path() -> None:
+    text = skill_section(read_skill("skills/project-plan/SKILL.md"), "**5. Output**")
+    assert text, "project-plan has no Step 5"
+    assert rule_line(text, "full path of the created file") == _I53_STEP5_OUTPUT
+
+
+def test_i53_step3_names_no_reference_path() -> None:
+    """The copy is not a read: a path would make project-plan declare worktree.md."""
+    assert "_shared/references/worktree.md" not in read_skill("skills/project-plan/SKILL.md")
+
+
+def _i53_repos(tmp: Path, row: str) -> dict:
+    """A fresh main checkout with a linked worktree; the separate-git-dir row gets its own."""
+    env = _i50_env(tmp)
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+
+    git("init", "-q", "main", cwd=tmp)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=tmp / "main")
+    git("worktree", "add", "-q", str(tmp / "wt"), cwd=tmp / "main")
+    (tmp / "wt" / "sub" / "dir").mkdir(parents=True)
+    (tmp / "norepo").mkdir()
+    if row == "separate git dir":
+        git("init", "-q", f"--separate-git-dir={tmp / 'sep-git'}", "sep", cwd=tmp)
+        git("commit", "-q", "--allow-empty", "-m", "init", cwd=tmp / "sep")
+        git("worktree", "add", "-q", str(tmp / "sep-wt"), cwd=tmp / "sep")
+    if row == "plan dir is a file":
+        (tmp / "main" / ".task").write_text("not a directory\n")
+    if row == "check-ignore fails":
+        shim = tmp / "bin" / "git"
+        shim.parent.mkdir()
+        shim.write_text(
+            '#!/bin/sh\nfor a in "$@"; do [ "$a" = check-ignore ] && exit 128; done\n'
+            f'exec "{shutil.which("git")}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        env = {**env, "PATH": f"{shim.parent}{os.pathsep}{env['PATH']}"}
+    return env
+
+
+def _i53_run(fence: str, shell: list[str], cwd: Path, env: dict) -> tuple[subprocess.CompletedProcess, dict]:
+    assert fence.count(_I53_SLUG_PLACEHOLDER) == 1, "the slug placeholder is not in the fence exactly once"
+    script = fence.replace(_I53_SLUG_PLACEHOLDER, "x") + "\nprintf 'PWD=%s\\n' \"$(pwd -P)\"\n"
+    result = subprocess.run([*shell, "-c", script], cwd=cwd, env=env, capture_output=True, text=True)
+    values: dict = {}
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in ("PLAN_FILE", "PWD"):
+            values.setdefault(key, []).append(value)
+    return result, values
+
+
+def _i53_worktree_clean(tmp: Path, env: dict) -> str:
+    return subprocess.run(
+        ["git", "-C", str(tmp / "wt"), "status", "--porcelain", "--ignored", "--untracked-files=all"],
+        env=env, capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def _i53_row_failures(fence: str, shell: list[str], tmp: Path, row: str) -> list[str]:
+    """Run the fence for one row in fresh repositories; describe what it got wrong."""
+    tmp = tmp.resolve()
+    tmp.mkdir(parents=True, exist_ok=True)
+    env = _i53_repos(tmp, row)
+    cwd = tmp / _I53_CWD[row]
+    main = tmp / "main"
+    plans = main / ".task" / "plan"
+    gitignore = main / ".gitignore"
+    where = f"{row} ({' '.join(shell)})"
+    failures: list[str] = []
+
+    def run() -> tuple[subprocess.CompletedProcess, dict, str]:
+        result, values = _i53_run(fence, shell, cwd, env)
+        return result, values, f"exit {result.returncode}, stdout {result.stdout!r}, stderr {result.stderr!r}"
+
+    def plan_file(values: dict) -> str | None:
+        got = values.get("PLAN_FILE", [])
+        return got[0] if len(got) == 1 else None
+
+    if row in ("main", "worktree", "worktree subdir"):
+        outputs = []
+        for attempt in (1, 2):
+            result, values, seen = run()
+            path = plan_file(values)
+            if result.returncode != 0 or path is None:
+                return [f"{where}: run {attempt} did not print one PLAN_FILE: {seen}"]
+            if not os.path.isabs(path) or Path(path).resolve() != plans / _I53_DRAFT:
+                failures.append(f"{where}: run {attempt} PLAN_FILE {path!r} is not {plans / _I53_DRAFT}")
+            if not plans.is_dir():
+                failures.append(f"{where}: run {attempt} left no plan directory in the main checkout")
+            if values.get("PWD") != [str(cwd)]:
+                failures.append(f"{where}: run {attempt} moved the caller to {values.get('PWD')!r}")
+            if cwd != main and (cwd / ".task").exists():
+                failures.append(f"{where}: run {attempt} made .task/ in the CWD")
+            # git status does not list an empty directory, hence the `.task` check above.
+            status = _i53_worktree_clean(tmp, env)
+            if status:
+                failures.append(f"{where}: run {attempt} changed the linked worktree: {status!r}")
+            ignore = gitignore.read_bytes() if gitignore.exists() else None
+            if ignore != b".task/plan/\n":
+                failures.append(f"{where}: run {attempt} main .gitignore is {ignore!r}")
+            outputs.append((path, ignore))
+        if outputs[0] != outputs[1]:
+            failures.append(f"{where}: the second run changed something: {outputs}")
+        return failures
+
+    if row == "collision":
+        plans.mkdir(parents=True)
+        for seeded, want in (("plan-draft-x.md", "plan-draft-x-2.md"), ("plan-draft-x-2.md", "plan-draft-x-3.md")):
+            (plans / seeded).write_text("# Plan: a\n")
+            result, values, seen = run()
+            path = plan_file(values)
+            if result.returncode != 0 or path is None or not os.path.isabs(path) or Path(path).resolve() != plans / want:
+                failures.append(f"{where}: with {seeded} present, expected {plans / want}: {seen}")
+        return failures
+
+    result, values, seen = run()
+    if row == "separate git dir":
+        path = plan_file(values)
+        # A git that lists the work tree first answers it (_I50_SEP_ANSWER).
+        if path is not None and os.path.isabs(path) and Path(path).resolve() == tmp / "sep" / ".task" / "plan" / _I53_DRAFT:
+            return failures
+    if result.returncode == 0 or "PLAN_FILE" in values:
+        failures.append(f"{where}: did not stop: {seen}")
+    if row in ("no repository", "separate git dir"):
+        if "could not resolve the main checkout" not in result.stdout:
+            failures.append(f"{where}: stopped for another reason: {seen}")
+        if (cwd / ".task").exists():
+            failures.append(f"{where}: made .task/ in the CWD")
+    else:
+        if gitignore.exists():
+            failures.append(f"{where}: main .gitignore was written: {gitignore.read_bytes()!r}")
+        if row == "plan dir is a file" and not (main / ".task").is_file():
+            failures.append(f"{where}: main .task is no longer the file the row made")
+        if row == "check-ignore fails" and "exited 128" not in result.stderr:
+            failures.append(f"{where}: stopped before the ignore check: {seen}")
+    return failures
+
+
+def test_i53_rows_are_all_present() -> None:
+    assert _I53_ROWS == (
+        "main", "worktree", "worktree subdir", "collision", "plan dir is a file",
+        "check-ignore fails", "no repository", "separate git dir",
+    ), "a project-plan Step 3 row was dropped or renamed"
+    assert set(_I53_CWD) == set(_I53_ROWS)
+
+
+@pytest.mark.parametrize("shell", _shells(), ids=" ".join)
+def test_i53_step3_fence_behaves_in_every_row(shell: list[str], tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    fence = _i53_fence()
+    failures = []
+    for n, row in enumerate(_I53_ROWS):
+        failures += _i53_row_failures(fence, shell, tmp_path / f"row-{n}", row)
+    assert not failures, "project-plan Step 3:\n" + "\n".join(failures)
+
+
+def _i53_edit(fence: str, old: str, new: str | None) -> str:
+    """Replace (or drop, with None) the one fence line whose stripped text is `old`."""
+    lines = fence.splitlines()
+    hits = [k for k, l in enumerate(lines) if l.strip() == old]
+    assert len(hits) == 1, f"expected one line {old!r} in the fence, found {len(hits)}"
+    k = hits[0]
+    lines[k:k + 1] = [] if new is None else [lines[k].replace(old, new)]
+    return "\n".join(lines)
+
+
+def _i53_mutants(fence: str) -> dict[str, str]:
+    mkdir = 'mkdir -p "$MAIN_CHECKOUT/.task/plan" || exit 1'
+    first = 'PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}.md"'
+    loop = 'PLAN_FILE="$MAIN_CHECKOUT/.task/plan/plan-draft-${SLUG}-${N}.md"'
+    resolve = next(l.strip() for l in fence.splitlines() if l.strip().startswith("MAIN_CHECKOUT="))
+    mutants = {
+        "relative mkdir": _i53_edit(fence, mkdir, "mkdir -p .task/plan || exit 1"),
+        "no mkdir": _i53_edit(fence, mkdir, None),
+        "mkdir failure ignored": _i53_edit(fence, mkdir, 'mkdir -p "$MAIN_CHECKOUT/.task/plan"'),
+        "no cd": _i53_edit(fence, 'cd "$MAIN_CHECKOUT" || exit 1', None),
+        "no subshell": _i53_edit(_i53_edit(fence, "(", None), ") || exit 1", None),
+        "subshell failure ignored": _i53_edit(fence, ") || exit 1", ")"),
+        "relative PLAN_FILE": _i53_edit(fence, first, first.replace("$MAIN_CHECKOUT/", "")),
+        "relative collision PLAN_FILE": _i53_edit(fence, loop, loop.replace("$MAIN_CHECKOUT/", "")),
+        "cwd toplevel": _i53_edit(fence, resolve, 'MAIN_CHECKOUT="$(git rev-parse --show-toplevel)"'),
+        "no printf": _i53_edit(fence, "printf 'PLAN_FILE=%s\\n' \"$PLAN_FILE\"", None),
+    }
+    for name, mutant in mutants.items():
+        assert mutant != fence, f"mutant {name!r} did not change the fence"
+    return mutants
+
+
+# Each mutant and the (row, shell) that exists to catch it. Under `-e` a
+# failing subshell stops the shell by itself, so "subshell failure ignored"
+# shows only without it.
+_I53_MUTANT_CATCHERS = {
+    "relative mkdir": ("worktree", ("sh",)),
+    "no mkdir": ("worktree", ("sh",)),
+    "mkdir failure ignored": ("plan dir is a file", ("sh",)),
+    "no cd": ("worktree", ("sh",)),
+    "no subshell": ("worktree", ("sh",)),
+    "subshell failure ignored": ("check-ignore fails", ("sh",)),
+    "relative PLAN_FILE": ("worktree", ("sh",)),
+    "relative collision PLAN_FILE": ("collision", ("sh",)),
+    "cwd toplevel": ("worktree", ("sh",)),
+    "no printf": ("main", ("sh",)),
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_I53_MUTANT_CATCHERS))
+def test_i53_step3_rows_reject_each_mutant(mutant: str, tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git is not installed on this host")
+    mutants = _i53_mutants(_i53_fence())
+    assert set(mutants) == set(_I53_MUTANT_CATCHERS)
+    row, shell = _I53_MUTANT_CATCHERS[mutant]
+    failures = _i53_row_failures(mutants[mutant], list(shell), tmp_path, row)
+    assert failures, f"the {row!r} row does not reject the {mutant!r} mutant under {' '.join(shell)}"
+    # dash reports "Syntax error", bash and zsh "syntax error".
+    assert not any("syntax error" in f.lower() for f in failures), f"the {mutant!r} mutant does not parse: {failures}"
