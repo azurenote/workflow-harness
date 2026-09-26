@@ -24,6 +24,7 @@ That document holds the common contract only. This skill additionally reads:
 - `~/.claude/skills/_shared/references/base-branch.md` — per-task base branch precedence
 - `~/.claude/skills/_shared/references/github-issue-fields.md` — issue metadata contract. Written for `issue_tracker: github`; Step 4 and the Forgejo branch reuse its label rule, so forgejo reads it too.
 - `~/.claude/skills/_shared/references/forgejo.md` — `fj` surface facts (`issue_tracker: forgejo` only)
+- `~/.claude/skills/_shared/references/exit-codes.md` — what the harness commands this skill runs (`plan_body`, `create-issue`, the core commands) mean by each exit code
 
 Read nothing else from the reference set; the rest does not apply here.
 
@@ -44,8 +45,8 @@ project-issue [<plan-path>] [--issue <id>]
   - **Given** — Step 1 does not run discovery at all. It validates this path and uses it.
 
 The argument exists for the case discovery cannot resolve on its own: two or more drafts present.
-The harness path raises `MultiplePlanFilesError` outright; the harness-free path can still ask, but
-only interactively. Naming the file settles it in one step, and settles it non-interactively.
+The harness path refuses it outright (`find-draft-plan` exits `REFUSED`); the harness-free path can
+still ask, but only interactively. Naming the file settles it in one step, and settles it non-interactively.
 
 - `[--issue <id>]`: an issue that already exists. Optional.
   - **Given** — link mode: the draft is linked to issue `<id>` and no ticket is created; Step 1-L below runs.
@@ -75,7 +76,7 @@ A plan reaches the tracker three ways: as a new issue's body (Step 6), as a comm
 - The same content is never posted twice. Before posting, the issue body and comments are read, and the post is skipped when one of them starts with this marker line, or is this plan (or its create-mode summary) as a whole — an issue created from this plan. Each body and comment is compared on its own and in full, so a revision that only drops lines from the end is still posted.
 - A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.
 
-The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 3 when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.
+The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 5 (`NOOP`) when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.
 
 **GitHub** check:
 
@@ -95,12 +96,12 @@ trap 'rm -f "$SEEN" "$BODY_FILE"' EXIT
 gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }
 python -m harness_core.plan_body github --issue '<id>' --expect-rev '<rev>' --seen "$SEEN" --out "$BODY_FILE"
 RC=$?
-[ "$RC" = 3 ] && { echo "COMMENT=skipped"; exit 0; }
+[ "$RC" = 5 ] && { echo "COMMENT=skipped"; exit 0; }
 [ "$RC" = 0 ] || { echo "COMMENT=미반영 (no body)"; exit 1; }
 gh issue comment "<id>" --body-file "$BODY_FILE"
 gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read-back failed)"; exit 1; }
 python -m harness_core.plan_body github --issue '<id>' --expect-rev '<rev>' --seen "$SEEN" --dry-run > /dev/null
-[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }
+[ "$?" = 5 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }
 ```
 
 **Forgejo** check:
@@ -123,12 +124,12 @@ fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" >| "$SEEN"
 fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }
 python -m harness_core.plan_body forgejo --issue '<id>' --expect-rev '<rev>' --seen "$SEEN" --out "$BODY_FILE"
 RC=$?
-[ "$RC" = 3 ] && { echo "COMMENT=skipped"; exit 0; }
+[ "$RC" = 5 ] && { echo "COMMENT=skipped"; exit 0; }
 [ "$RC" = 0 ] || { echo "COMMENT=미반영 (no body)"; exit 1; }
 fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file "$BODY_FILE"
 fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >| "$SEEN" || { echo "COMMENT=미반영 (read-back failed)"; exit 1; }
 python -m harness_core.plan_body forgejo --issue '<id>' --expect-rev '<rev>' --seen "$SEEN" --dry-run > /dev/null
-[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }
+[ "$?" = 5 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }
 ```
 
 - The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.
@@ -198,7 +199,7 @@ The fallback also uses `harness_core.config.is_draft_plan` as the single contrac
 
 Handle the result:
 - **No files**: tell the user to run `project-plan` first. Stop.
-- **A non-zero exit** is not "no files": the plan directory could not be located (a layout with no main work tree). Report the error and stop.
+- **A non-zero exit** is not "no files" by itself. `find-draft-plan` exits `REFUSED` for no draft, several drafts and an unlocated plan directory alike, and its one stderr line says which: no draft and several drafts (the line lists them) take their own bullets in this list. From the fallback, a non-zero exit means the plan directory could not be located (a layout with no main work tree). An unlocated plan directory is reported, and the skill stops.
 - **One file**: use that file.
 - **Two or more files**: show the list and mtimes, then ask the user to choose.
   - If the user says "latest", automatically choose the file with the newest mtime.
@@ -257,7 +258,7 @@ path resolves to the main worktree root.
 
 3. **Read the issue.** Keep the output — `project-iterate` reuses the body as its task description.
 
-   - **GitHub**: the core `get-issue` is not this gate. It returns no `state`, and it exits 2 when the
+   - **GitHub**: the core `get-issue` is not this gate. It returns no `state`, and it exits 2 (`REFUSED`) when the
      project board cannot be read, which would refuse the link for a reason unrelated to the issue.
 
      ```bash
@@ -453,12 +454,12 @@ printf '%s\n' "$BODY"
   --size "<Size option>"
 ```
 
-Exit codes:
+Exit codes (names from `~/.claude/skills/_shared/references/exit-codes.md`):
 
-- **0** — created. The JSON on stdout carries `number`, `node_id`, `url`, `requested`, `observed` and `drift`.
-- **2** — refused *before* creating anything. Nothing exists. Two kinds, and they need different responses: a **bad argument**, which you fix and run again; and an **environment refusal** — the project board could not be read, so a label cannot be told apart from a field value. Re-running an environment refusal changes nothing. Report it.
-- **3** — the issue exists but its fields did not all apply.
-- **4** — the create request failed and it is **not known** whether the issue exists. The server may have committed it before the connection dropped.
+- **0** `OK` — created. The JSON on stdout carries `number`, `node_id`, `url`, `requested`, `observed` and `drift`.
+- **2** `REFUSED` — refused *before* creating anything. Nothing exists. Two kinds, and they need different responses: a **bad argument**, which you fix and run again; and an **environment refusal** — the project board could not be read, so a label cannot be told apart from a field value. Re-running an environment refusal changes nothing. Report it.
+- **3** `INCOMPLETE` — the issue exists but its fields did not all apply.
+- **4** `UNKNOWN` — the create request failed and it is **not known** whether the issue exists. The server may have committed it before the connection dropped.
 
 - On exit 3 the issue already exists: never re-run create-issue; run set-fields <number> instead.
 - On exit 4 do not run create-issue again until you have searched the repository for the title: a blind re-run is how one plan becomes two issues.

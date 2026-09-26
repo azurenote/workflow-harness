@@ -1,4 +1,9 @@
-"""Project-local harness scaffold and update support."""
+"""Project-local harness scaffold and update support.
+
+``harness-init`` and ``harness-update`` exit ``OK``, or ``REFUSED`` when the
+preflight fails or planning reports an ``error:`` — both before any file is
+written. See ``skills/_shared/references/exit-codes.md``.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ from pathlib import Path
 from string import Template
 from typing import Iterable, Sequence
 
+from .exitcodes import ExitCode
 from .preflight import (
     PreflightResult,
     check_preflight,
@@ -329,7 +335,7 @@ def _backup_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> ExitCode:
     parser = argparse.ArgumentParser(prog="harness-scaffold")
     subparsers = parser.add_subparsers(dest="mode", required=True)
     for mode in ("init", "update"):
@@ -346,7 +352,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     fn = plan_init if args.mode == "init" else plan_update
     result = fn(args.target, context=context, apply=args.apply)
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
-    return 0 if result.ok else 1
+    return ExitCode.OK if result.ok else ExitCode.REFUSED
 
 
 def _context_from_args(args: argparse.Namespace) -> RenderContext:
@@ -361,13 +367,13 @@ def _context_from_args(args: argparse.Namespace) -> RenderContext:
     )
 
 
-def main_init() -> int:
+def main_init() -> ExitCode:
     import sys
 
     return main(["init", *sys.argv[1:]])
 
 
-def main_update() -> int:
+def main_update() -> ExitCode:
     import sys
 
     return main(["update", *sys.argv[1:]])

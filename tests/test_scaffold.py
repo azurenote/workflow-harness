@@ -368,3 +368,43 @@ def test_the_two_starter_templates_have_different_update_rules():
     by_path = {entry.rel_path: entry for entry in scaffold.CANONICAL_ENTRIES}
     assert by_path[".claude/scripts/project.py"].preserve_existing is True
     assert by_path[".claude/scripts/harness/config.py"].preserve_existing is False
+
+
+def _tree(root: Path) -> dict:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_cli_refuses_a_failed_preflight_before_writing(tmp_path, monkeypatch, capsys):
+    """REFUSED, not INCOMPLETE: both refusals return before any file is written."""
+    from harness_core.exitcodes import ExitCode
+
+    monkeypatch.setattr(scaffold, "check_preflight", lambda _root: _preflight(ok=False))
+    assert scaffold.main(["init", "--target", str(tmp_path), "--apply"]) == ExitCode.REFUSED
+    capsys.readouterr()
+    assert _tree(tmp_path) == {}
+
+
+def test_cli_refuses_an_error_warning_before_writing(tmp_path, monkeypatch, capsys):
+    from harness_core.exitcodes import ExitCode
+
+    monkeypatch.setattr(scaffold, "check_preflight", lambda _root: _preflight())
+    assert scaffold.main(["init", "--target", str(tmp_path), "--apply"]) == ExitCode.OK
+    before = _tree(tmp_path)
+    assert before, "the first init wrote nothing"
+    # A second init on the same target plans an `error:` (use update instead).
+    assert scaffold.main(["init", "--target", str(tmp_path), "--apply"]) == ExitCode.REFUSED
+    capsys.readouterr()
+    assert _tree(tmp_path) == before
+
+
+def test_update_entry_point_refuses_a_failed_preflight(tmp_path, monkeypatch, capsys):
+    """`harness-update` reaches the same refusal through its own entry point."""
+    from harness_core.exitcodes import ExitCode
+
+    (tmp_path / "keep.txt").write_text("x")
+    before = _tree(tmp_path)
+    monkeypatch.setattr(scaffold, "check_preflight", lambda _root: _preflight(ok=False))
+    monkeypatch.setattr(sys, "argv", ["harness-update", "--target", str(tmp_path), "--apply"])
+    assert scaffold.main_update() == ExitCode.REFUSED
+    capsys.readouterr()
+    assert _tree(tmp_path) == before

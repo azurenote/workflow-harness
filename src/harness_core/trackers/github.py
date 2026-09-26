@@ -36,6 +36,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
+from ..exitcodes import ExitCode
 from ..io import print_error, print_json
 from ..local import abs_under_main
 
@@ -1283,31 +1284,28 @@ def _writable_slots(field_names: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def _create_issue_handler(args) -> int:
+def _create_issue_handler(args) -> ExitCode:
     """Create one issue with its full metadata, then report what actually stuck.
 
-    Exit codes are a contract the skill depends on:
-
-    - **0** — created; stdout carries the read-back.
-    - **2** — refused *before* anything was created; stdout is empty.
-    - **3** — the issue exists but its metadata is incomplete; stdout carries
-      the number so the caller repairs it instead of creating a second one.
-    - **4** — the create request failed without saying whether the issue exists.
-      Neither 2 nor 3 can be claimed: there is nothing to repair and nothing is
-      safe to retry blind.
+    Returns ``OK``, ``REFUSED``, ``INCOMPLETE`` or ``UNKNOWN`` — a contract the
+    skill depends on; what each means for this command is in
+    ``skills/_shared/references/exit-codes.md``. ``UNKNOWN`` exists because a
+    failed create request does not say whether the issue exists: neither
+    ``REFUSED`` nor ``INCOMPLETE`` can be claimed, as there is nothing to repair
+    and nothing is safe to retry blind.
 
     Everything that can be checked without writing is checked first, including
-    every option name, so a typo in the config is a 2 rather than an issue that
-    can never be created cleanly. Everything after the create is inside the
-    exit-3 guarantee — including the read-back, which is the call most likely to
-    fail, since it runs last and GitHub can legitimately 404 an issue it has
-    just created.
+    every option name, so a typo in the config is ``REFUSED`` rather than an
+    issue that can never be created cleanly. Everything after the create is
+    inside the ``INCOMPLETE`` guarantee — including the read-back, which is the
+    call most likely to fail, since it runs last and GitHub can legitimately 404
+    an issue it has just created.
 
     "Checked without writing" includes reading the project's field options, and
     that read is a precondition rather than a step of joining the board: it is
     what tells a label apart from a field value. A board that cannot be read is
-    therefore a 2, not a create judged against an empty option set — the empty
-    set is exactly what let ``--label P1`` through.
+    therefore ``REFUSED``, not a create judged against an empty option set — the
+    empty set is exactly what let ``--label P1`` through.
     """
     config = args.github
     owner, repo = config["owner"], config["repo"]
@@ -1333,7 +1331,7 @@ def _create_issue_handler(args) -> int:
     )
     if violations:
         print_error("\n".join(violations))
-        return 2
+        return ExitCode.REFUSED
     # Worked out now, not after the create: past that point nothing may raise.
     requested_labels = _canonical_labels(labels, config["allowed_labels"])
 
@@ -1346,7 +1344,7 @@ def _create_issue_handler(args) -> int:
             f"could not read the issue types of {owner}/{repo}; refusing to create an "
             f"issue whose type cannot be verified"
         )
-        return 2
+        return ExitCode.REFUSED
 
     # Read the board whenever one is configured *and* the read can change an
     # outcome — there are labels to judge, or this issue is joining the board.
@@ -1368,7 +1366,7 @@ def _create_issue_handler(args) -> int:
                 f"refusing to create an issue whose labels cannot be checked "
                 f"against them"
             )
-            return 2
+            return ExitCode.REFUSED
         # Status options join the derivation: `in-progress` as a label is the
         # same drift as `P1` as a label, and it is the one the skills used to
         # instruct directly.
@@ -1380,7 +1378,7 @@ def _create_issue_handler(args) -> int:
     )
     if violations:
         print_error("\n".join(violations))
-        return 2
+        return ExitCode.REFUSED
 
     issue_type = args.type
     if issue_type:
@@ -1390,7 +1388,7 @@ def _create_issue_handler(args) -> int:
                 f"issue type {issue_type!r} is not defined on {owner}/{repo}; "
                 f"available: {', '.join(type_names) or '(none)'}"
             )
-            return 2
+            return ExitCode.REFUSED
         issue_type = match
 
     # Resolve every option name now. These are all knowable before the write,
@@ -1418,13 +1416,13 @@ def _create_issue_handler(args) -> int:
                     pending.append((field.id, option_id))
         except (FieldNotFoundError, OptionNotFoundError) as exc:
             print_error(str(exc))
-            return 2
+            return ExitCode.REFUSED
 
     try:
         body = _resolve_body(args.body_file)
     except (OSError, UnicodeDecodeError) as exc:
         print_error(f"--body-file could not be read: {exc}")
-        return 2
+        return ExitCode.REFUSED
 
     try:
         created = create_issue(
@@ -1445,7 +1443,7 @@ def _create_issue_handler(args) -> int:
             f"Do not retry blind: search {owner}/{repo} for an issue titled "
             f"{args.title!r} first."
         )
-        return 4
+        return ExitCode.UNKNOWN
 
     # ── Past this point the issue exists. Nothing below may raise. ────────────
     # The board's spelling where there was a board to ask, the caller's where
@@ -1465,7 +1463,7 @@ def _create_issue_handler(args) -> int:
     elif project_number is None:
         notes.append("no project configured for this repo; no project field was set")
 
-    def _fail(exc: Exception) -> int:
+    def _fail(exc: Exception) -> ExitCode:
         print_error(
             f"the issue was created but its metadata is not complete: {exc}\n"
             f"Do not create it again. Repair it in place:\n"
@@ -1481,7 +1479,7 @@ def _create_issue_handler(args) -> int:
                 "error": str(exc),
             }
         )
-        return 3
+        return ExitCode.INCOMPLETE
 
     try:
         if board is not None:
@@ -1525,10 +1523,15 @@ def _create_issue_handler(args) -> int:
             "drift": drift + notes,
         }
     )
-    return 0
+    return ExitCode.OK
 
 
-def _get_issue_handler(args) -> int:
+def _get_issue_handler(args) -> ExitCode:
+    """Print one issue's metadata.
+
+    Returns ``OK`` or ``REFUSED`` (the issue or its metadata could not be read);
+    see ``skills/_shared/references/exit-codes.md``.
+    """
     config = args.github
     try:
         meta = read_issue_meta(
@@ -1541,12 +1544,12 @@ def _get_issue_handler(args) -> int:
         )
     except (GhError, LookupError) as exc:
         print_error(str(exc))
-        return 2
+        return ExitCode.REFUSED
     print_json(meta)
-    return 0
+    return ExitCode.OK
 
 
-def _set_fields_handler(args) -> int:
+def _set_fields_handler(args) -> ExitCode:
     """Repair an existing issue's metadata. Never writes Status.
 
     Status belongs to the project's own automation once an item exists; a repair
@@ -1554,12 +1557,13 @@ def _set_fields_handler(args) -> int:
     touch. The before/after values are reported so the caller can see what the
     automation did with the item this command may have just added.
 
-    This is the command ``create-issue`` sends its callers to on exit 3, so it
-    carries the same contract: everything resolvable is resolved before the
-    first write (the type included — resolving it after the PATCH would let a
-    bad ``--priority`` leave a changed type behind and still report "nothing
-    happened"), and a failure after the first write exits 3 rather than
-    pretending nothing was applied.
+    This is the command ``create-issue`` sends its callers to on
+    ``INCOMPLETE``, so it carries the same contract: everything resolvable is
+    resolved before the first write (the type included — resolving it after the
+    PATCH would let a bad ``--priority`` leave a changed type behind and still
+    report "nothing happened"), so a refusal before it is ``REFUSED``, and a
+    failure after the first write is ``INCOMPLETE`` rather than pretending
+    nothing was applied. See ``skills/_shared/references/exit-codes.md``.
     """
     config = args.github
     owner, repo = config["owner"], config["repo"]
@@ -1578,7 +1582,7 @@ def _set_fields_handler(args) -> int:
         )
     except (GhError, LookupError) as exc:
         print_error(str(exc))
-        return 2
+        return ExitCode.REFUSED
 
     requested: dict[str, object] = {}
     notes: list[str] = []
@@ -1591,7 +1595,7 @@ def _set_fields_handler(args) -> int:
         type_names = repo_issue_type_names(owner, repo)
         if type_names is None:
             print_error(f"could not read the issue types of {owner}/{repo}")
-            return 2
+            return ExitCode.REFUSED
         issue_type = next(
             (t for t in type_names if _normalize(t) == _normalize(args.type)), None
         )
@@ -1600,7 +1604,7 @@ def _set_fields_handler(args) -> int:
                 f"issue type {args.type!r} is not defined on {owner}/{repo}; "
                 f"available: {', '.join(type_names) or '(none)'}"
             )
-            return 2
+            return ExitCode.REFUSED
 
     wanted = {slot: value for slot, value in
               (("priority", args.priority), ("size", args.size)) if value}
@@ -1622,10 +1626,10 @@ def _set_fields_handler(args) -> int:
                     pending.append((field.id, option_id))
             except (GhError, FieldNotFoundError, OptionNotFoundError, KeyError) as exc:
                 print_error(str(exc))
-                return 2
+                return ExitCode.REFUSED
 
     # ── First write below this line. ─────────────────────────────────────────
-    def _fail(exc: Exception, applied: list[str]) -> int:
+    def _fail(exc: Exception, applied: list[str]) -> ExitCode:
         print_error(
             f"#{args.number} was partially updated ({', '.join(applied) or 'nothing'} "
             f"applied) and then failed: {exc}"
@@ -1640,7 +1644,7 @@ def _set_fields_handler(args) -> int:
                 "error": str(exc),
             }
         )
-        return 3
+        return ExitCode.INCOMPLETE
 
     applied: list[str] = []
     try:
@@ -1690,34 +1694,37 @@ def _set_fields_handler(args) -> int:
             "drift": _mismatches(requested, observed) + notes,
         }
     )
-    return 0
+    return ExitCode.OK
 
 
-def _audit_fields_handler(args) -> int:
+def _audit_fields_handler(args) -> ExitCode:
     """List metadata drift across the repository's issues. Reads only.
 
     Degrades one axis at a time: an axis that cannot be read drops out of the
     judgement and is named in ``warnings``, so a half audit never reads as a
     clean bill of health. The issue list is the exception — with no issues read
-    there is nothing to degrade *to*, so that one is a 2.
+    there is nothing to degrade *to*, so that one is ``REFUSED`` with an empty
+    stdout.
 
-    The exit code says whether the judgement is **complete**; the JSON says what
-    it found. So drift alone is still 0, and a degraded run is 3 even when it
-    found nothing — "no drift on the axes that could be read" is not "no drift":
+    The JSON says what the audit found, and is the same with or without
+    ``--fail-on-drift``. The exit code says whether the judgement is complete —
+    ``INCOMPLETE`` when an axis could not be read, even when nothing was found,
+    because "no drift on the axes that could be read" is not "no drift" — and,
+    only with ``--fail-on-drift``, whether it found drift: ``FINDINGS``. Without
+    the flag drift alone is ``OK``. What each member means here is in
+    ``skills/_shared/references/exit-codes.md``.
 
-    - **0** — every axis was read; stdout carries the findings, drift or not.
-    - **2** — the issue list could not be read, on any page, or an element of
-      it is not an issue object; stdout is empty.
-    - **3** — an axis could not be read; stdout still carries the audit of the
-      axes that could, and ``warnings`` names the ones that were not. Unlike
-      ``create-issue``'s 3 this is not a repair instruction: nothing was
-      written, and the fix is whatever stopped the read.
+    ``INCOMPLETE`` rather than ``OK`` because ``warnings`` is a field nobody
+    reads. #19 made ``create-issue`` refuse a board it could not read, instead of
+    creating the issue and naming the gap in ``drift``, on exactly that
+    observation: callers branch on the exit code. A gate that checks
+    ``with_drift`` turned green here over a read that never happened. Unlike
+    ``create-issue``'s ``INCOMPLETE`` it is not a repair instruction: nothing
+    was written, and the fix is whatever stopped the read.
 
-    A 3 rather than a 0 because ``warnings`` is a field nobody reads. #19 made
-    ``create-issue`` refuse a board it could not read, instead of creating the
-    issue and naming the gap in ``drift``, on exactly that observation: callers
-    branch on the exit code. A gate that checks ``with_drift`` turned green here
-    over a read that never happened.
+    ``FINDINGS`` wins over ``INCOMPLETE`` when both hold: a CI that tolerates an
+    incomplete audit (a token short of a scope) must not see a drift that was
+    found turn green. ``warnings`` still names what was not read.
     """
     config = args.github
     slots = _field_slots(config["field_names"])
@@ -1768,7 +1775,7 @@ def _audit_fields_handler(args) -> int:
         for warning in warnings:
             print_error(warning)
         print_error(f"could not list the issues of {owner}/{repo}: {exc}")
-        return 2
+        return ExitCode.REFUSED
     findings = []
     for meta in issues:
         drift = field_drift(meta, option_names=option_names, type_names=type_names)
@@ -1782,7 +1789,9 @@ def _audit_fields_handler(args) -> int:
             "issues": findings,
         }
     )
-    return 3 if warnings else 0
+    if args.fail_on_drift and findings:
+        return ExitCode.FINDINGS
+    return ExitCode.INCOMPLETE if warnings else ExitCode.OK
 
 
 def register_github_commands(
@@ -1862,4 +1871,9 @@ def register_github_commands(
     audit = sub.add_parser("audit-fields", help="List issues whose metadata drifted (read-only)")
     audit.add_argument("--state", choices=("open", "all"), default="open")
     audit.add_argument("--limit", type=int)
+    audit.add_argument(
+        "--fail-on-drift",
+        action="store_true",
+        help="exit FINDINGS (6) when any issue drifted; see skills/_shared/references/exit-codes.md",
+    )
     audit.set_defaults(func=_audit_fields_handler, github=config, _parser=audit)

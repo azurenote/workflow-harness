@@ -27,6 +27,7 @@ from harness_core.cli import (
     dispatch,
     subparsers,
 )
+from harness_core.exitcodes import ExitCode
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "skills"
@@ -238,14 +239,13 @@ def main_root(tmp_path, monkeypatch):
 
 def test_rename_plan_empty_path_leaves_main_worktree_alone(main_root, tmp_path, capsys):
     # #32: "" re-rooted to the main worktree root, which was then renamed to
-    # ../plan-25.md with rc 0.
-    from harness_core.local import InvalidPlanFileError
-
-    with pytest.raises(InvalidPlanFileError, match=r"reject \(exists\)"):
-        dispatch(build_core_parser(), ["rename-plan", "", "25"])
+    # ../plan-25.md with rc 0. Now a refusal: one line, REFUSED, nothing moved.
+    assert dispatch(build_core_parser(), ["rename-plan", "", "25"]) == ExitCode.REFUSED
     assert main_root.is_dir()
     assert not (tmp_path / "plan-25.md").exists()
-    assert capsys.readouterr().out == ""
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("Error: reject (exists)") and err.count("\n") == 1
 
 
 def test_rename_plan_accepts_ticket_key(main_root, capsys):
@@ -279,10 +279,13 @@ def test_plan_file_accepts_ticket_key(main_root, capsys):
     assert capsys.readouterr().out.strip() == str(plan)
 
 
-def test_plan_file_missing_is_not_a_usage_error(main_root):
-    # rc 1 (an exception), distinct from the rc 2 a bad id gets.
-    with pytest.raises(FileNotFoundError):
-        dispatch(build_core_parser(), ["plan-file", "999"])
+def test_plan_file_missing_is_refused_in_one_line(main_root, capsys):
+    # A missing plan used to crash (traceback, rc 1). It is a precondition the
+    # caller can fix, so it is REFUSED like a bad id — the stderr line tells the two apart.
+    assert dispatch(build_core_parser(), ["plan-file", "999"]) == ExitCode.REFUSED
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("Error: Plan file not found:") and err.count("\n") == 1
 
 
 class TestCleanUpBaseInjection:
@@ -338,3 +341,96 @@ class TestCleanUpBaseInjection:
         capsys.readouterr()
 
         assert seen == [["develop"], ["master"]]
+
+
+class TestCoreRefusals:
+    """Known preconditions refuse with one stderr line; everything else still crashes.
+
+    The refusals are named per command. Catching wider — ``FileNotFoundError``,
+    ``OSError``, ``Exception`` — would turn a missing ``git`` or a plain bug into
+    a polite ``REFUSED``, and the ``still crashes`` rows below would go quiet.
+    """
+
+    @staticmethod
+    def _one_line(capsys) -> str:
+        out, err = capsys.readouterr()
+        assert out == "", out
+        assert err.startswith("Error: ") and err.count("\n") == 1, err
+        return err
+
+    def test_no_draft(self, main_root, capsys) -> None:
+        assert dispatch(build_core_parser(), ["find-draft-plan"]) == ExitCode.REFUSED
+        self._one_line(capsys)
+
+    def test_several_drafts_fold_into_one_line(self, main_root, capsys) -> None:
+        for name in ("plan-draft-a.md", "plan-draft-b.md"):
+            (main_root / ".task" / "plan" / name).write_text("# Plan: x")
+        assert dispatch(build_core_parser(), ["find-draft-plan"]) == ExitCode.REFUSED
+        err = self._one_line(capsys)
+        assert "plan-draft-a.md" in err and "plan-draft-b.md" in err
+
+    def test_rename_onto_an_existing_plan(self, main_root, capsys) -> None:
+        plans = main_root / ".task" / "plan"
+        (plans / "plan-draft-x.md").write_text("# Plan: x")
+        (plans / "plan-7.md").write_text("# Plan: y")
+        assert dispatch(build_core_parser(), ["rename-plan", str(plans / "plan-draft-x.md"), "7"]) == ExitCode.REFUSED
+        self._one_line(capsys)
+        assert (plans / "plan-draft-x.md").read_text() == "# Plan: x"
+        assert (plans / "plan-7.md").read_text() == "# Plan: y"
+
+    @pytest.mark.parametrize("argv", [["plan-file", "7"], ["get-base", "7"], ["find-draft-plan"],
+                                      ["rename-plan", "x", "7"], ["clean-up"], ["create-worktree", "wt", "b"]])
+    def test_unresolved_main_checkout(self, monkeypatch, capsys, argv) -> None:
+        from harness_core import cli, git
+        from harness_core.git import MainWorktreeUnresolvedError
+
+        def unresolved():
+            raise MainWorktreeUnresolvedError("no main work tree (bare)")
+
+        monkeypatch.setattr(cli, "main_worktree_root", unresolved)
+        monkeypatch.setattr(git, "main_worktree_root", unresolved)
+        monkeypatch.setattr(cli, "clean_up_stale_branches",
+                            lambda bases=None, plan_dir=None: {"plan_dir": str(plan_dir)})
+        assert dispatch(build_core_parser(), argv) == ExitCode.REFUSED
+        assert "no main work tree" in self._one_line(capsys)
+
+    @pytest.mark.parametrize("error", [FileNotFoundError("no git"), OSError("disk"), RuntimeError("bug")])
+    def test_anything_else_still_crashes(self, main_root, monkeypatch, capsys, error) -> None:
+        from harness_core import cli
+
+        def boom(*_a, **_k):
+            raise error
+
+        monkeypatch.setattr(cli, "plan_file_for_issue", boom)
+        with pytest.raises(type(error)):
+            dispatch(build_core_parser(), ["plan-file", "7"])
+
+    def test_git_failure_still_crashes(self, monkeypatch) -> None:
+        from harness_core import cli
+        from harness_core.git import GitError
+
+        def fail(*_a, **_k):
+            raise GitError("git checkout -b x", "already exists")
+
+        monkeypatch.setattr(cli, "create_branch", fail)
+        with pytest.raises(GitError):
+            dispatch(build_core_parser(), ["create-branch", "x"])
+
+    def test_a_project_handler_is_not_wrapped(self) -> None:
+        from harness_core.local import PlanFileNotFoundError
+
+        parser = build_core_parser()
+
+        def project_command(_args):
+            raise PlanFileNotFoundError("the project's own")
+
+        subparsers(parser).add_parser("mine").set_defaults(func=project_command)
+        with pytest.raises(PlanFileNotFoundError):
+            dispatch(parser, ["mine"])
+
+    @pytest.mark.parametrize("nothing", [None, "", [], {}, 0])
+    def test_a_handler_that_returns_nothing_is_ok(self, nothing) -> None:
+        # Falsy, not just None: `sys.exit("")` would print and exit 1.
+        parser = build_core_parser()
+        subparsers(parser).add_parser("quiet").set_defaults(func=lambda _args: nothing)
+        assert dispatch(parser, ["quiet"]) == ExitCode.OK

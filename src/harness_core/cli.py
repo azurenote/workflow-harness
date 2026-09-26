@@ -10,23 +10,39 @@ The dependency direction is one-way: this module never imports a project
 module. Core commands reach every project through the library; project commands
 stay invisible to the core. See workflow-harness plan #477 (single-entrypoint
 inversion).
+
+Exit codes are :class:`~harness_core.exitcodes.ExitCode` members; what each core
+command means by them is in ``skills/_shared/references/exit-codes.md``. A core
+command refuses a precondition it knows — no plan, no draft or several, a draft
+that cannot be renamed, a main checkout git cannot name — with one line on
+stderr and ``REFUSED``. Any other exception is left to crash, so a bug still
+reads as one.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 from pathlib import Path
+from typing import Callable
 
 from .config import is_issue_id
+from .exitcodes import ExitCode
 from .git import (
+    MainWorktreeUnresolvedError,
     clean_up_stale_branches,
     create_branch,
     create_worktree,
     main_worktree_root,
     push_branch,
 )
-from .io import print_json
+from .io import print_error, print_json
 from .local import (
+    InvalidPlanFileError,
+    MultiplePlanFilesError,
+    NoPlanFileError,
+    PlanFileExistsError,
+    PlanFileNotFoundError,
     abs_under_main,
     find_draft_plan_file,
     parse_frontmatter,
@@ -81,8 +97,8 @@ class _GuardedSubparsers:
 def _issue_id(value: str) -> str:
     """argparse ``type=`` for an id that becomes part of a plan file name.
 
-    An issue number or a ticket key. A bad id is a usage error (rc 2), which a
-    caller can tell apart from a missing plan (FileNotFoundError, rc 1).
+    An issue number or a ticket key. A bad id is a usage error, which argparse
+    reports as ``REFUSED`` before any handler runs.
     """
     if not is_issue_id(value):
         raise argparse.ArgumentTypeError(
@@ -94,23 +110,23 @@ def _issue_id(value: str) -> str:
 # ── Core command handlers ────────────────────────────────────────────────────
 
 
-def _find_draft_plan(_args: argparse.Namespace) -> int:
+def _find_draft_plan(_args: argparse.Namespace) -> ExitCode:
     print(find_draft_plan_file(_plan_dir()))
-    return 0
+    return ExitCode.OK
 
 
-def _rename_plan(args: argparse.Namespace) -> int:
+def _rename_plan(args: argparse.Namespace) -> ExitCode:
     plan_path = abs_under_main(args.plan_path, root=main_worktree_root())
     print(rename_plan_to_issue(plan_path, args.issue_id, plan_dir=_plan_dir()))
-    return 0
+    return ExitCode.OK
 
 
-def _plan_file(args: argparse.Namespace) -> int:
+def _plan_file(args: argparse.Namespace) -> ExitCode:
     print(plan_file_for_issue(args.issue_id, _plan_dir()))
-    return 0
+    return ExitCode.OK
 
 
-def _get_base(args: argparse.Namespace) -> int:
+def _get_base(args: argparse.Namespace) -> ExitCode:
     plan_path = _plan_dir() / f"plan-{args.issue_number}.md"
     if plan_path.exists():
         frontmatter = parse_frontmatter(plan_path.read_text())
@@ -124,33 +140,56 @@ def _get_base(args: argparse.Namespace) -> int:
             "parent_issue": int(parent) if parent and parent.isdigit() else parent,
         }
     )
-    return 0
+    return ExitCode.OK
 
 
-def _create_branch(args: argparse.Namespace) -> int:
+def _create_branch(args: argparse.Namespace) -> ExitCode:
     print(create_branch(args.branch_name, base_ref=args.base_ref))
-    return 0
+    return ExitCode.OK
 
 
-def _create_worktree(args: argparse.Namespace) -> int:
+def _create_worktree(args: argparse.Namespace) -> ExitCode:
     print(create_worktree(args.path, args.branch_name, base_ref=args.base_ref))
-    return 0
+    return ExitCode.OK
 
 
-def _push_branch(args: argparse.Namespace) -> int:
+def _push_branch(args: argparse.Namespace) -> ExitCode:
     push_branch(args.branch_name)
     print_json({"branch": args.branch_name})
-    return 0
+    return ExitCode.OK
 
 
-def _clean_up(args: argparse.Namespace) -> int:
+def _clean_up(args: argparse.Namespace) -> ExitCode:
     print_json(
         clean_up_stale_branches(bases=args.clean_up_bases, plan_dir=_plan_dir())
     )
-    return 0
+    return ExitCode.OK
 
 
 # ── Registration ─────────────────────────────────────────────────────────────
+
+
+def _refusing(
+    handler: Callable[[argparse.Namespace], ExitCode], *refusals: type[BaseException]
+) -> Callable[[argparse.Namespace], ExitCode]:
+    """Report ``refusals`` as one stderr line and ``REFUSED``; let the rest crash.
+
+    Only the named classes: ``PlanFileNotFoundError`` rather than every
+    ``FileNotFoundError``, since a missing ``git`` raises that too and is a
+    crash, not a refusal. ``_refusals`` tells the exit-code test which
+    commands can refuse this way.
+    """
+
+    @functools.wraps(handler)
+    def run(args: argparse.Namespace) -> ExitCode:
+        try:
+            return handler(args)
+        except refusals as exc:
+            print_error("; ".join(line.strip() for line in str(exc).splitlines() if line.strip()))
+            return ExitCode.REFUSED
+
+    run._refusals = refusals  # type: ignore[attr-defined]
+    return run
 
 
 def register_core(
@@ -163,22 +202,28 @@ def register_core(
     read each other's value.
     """
     find = sub.add_parser("find-draft-plan", help="Find the unique draft plan file")
-    find.set_defaults(func=_find_draft_plan)
+    find.set_defaults(func=_refusing(
+        _find_draft_plan, NoPlanFileError, MultiplePlanFilesError, MainWorktreeUnresolvedError
+    ))
 
     rename = sub.add_parser("rename-plan", help="Rename a draft plan to plan-<issue>.md")
     rename.add_argument("plan_path", type=Path)
     rename.add_argument("issue_id", type=_issue_id)
-    rename.set_defaults(func=_rename_plan)
+    rename.set_defaults(func=_refusing(
+        _rename_plan, InvalidPlanFileError, PlanFileExistsError, MainWorktreeUnresolvedError
+    ))
 
     plan_file = sub.add_parser("plan-file", help="Print the path to plan-<issue>.md")
     plan_file.add_argument("issue_id", type=_issue_id)
-    plan_file.set_defaults(func=_plan_file)
+    plan_file.set_defaults(
+        func=_refusing(_plan_file, PlanFileNotFoundError, MainWorktreeUnresolvedError)
+    )
 
     get_base = sub.add_parser(
         "get-base", help="Print base_branch/parent_issue from plan frontmatter"
     )
     get_base.add_argument("issue_number", type=int)
-    get_base.set_defaults(func=_get_base)
+    get_base.set_defaults(func=_refusing(_get_base, MainWorktreeUnresolvedError))
 
     branch = sub.add_parser("create-branch", help="Create and checkout a branch")
     branch.add_argument("branch_name")
@@ -191,14 +236,16 @@ def register_core(
     worktree.add_argument("path")
     worktree.add_argument("branch_name")
     worktree.add_argument("--base-ref")
-    worktree.set_defaults(func=_create_worktree)
+    worktree.set_defaults(func=_refusing(_create_worktree, MainWorktreeUnresolvedError))
 
     push = sub.add_parser("push-branch", help="Push a branch to origin")
     push.add_argument("branch_name")
     push.set_defaults(func=_push_branch)
 
     clean = sub.add_parser("clean-up", help="Delete stale local branches and their worktrees")
-    clean.set_defaults(func=_clean_up, clean_up_bases=clean_up_bases)
+    clean.set_defaults(
+        func=_refusing(_clean_up, MainWorktreeUnresolvedError), clean_up_bases=clean_up_bases
+    )
 
 
 def build_core_parser(
@@ -234,9 +281,11 @@ def subparsers(parser: argparse.ArgumentParser) -> _GuardedSubparsers:
 def dispatch(parser: argparse.ArgumentParser, argv: list[str] | None = None) -> int:
     """Parse ``argv`` and invoke the selected handler.
 
-    Handlers set via ``set_defaults(func=...)`` may return an int exit code or
-    None (treated as 0), so project handlers that ``print`` and fall off the end
-    keep working unchanged.
+    Handlers set via ``set_defaults(func=...)`` may return an exit code or
+    anything falsy (treated as ``ExitCode.OK``), so project handlers that
+    ``print`` and fall off the end keep working unchanged. A project handler's
+    exception is not caught here: the refusals the core knows are handled per
+    core command.
     """
     args = parser.parse_args(argv)
-    return args.func(args) or 0
+    return args.func(args) or ExitCode.OK
