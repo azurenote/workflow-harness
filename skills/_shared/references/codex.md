@@ -20,8 +20,8 @@ $project-start <issue-id> [worktree] [adr]
 $project-done <issue-id> [adr]
 $project-adr <issue-id>
 $project-clean
-$project-iterate <task description> [worktree] [adr]
-$project-iterate <id> [worktree] [adr]
+$project-iterate <task description> [in-place] [adr]
+$project-iterate <id> [in-place] [adr]
 $project-release
 $project-release-doc <package> [<from>..<to>]
 $project-harness-init <target-project-root>

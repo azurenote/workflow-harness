@@ -2082,7 +2082,7 @@ def test_codex_reference_shows_the_plan_path_argument() -> None:
 
     assert "$project-issue [<plan-path>] [--issue <id>]" in lines
     assert "$project-issue [<plan-path>]" not in lines, "codex still shows project-issue without --issue"
-    assert "$project-iterate <id> [worktree] [adr]" in lines, "codex does not show the <id> re-entry"
+    assert "$project-iterate <id> [in-place] [adr]" in lines, "codex does not show the <id> re-entry"
 
 
 def test_skill_config_scopes_the_forgejo_write_contract() -> None:
@@ -3624,7 +3624,11 @@ def test_every_gitignore_write_in_the_skills_is_the_shared_check() -> None:
             snippets += len(spans)
             for i, line in enumerate(block):
                 writes = re.search(r">>\s*\S*\.gitignore|\btee\b[^|]*\.gitignore", line)
-                if ("check-ignore" in line or writes) and not any(
+                # Scoped to the plan directory: project-iterate's warning-only
+                # `.claude/worktrees/` check (#42) asks git about another path
+                # and writes nothing, so it is not a copy of this snippet.
+                plan_check = "check-ignore" in line and "task/plan" in line
+                if (plan_check or writes) and not any(
                     s <= i <= e for s, e in spans
                 ):
                     offenders.append(f"{md.relative_to(ROOT)}: {line.strip()}")
@@ -3821,3 +3825,458 @@ def test_repo_gitignore_has_no_redundant_plan_entry(tmp_path: Path) -> None:
         cwd=ROOT, env={**_isolated_git_env(tmp_path), "GIT_CEILING_DIRECTORIES": ""},
     )
     assert result.returncode == 0, f"the repo's rules no longer cover .task/plan/ (exit {result.returncode})"
+
+
+# --------------------------------------------------------------------------
+# #42 — project-iterate branches in a worktree by default
+#
+# Several sessions share one repository, so a run that forgot `worktree`
+# moved the main checkout's branch under its neighbours — and under the
+# installed skills, which are symlinks into that checkout. The default is now
+# a worktree and `in-place` is the explicit opt-out; `worktree` stays as an
+# alias, because people and sessions still type it.
+#
+# A worktree default makes a session that stays in a linked worktree common,
+# so iterate also refuses to start Phases 1–3 anywhere but the main checkout,
+# refuses to branch while the main checkout sits off the default base, and on
+# re-entry continues where the branch is already checked out instead of
+# cutting a second checkout beside it.
+#
+# `project-start` keeps its in-place default (#43 owns that change); the
+# guard for it lives here because this is the change that could drift it.
+#
+# Two layers, as in the Forgejo block above. The golden tuples pin each
+# region this change wrote, fences included, line by line: a review showed
+# whole-line rule pins surviving a contradicting line added beside them, a
+# lost `exit 1`, and an `exit 0` slipped in for one mode. The shape tests
+# say *why* a line matters and run what can be run. Editing one of these
+# rules means editing its tuple here — deliberately.
+#
+# `### Phase N:` headings are not the bold step headings `skill_section`
+# understands, so the Phase slicer is local.
+# --------------------------------------------------------------------------
+
+_G_USAGE = (
+    '```',
+    'project-iterate <task description> [in-place] [adr]',
+    'project-iterate <id> [in-place] [adr]',
+    '```',
+    '- `<task description>`: task description (required for a new run)',
+    '- `<id>`: an issue that already exists — re-entry, including an issue that has no plan yet (see below)',
+    '- `[in-place]`: branch in the main checkout itself; Phase 3 calls `project-start` without `worktree`',
+    '- `[adr]`: include ADR writing, passed to both start and done',
+    'Branching defaults to a worktree: unless `in-place` is given, Phase 3 calls `project-start <id> worktree`.',
+    'The `worktree` token is accepted as an alias of that default and changes nothing; when it is given, say in one line that a worktree is already the default.',
+    'Argument rules:',
+    '- The first token decides the form: an issue number or a Jira key is the `<id>` form, and a flag (`in-place`, `worktree`, `adr`) as the first token is an error — stop and show the correct order.',
+    '- The `<id>` form is the id followed only by flags; if any other token follows the id, stop and ask whether this is a new run or a re-entry.',
+    '- A flag counts only as a standalone token at the end of `$ARGUMENTS`, in exact lowercase, in any order among the trailing tokens; the same word in the middle of the description is part of the description.',
+    '- A trailing token that is a near spelling of a flag (`--in-place`, `inplace`, `In-place`, `--worktree`) is not guessed — ask the user which was meant.',
+    '- `in-place` and `worktree` together are a conflict — stop and have the user pick one.',
+)
+
+_G_REENTRY = (
+    '"Start" 상태에서는 Phase 4 를 브랜치가 이미 체크아웃된 자리에서 잇는다. 그 자리는 아래 순서로 정한다.',
+    '1. 로컬 브랜치만 접두 표지 없이 나열한다:',
+    '```bash',
+    'git branch --list "*issue-<id>-*" "*/<id>-*" --format=\'%(refname:lstrip=2)\'',
+    '```',
+    '- 로컬 0개(원격에만 있음): 멈추고 두 선택지를 명령과 함께 보인다 — 제자리 `git checkout <branch>`, 또는 워크트리 `git worktree add "<main checkout>/.claude/worktrees/<project>-issue-<id>" <branch>`. 어느 쪽도 자동으로 실행하지 않는다.',
+    '- 로컬 2개 이상: 멈추고 보고한다.',
+    '- 로컬 1개: 그 브랜치로 2를 잇는다.',
+    '2. `git worktree list --porcelain` 레코드에서 그 브랜치가 체크아웃된 자리를 찾는다. `detached` 레코드는 그 브랜치를 rebase 하는 중일 때만 그 브랜치의 자리로 본다:',
+    '```bash',
+    "git worktree list --porcelain | python3 -c '",
+    'import os, subprocess, sys',
+    'branch, standard = "refs/heads/" + sys.argv[1], sys.argv[2]',
+    'records = [dict((l.split(" ", 1) + [""])[:2] for l in r.splitlines())',
+    'for r in sys.stdin.read().strip().split("\\n\\n")]',
+    'def rebasing(path):',
+    'for name in ("rebase-merge/head-name", "rebase-apply/head-name"):',
+    'rel = subprocess.run(["git", "-C", path, "rev-parse", "--git-path", name],',
+    'capture_output=True, text=True).stdout.strip()',
+    'head = os.path.join(path, rel) if rel else ""',
+    'if head and os.path.isfile(head) and open(head).read().strip() == branch:',
+    'return True',
+    'return False',
+    'hit = [(i, r) for i, r in enumerate(records) if r.get("branch") == branch]',
+    'stuck = [r for r in records if "detached" in r',
+    'and (r["worktree"].endswith(standard) or rebasing(r["worktree"]))]',
+    'if hit:',
+    'i, r = hit[0]',
+    'state = "prunable" if "prunable" in r else "missing" if not os.path.isdir(r["worktree"]) \\',
+    'else "main" if i == 0 else "linked"',
+    'print(state, r["worktree"])',
+    'elif stuck:',
+    'print("detached", stuck[0]["worktree"])',
+    'else:',
+    'print("none")',
+    "' '<branch>' '/.claude/worktrees/<project>-issue-<id>'",
+    '```',
+    '- `main`: main checkout 에서 Phase 4 를 돈다.',
+    '- `linked`: 이 워크트리를 다른 세션이 쓰고 있을 수 있다고 먼저 알리고, 그 경로를 CWD 로 Phase 4 를 돈다.',
+    '- `prunable`: 멈춘다. 디렉터리를 옮겼으면 `git worktree repair <새 경로>` 를, 지웠으면 `git worktree prune` 을 안내한다 — 이 상태에서는 checkout 도 워크트리 추가도 실패한다.',
+    '- `missing`: 잠긴(locked) 워크트리의 디렉터리가 없다. 멈추고 `git worktree repair <새 경로>` 를 안내한다.',
+    '- `detached`: 그 브랜치를 rebase 하는 중인 checkout(main checkout 포함)이거나, 표준 경로의 워크트리가 rebase·bisect 같은 작업 중이다. 멈추고 보고한다.',
+    '- `none`: 어디에도 체크아웃돼 있지 않다. 1의 로컬 0개와 같이 두 선택지를 보이고 멈춘다.',
+    '3. 이 경로에서는 브랜치도 워크트리도 새로 만들지 않고, 분기 방식 플래그도 쓰지 않는다. 적용 중인 분기 방식(플래그가 없으면 기본값인 워크트리)이 기존 자리와 다르면 기존 자리를 따른다고 알린다.',
+    '"Issue" 상태의 Phase 3 은 새 실행과 같은 인자 규칙과 Phase 3 사전 확인을 따른다.',
+)
+
+_G_INSTRUCTIONS_HEAD = (
+    'This skill calls four global skills in sequence.',
+    "For each phase's detailed procedure, follow that skill document (`~/.claude/skills/<name>/SKILL.md`).",
+    '**Main checkout first.**',
+    'Once the re-entry state is known, check the CWD before any phase runs.',
+    'Phases 1, 2 and 3 run from the main checkout — a new run, and re-entry in the "Issue" or "Issue only" state; from any other CWD, stop and print the main checkout path.',
+    'Re-entry in the "Start" state is exempt: Phase 4 runs where the branch is already checked out (`## Re-entry After Interruption`).',
+    'The main checkout is the first entry of `git worktree list --porcelain`. Run this fence as one shell call — shell variables do not survive to the next call:',
+    '```bash',
+    'MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {',
+    'echo "not the main checkout — rerun from: $MAIN_CHECKOUT"; exit 1; }',
+    '```',
+    '---',
+)
+
+_G_PHASE3 = (
+    '1. Before calling `project-start`, run these checks from the main checkout. Run each fence below as one shell call; `could not resolve the main checkout` from either fence means stop and report.',
+    '- If Phase 1 was skipped ("Issue" re-entry), show the parsed flags before any check or branch — branch mode `worktree` (default) or `in-place`, and whether `adr` is set.',
+    "- Read the plan's base the way `project-start` Step 1-B does: `<harness_cli> get-base <id>`, or without a harness_cli the leading `base_branch:` line of the plan's frontmatter in the main worktree.",
+    '- If the plan declares no base, or declares the project default base, the main checkout must be on the project default base; if it is not, stop and report.',
+    "- This base check holds in both modes: a branch cut while another session's in-place run has left the main checkout on a feature branch would stack on that feature. Stacking on purpose is what plan frontmatter `base_branch` is for.",
+    '- A declared base other than the project default base skips this base check only; `project-start` then branches from that base. Fill `<project default base>` below with the `base_branch` that Read Settings found in `skill-config.yaml`.',
+    '```bash',
+    'MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    'CURRENT="$(git -C "$MAIN_CHECKOUT" branch --show-current)"',
+    '[ "$CURRENT" = "<project default base>" ] || {',
+    'echo "main checkout is on \'${CURRENT:-a detached HEAD}\', not <project default base>"; exit 1; }',
+    '```',
+    '- In worktree mode, check that the main checkout ignores `.claude/worktrees/`, whether or not the base check was skipped. The trailing slash is required: without it a directory-only pattern does not match.',
+    '- Read the printed `check-ignore rc=<n>` line. `rc=0`: nothing to say.',
+    '- `rc=1`: warn in one line and continue — an unignored worktree directory can be staged as a gitlink by `git add -A` in an in-place run; the line to add is `.claude/worktrees/` in `.gitignore` or `.git/info/exclude`.',
+    '- Any other `rc=`: warn that ignoring could not be decided, and continue.',
+    '- This check writes to no file and is not a gate.',
+    '```bash',
+    'MAIN_CHECKOUT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    'git -C "$MAIN_CHECKOUT" check-ignore -q .claude/worktrees/',
+    'echo "check-ignore rc=$?"',
+    '```',
+    '2. Run the `start` skill procedure with the issue ID from Phase 2:',
+    '- by default, or with `worktree`: call `project-start <id> worktree [adr]`, and run Phase 4 with the new worktree as the CWD',
+    '- with `in-place`: call `project-start <id> [adr]`, which branches in the main checkout',
+    '- pass the `adr` argument when applicable, to write an ADR before implementation',
+    '- read the Intent Summary and Drift Guards',
+    '- print the Task Cards checklist and start implementation',
+    '- review the implementation according to `Review Profile` policy',
+    '3. **User confirmation**: show the implementation result summary and get approval.',
+    '- If changes are requested, apply them and confirm again.',
+    '- On approval, continue to Phase 4.',
+    '---',
+)
+
+_G_PRESERVED = (
+    'To resume after interruption, call the relevant skill directly:',
+    '- From Phase 2: `project-issue <plan-path>`, or `project-issue <plan-path> --issue <id>` when the issue already exists. Always name the path: discovery without it can pick up a draft that belongs to other work.',
+    '- From Phase 3: `project-start <id> worktree`, or `project-start <id>` for a run that was `in-place` — either one called from the main checkout. `project-iterate <id>` resumes the same point through the "Issue" state and also runs the Phase 3 checks.',
+    '- From Phase 4: `project-done <id>`',
+)
+
+_G_START_2B = (
+    '**2-B. Worktree mode (when `worktree` argument is present)**',
+    '```bash',
+    '# When base is declared',
+    '<harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>" --base-ref "<base_branch>"',
+    '# When base is undeclared (default)',
+    '<harness_cli> create-worktree ".claude/worktrees/<project>-issue-<id>" "<branch-name>"',
+    '# fallback: git worktree add [--no-track] ".claude/worktrees/<project>-issue-<id>" -b "<branch-name>" ["<base_branch | origin/base_branch>"]',
+    '```',
+    'After this, perform all work inside `$WORKTREE_PATH`.',
+)
+
+_G_ADR_STEP1 = (
+    '**1. Decide ADR Content**',
+    'Find the plan in the main worktree: `.task/plan/` is gitignored and exists only there, so a path relative to the CWD finds no plan when this step runs in a linked worktree, as it does under `project-start <issue-id> worktree adr`.',
+    '```bash',
+    '<harness_cli> plan-file <issue-id>',
+    '# fallback, for a project without a harness_cli:',
+    "python -c '",
+    'import re, sys',
+    'from harness_core.git import main_worktree_root',
+    'if not re.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", sys.argv[1]):',
+    'sys.exit("reject (id): not an issue number or ticket key: %r" % sys.argv[1])',
+    'plan = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])',
+    'sys.exit(0 if plan.is_file() else "no plan: %s" % plan)',
+    "' '<issue-id>'",
+    '```',
+    'The fallback prints nothing on success; the plan it checked is `plan-<issue-id>.md` in `.task/plan/` under the root that `main_worktree_root()` returns, not under the CWD.',
+    "Read the `plan-<issue-id>.md` that this check found in the main worktree's plan directory, and the current branch diff, to identify the architecture decision that should be documented.",
+    'If the plan is missing, stop and report it.',
+    'If the decision title is ambiguous, confirm it with the user.',
+)
+
+
+import shlex
+import subprocess
+
+_ITERATE_USAGE = (
+    "project-iterate <task description> [in-place] [adr]",
+    "project-iterate <id> [in-place] [adr]",
+)
+
+_MAIN_RESOLVE = (
+    "MAIN_CHECKOUT=\"$(git worktree list --porcelain | sed -n '1s/^worktree //p')\"",
+    '[ -n "$MAIN_CHECKOUT" ] && [ -d "$MAIN_CHECKOUT" ] || {',
+)
+
+_ITERATE_PHASE1_LINES = (
+    "1. Read `$ARGUMENTS` by the argument rules in `## Usage`: the task description is what "
+    "remains once the trailing flags are taken off.",
+    "- Show the parsed task description and the parsed flags on separate lines — branch mode "
+    "`worktree` (default) or `in-place`, and whether `adr` is set — so a misread argument is "
+    "corrected at approval.",
+)
+
+
+def _region(text: str, start: str, end: str, *, inclusive: bool = False) -> list[str]:
+    """Non-blank stripped lines from the one starting with `start` to the one starting with `end`."""
+    lines = text.splitlines()
+    first = [i for i, l in enumerate(lines) if l.startswith(start)]
+    assert len(first) == 1, f"expected one line starting {start!r}, found {len(first)}"
+    last = [i for i, l in enumerate(lines) if l.startswith(end) and i > first[0]]
+    assert last, f"no {end!r} after {start!r}"
+    return [l.strip() for l in lines[first[0] + (0 if inclusive else 1):last[0]] if l.strip()]
+
+
+def _iterate_phase(text: str, number: int) -> str:
+    """`### Phase N:` up to the next Phase heading or `## ` section, fences included."""
+    out: list[str] = []
+    for line, in_fence in _outside_fences(text):
+        heading = not in_fence and (line.startswith("### Phase ") or line.startswith("## "))
+        if heading and out:
+            break
+        if heading and line.startswith(f"### Phase {number}:"):
+            out.append(line)
+            continue
+        if out:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _golden_fences(lines: list[str]) -> list[list[str]]:
+    """Each fenced block's body lines, in order."""
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in lines:
+        if line.startswith("```"):
+            if current is None:
+                current = []
+            else:
+                blocks.append(current)
+                current = None
+        elif current is not None:
+            current.append(line)
+    return blocks
+
+
+def _reentry_parser() -> str:
+    """The parser body as written, indentation intact — `_region` strips it."""
+    raw = _iterate_skill()
+    start = raw.index("python3 -c '\n") + len("python3 -c '\n")
+    return raw[start:raw.index("\n' '<branch>'", start)]
+
+
+def test_iterate_regions_are_pinned_whole() -> None:
+    text = _iterate_skill()
+    for name, got, expected in (
+        ("## Usage", _region(text, "## Usage", "## Re-entry After Interruption"), _G_USAGE),
+        ("re-entry location rules", _region(
+            text, "- 브랜치/워크트리는 있는데 `plan-<id>.md` 가 없으면", "## Instructions"), _G_REENTRY),
+        ("## Instructions head", _region(text, "## Instructions", "### Phase 1:"), _G_INSTRUCTIONS_HEAD),
+        ("Phase 3", _region(text, "### Phase 3:", "### Phase 4:"), _G_PHASE3),
+    ):
+        assert tuple(got) == expected, f"project-iterate {name} changed"
+    lines = text.splitlines()
+    preserved = lines.index("To resume after interruption, call the relevant skill directly:")
+    assert tuple(l.strip() for l in lines[preserved:] if l.strip()) == _G_PRESERVED, (
+        "the Preserved State resume list changed"
+    )
+
+
+def test_iterate_mode_words_live_only_in_pinned_lines() -> None:
+    """A contradicting line elsewhere — "with no flag, branch in place" — is caught by vocabulary."""
+    text = _iterate_skill()
+    pinned = set(_G_USAGE + _G_REENTRY + _G_INSTRUCTIONS_HEAD + _G_PHASE3 + _G_PRESERVED
+                 + _ITERATE_PHASE1_LINES)
+    stray = [
+        l.strip() for l in text.splitlines()
+        if re.search(r"in-place|in place|`worktree`|flag|플래그", l, re.I) and l.strip() not in pinned
+    ]
+    assert not stray, "a branch-mode rule was stated outside the pinned lines:\n" + "\n".join(stray)
+
+
+def test_iterate_usage_defaults_to_a_worktree() -> None:
+    text = _iterate_skill()
+    usage = _golden_fences(list(_G_USAGE))
+    assert usage and tuple(usage[0]) == _ITERATE_USAGE
+    assert "[worktree]" not in text, "project-iterate still advertises [worktree]"
+    assert "(excluding `worktree` and `adr` keywords)" not in text, (
+        "the old keyword-anywhere extraction line is back"
+    )
+    alias = rule_line(text, "The `worktree` token")
+    assert "accepted" in alias and "say in one line" in alias, "the alias is no longer accepted and announced"
+    for marker in RETRACTION_MARKERS:
+        for line in _G_USAGE:
+            assert marker not in line.lower(), f"a Usage rule reads as retracted ({marker!r}): {line!r}"
+
+
+def test_iterate_phases_hold_their_own_lines() -> None:
+    text = _iterate_skill()
+    phase1 = _iterate_phase(text, 1)
+    assert phase1 and _iterate_phase(text, 4), "a Phase heading is no longer findable"
+    for line in _ITERATE_PHASE1_LINES:
+        assert_whole_line(phase1, line)
+    assert "pass the `worktree` argument when applicable" not in text
+
+    # Every check, and every line about it, comes before the call it protects.
+    handoff = _G_PHASE3.index("2. Run the `start` skill procedure with the issue ID from Phase 2:")
+    for i, line in enumerate(_G_PHASE3):
+        if "check-ignore" in line or "MAIN_CHECKOUT" in line or "base check" in line:
+            assert i < handoff, f"a Phase 3 check sits after project-start is called: {line}"
+
+
+def test_iterate_main_checkout_fences_resolve_and_stop() -> None:
+    text = _iterate_skill()
+    fences = _golden_fences(list(_G_INSTRUCTIONS_HEAD)) + _golden_fences(list(_G_PHASE3))
+    assert len(fences) == 3, "expected the precondition, base and ignore fences"
+    for fence in fences:
+        assert tuple(fence[:2]) == _MAIN_RESOLVE, f"the main checkout is resolved another way: {fence[:2]}"
+        assert not any("exit 0" in l for l in fence), f"a fence can pass early: {fence}"
+    precondition, base, ignore = fences
+    assert [l for l in precondition if "--show-toplevel" in l] == [
+        '[ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$MAIN_CHECKOUT" && pwd -P)" ] || {'
+    ], "--show-toplevel may only be the other side of the comparison"
+    assert precondition[-1].endswith("exit 1; }") and base[-1].endswith("exit 1; }"), "a gate no longer stops"
+    assert '[ "$CURRENT" = "<project default base>" ] || {' in base
+    for banned in ("--git-common-dir", "$PWD"):
+        assert banned not in text, f"the main checkout is derived from {banned}"
+
+
+def test_iterate_ignore_check_warns_from_the_main_checkout() -> None:
+    ignore = _golden_fences(list(_G_PHASE3))[-1]
+    calls = [shlex.split(l) for l in ignore if l.startswith("git") and "check-ignore" in l]
+    assert calls == [["git", "-C", "$MAIN_CHECKOUT", "check-ignore", "-q", ".claude/worktrees/"]], (
+        f"the ignore check lost its trailing slash or left the main checkout: {calls}"
+    )
+    for fence in _golden_fences(list(_G_PHASE3)):
+        body = "\n".join(fence)
+        for banned in (">>", "info/exclude", ".gitignore", "tee", "config"):
+            assert banned not in body, f"a Phase 3 check writes a file ({banned})"
+
+
+def test_iterate_reentry_record_parser_names_each_location(tmp_path: Path) -> None:
+    """Run the documented parser on porcelain records for every state it names."""
+    code = _reentry_parser()
+    main, wt = tmp_path / "r", tmp_path / "r" / ".claude" / "worktrees" / "p-issue-1"
+    wt.mkdir(parents=True)
+    rebasing = tmp_path / "rebasing"
+    subprocess.run(["git", "init", "-q", str(rebasing)], check=True)
+    (rebasing / ".git" / "rebase-merge").mkdir()
+    (rebasing / ".git" / "rebase-merge" / "head-name").write_text("refs/heads/feat/issue-1-x\n")
+
+    on_branch = f"worktree {main}\nHEAD aaa\nbranch refs/heads/feat/issue-1-x\n"
+    other = f"worktree {main}\nHEAD aaa\nbranch refs/heads/main\n"
+    linked = f"worktree {wt}\nHEAD bbb\nbranch refs/heads/feat/issue-1-x\n"
+    gone = f"worktree {tmp_path / 'moved'}\nHEAD bbb\nbranch refs/heads/feat/issue-1-x\nlocked\n"
+    cases = {
+        on_branch: f"main {main}",
+        other + "\n" + linked: f"linked {wt}",
+        other + "\n" + linked + "prunable gitdir file points to non-existent location\n": f"prunable {wt}",
+        other + "\n" + gone: f"missing {tmp_path / 'moved'}",
+        other + "\n" + f"worktree {wt}\nHEAD bbb\ndetached\n": f"detached {wt}",
+        other + "\n" + f"worktree {rebasing}\nHEAD ccc\ndetached\n": f"detached {rebasing}",
+        other + "\n" + f"worktree {tmp_path / 'elsewhere'}\nHEAD ccc\ndetached\n": "none",
+        other: "none",
+    }
+    for porcelain, expected in cases.items():
+        out = subprocess.run(
+            [sys.executable, "-c", code, "feat/issue-1-x", "/.claude/worktrees/p-issue-1"],
+            input=porcelain, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert out == expected, f"porcelain {porcelain!r} -> {out!r}, expected {expected!r}"
+
+
+def test_iterate_reentry_lists_local_branches_only() -> None:
+    fences = _golden_fences(list(_G_REENTRY))
+    assert len(fences) == 2, "expected the branch-list fence and the parser fence"
+    assert fences[0] == ["git branch --list \"*issue-<id>-*\" \"*/<id>-*\" --format='%(refname:lstrip=2)'"]
+    assert fences[1][0] == "git worktree list --porcelain | python3 -c '"
+    assert "grep" not in "\n".join(sum(fences, [])), "the location fence matches id prefixes again"
+
+
+def test_project_start_keeps_its_in_place_default() -> None:
+    text = _start_skill()
+    assert_whole_line(text, "project-start <issue-id> [worktree] [adr]")
+    assert_whole_line(text, "- `[worktree]`: git worktree mode")
+    assert_whole_line(text, "**2-A. Normal Branch (default)**")
+    assert_whole_line(text, (
+        "- If `base_branch` is `null` or equals the project default base, omit `--base-ref` and use "
+        "**existing behavior** (branch from current HEAD, assuming the task starts on the default base). "
+        "Do not add a new prompt."
+    ))
+    assert tuple(_region(text, "**2-B.", "**3.", inclusive=True)) == _G_START_2B, "project-start 2-B changed"
+    assert "in-place" not in text
+
+
+def test_project_adr_reads_the_plan_from_the_main_worktree() -> None:
+    text = read_skill("skills/project-adr/SKILL.md")
+    step1 = _region(text, "**1. Decide ADR Content**", "**2. Decide File Name**", inclusive=True)
+    assert tuple(step1) == _G_ADR_STEP1, "project-adr Step 1 changed"
+    assert not any(".task/plan/plan-<issue-id>.md" in l for l in step1), "a CWD-relative plan path is back"
+    assert _ID_PATTERN + "sys.argv[1])" in "\n".join(step1), "the plan lookup takes an unvalidated id"
+
+
+def test_project_adr_fallback_finds_the_plan_from_a_linked_worktree(tmp_path: Path) -> None:
+    """Run the documented fallback where it matters: in a linked worktree, plan only in main."""
+    raw = read_skill("skills/project-adr/SKILL.md")
+    start = raw.index("python -c '\n") + len("python -c '\n")
+    code = raw[start:raw.index("\n' '<issue-id>'", start)]
+
+    repo = tmp_path / "repo"
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(git + ["-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    linked = tmp_path / "linked"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(linked), "-b", "feat/issue-7-x"], check=True)
+
+    def run(issue: str) -> int:
+        return subprocess.run([sys.executable, "-c", code, issue], cwd=linked,
+                              capture_output=True, text=True).returncode
+
+    assert run("7") != 0, "the fallback found a plan that does not exist"
+    (repo / ".task" / "plan").mkdir(parents=True)
+    (repo / ".task" / "plan" / "plan-7.md").write_text("# Plan\n")
+    assert run("7") == 0, "the fallback does not see the main worktree's plan from a linked worktree"
+    assert run("../7") != 0, "the fallback accepts an id that is not an issue number"
+
+
+def test_codex_reference_shows_the_iterate_default() -> None:
+    lines = [l.strip() for l in read_skill(CODEX_REFERENCE).splitlines()]
+    for usage in _ITERATE_USAGE:
+        assert lines.count("$" + usage) == 1, f"codex does not show {usage!r}"
+    assert not [l for l in lines if l.startswith("$project-iterate") and "[worktree]" in l]
+    assert "$project-start <issue-id> [worktree] [adr]" in lines
+
+
+def test_readme_iterate_row_names_the_worktree_default() -> None:
+    assert_whole_line(read_skill("README.md"), (
+        "| `project-iterate` | plan → issue → start → done 을 한 번에 실행(단계 사이 사용자 확인). "
+        "기본은 워크트리에서 분기하고, `in-place` 를 붙이면 main checkout 에서 제자리 분기한다. "
+        "`project-iterate <id>` 는 기존 이슈에서 출발하며, 플랜이 없으면 이슈 본문으로 쓰고 연결 모드로 붙인다 |"
+    ))

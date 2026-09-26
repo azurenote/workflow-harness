@@ -42,7 +42,24 @@ Do not translate ADR output to English unless the user explicitly requests an En
 
 **1. Decide ADR Content**
 
-Read `.task/plan/plan-<issue-id>.md` and the current branch diff to identify the architecture decision that should be documented.
+Find the plan in the main worktree: `.task/plan/` is gitignored and exists only there, so a path relative to the CWD finds no plan when this step runs in a linked worktree, as it does under `project-start <issue-id> worktree adr`.
+
+```bash
+<harness_cli> plan-file <issue-id>
+# fallback, for a project without a harness_cli:
+python -c '
+import re, sys
+from harness_core.git import main_worktree_root
+if not re.fullmatch(r"[1-9][0-9]*|[A-Z][A-Z0-9_]*-[1-9][0-9]*", sys.argv[1]):
+    sys.exit("reject (id): not an issue number or ticket key: %r" % sys.argv[1])
+plan = main_worktree_root() / ".task" / "plan" / ("plan-%s.md" % sys.argv[1])
+sys.exit(0 if plan.is_file() else "no plan: %s" % plan)
+' '<issue-id>'
+```
+
+The fallback prints nothing on success; the plan it checked is `plan-<issue-id>.md` in `.task/plan/` under the root that `main_worktree_root()` returns, not under the CWD.
+Read the `plan-<issue-id>.md` that this check found in the main worktree's plan directory, and the current branch diff, to identify the architecture decision that should be documented.
+If the plan is missing, stop and report it.
 If the decision title is ambiguous, confirm it with the user.
 
 **2. Decide File Name**
