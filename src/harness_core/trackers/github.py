@@ -55,7 +55,12 @@ Run = Callable[..., str]
 
 
 class GhError(RuntimeError):
-    """A ``gh`` invocation exited non-zero.
+    """A ``gh`` invocation failed, or answered with something outside its contract.
+
+    Mostly a non-zero exit. :class:`GraphQLError` is the other half: ``gh``
+    answered, and the answer is not a usable result. Every handler catches this
+    one class for both, so a response nobody can use takes the same exit code as
+    a call that never returned.
 
     Carries the command and stderr so a handler can report *what* failed, which
     is the difference between "retry the fields" and "the issue was never made".
@@ -69,6 +74,27 @@ class GhError(RuntimeError):
         # whole mutation document plus every node ID, and this string is echoed
         # into the JSON that impl-reports and issue comments quote verbatim.
         super().__init__(f"gh {' '.join(self.argv[:2])} exited {returncode}: {self.stderr}")
+
+
+class GraphQLError(GhError):
+    """A GraphQL call came back, but not with a usable ``data`` object.
+
+    Real ``gh`` already exits 1 when a response carries ``errors``, so on the
+    default runner that case arrives as a plain :class:`GhError`. This is the
+    same judgement made where the response is read, so it holds whatever runs
+    the call — and it also covers what ``gh`` passes through with exit 0:
+    output that is not JSON, JSON that is not an object, no ``data``, and a
+    mutation that answered without the object it exists to return.
+
+    ``stderr`` holds the reason — the server's ``errors[].message`` where there
+    are any — because :meth:`ProjectFields.load` quotes that attribute. Only the
+    reason: the query and its variables are not assembled into it.
+    """
+
+    def __init__(self, argv: Sequence[str], reason: str) -> None:
+        super().__init__(argv, 0, reason)
+        # The inherited message says "exited 0", which reads as a success.
+        self.args = (f"gh {' '.join(self.argv[:2])} returned an unusable response: {self.stderr}",)
 
 
 class FieldNotFoundError(LookupError):
@@ -282,15 +308,66 @@ def _run(run: Run | None) -> Run:
 def _graphql(
     query: str, variables: Mapping[str, object], *, run: Run | None = None
 ) -> dict:
-    """Execute a GraphQL document and return its ``data`` object."""
+    """Execute a GraphQL document and return its ``data`` object.
+
+    Anything else is a :class:`GraphQLError`, including a response that carries
+    ``data`` *and* ``errors``. That partial answer is refused rather than used:
+    ``gh`` itself exits 1 on it, and accepting it here would make the outcome
+    depend on which runner made the call. Returning ``{}`` for a response that
+    could not be read — what this did — handed every caller a result that read
+    as "nothing there", and the failure surfaced frames later as an
+    ``AttributeError`` or ``KeyError`` that no handler catches.
+    """
     argv = ["api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
+        if isinstance(value, list):
+            # `key[]=item` is gh's array syntax, one flag per element; a list
+            # passed as `key=value` would arrive as the string "['OPEN']". An
+            # empty list has no spelling in that syntax — no flag at all is an
+            # omitted variable, which is `null`, not `[]` — so it is refused
+            # rather than silently sent as something else.
+            if not value:
+                raise ValueError(f"GraphQL variable {key!r}: an empty list cannot be sent")
+            # `-f` sends each element as a string; `True` would go out as the
+            # string "True". Only string lists (enum values) are used today.
+            if not all(isinstance(item, str) for item in value):
+                raise TypeError(f"GraphQL variable {key!r}: only lists of strings are supported")
+            for item in value:
+                argv += ["-f", f"{key}[]={item}"]
+            continue
         # -F types the value (ints stay ints); -f keeps a string a string, which
         # matters for node IDs that would otherwise be coerced.
         flag = "-F" if isinstance(value, (int, bool)) and not isinstance(value, str) else "-f"
         argv += [flag, f"{key}={value}"]
-    payload = json.loads(_run(run)(argv))
-    return payload.get("data") or {}
+    out = _run(run)(argv)
+    try:
+        payload = json.loads(out)
+    except ValueError as exc:
+        raise GraphQLError(argv, f"the output is not JSON ({exc})") from None
+    if not isinstance(payload, dict):
+        raise GraphQLError(argv, f"expected a JSON object, got {type(payload).__name__}")
+    errors = payload.get("errors")
+    if errors:
+        raise GraphQLError(argv, _graphql_error_text(errors))
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise GraphQLError(argv, "the response carries no data object")
+    return data
+
+
+def _graphql_error_text(errors: object) -> str:
+    """The server's own messages out of an ``errors`` value of any shape.
+
+    The spec says a list of objects with ``message``; this is the code that runs
+    when a response already broke its contract, so it must not raise on one
+    that breaks the spec as well.
+    """
+    entries = errors if isinstance(errors, list) else [errors]
+    messages = []
+    for entry in entries:
+        message = entry.get("message") if isinstance(entry, dict) else None
+        messages.append(message if isinstance(message, str) and message else repr(entry))
+    return "; ".join(messages)
 
 
 # ── Layer 3: name resolution and observation ─────────────────────────────────
@@ -382,7 +459,8 @@ class ProjectFields:
                 # fails identically and needs a completely different fix.
                 last_error = exc
                 continue
-            project = (data.get(root) or {}).get("projectV2")
+            account = data.get(root)
+            project = account.get("projectV2") if isinstance(account, dict) else None
             if project:
                 break
         if not project:
@@ -393,21 +471,31 @@ class ProjectFields:
                 f"or a user{detail}"
             )
 
-        fields: dict[str, SingleSelectField] = {}
-        for node in project.get("fields", {}).get("nodes") or []:
-            if not node or "options" not in node:
-                continue  # not a single-select field
-            options = {
-                _normalize(option["name"]): (option["id"], option["name"])
-                for option in node["options"]
-            }
-            fields[_normalize(node["name"])] = SingleSelectField(
-                id=node["id"], name=node["name"], options=options
-            )
+        # A project that came back in the wrong shape is a project whose fields
+        # could not be read — the same answer as one that was not found, and the
+        # one every caller already handles. Left alone, `"fields": null` or an
+        # option without a name escaped as an AttributeError or a KeyError.
+        try:
+            project_id = project["id"]
+            fields: dict[str, SingleSelectField] = {}
+            for node in project.get("fields", {}).get("nodes") or []:
+                if not node or "options" not in node:
+                    continue  # not a single-select field
+                options = {
+                    _normalize(option["name"]): (option["id"], option["name"])
+                    for option in node["options"]
+                }
+                fields[_normalize(node["name"])] = SingleSelectField(
+                    id=node["id"], name=node["name"], options=options
+                )
+        except (KeyError, TypeError, AttributeError) as exc:
+            _FIELDS_CACHE.pop(key, None)
+            raise FieldNotFoundError(
+                f"project #{number} of {owner!r} came back malformed "
+                f"({type(exc).__name__}: {exc}); its fields could not be read"
+            ) from None
 
-        resolved = cls(
-            project_id=project["id"], number=int(number), owner=owner, fields=fields
-        )
+        resolved = cls(project_id=project_id, number=int(number), owner=owner, fields=fields)
         # Refresh the entry even when the cache was bypassed for reading: a
         # `use_cache=False` call that left a stale entry behind would hand the
         # stale object straight back to the next default-argument caller.
@@ -476,9 +564,25 @@ def repo_issue_type_names(
         data = _graphql(_ISSUE_TYPES_QUERY, {"owner": owner, "repo": repo}, run=run)
     except GhError:
         return None
-    repository = data.get("repository") or {}
-    nodes = (repository.get("issueTypes") or {}).get("nodes") or []
-    return [node["name"] for node in nodes if node and node.get("name")]
+    repository = data.get("repository")
+    if not isinstance(repository, dict):
+        # No repository object is not a repository without types; that
+        # collapse is exactly the one this function's return values exist to
+        # keep apart.
+        return None
+    issue_types = repository.get("issueTypes")
+    if issue_types is None:
+        return []
+    nodes = issue_types.get("nodes") if isinstance(issue_types, dict) else None
+    if nodes is None and isinstance(issue_types, dict):
+        return []
+    if not isinstance(nodes, list) or not all(isinstance(n, dict) or n is None for n in nodes):
+        # Type names that cannot be read are not an empty list of them either.
+        return None
+    names = [node.get("name") for node in nodes if node]
+    if not all(isinstance(name, str) for name in names):
+        return None
+    return [name for name in names if name]
 
 
 _ISSUE_META_QUERY = """
@@ -560,9 +664,9 @@ def read_issue_meta(
 
 
 _LIST_ISSUES_QUERY = """
-  query($owner:String!,$repo:String!,$state:IssueState,$cursor:String){
+  query($owner:String!,$repo:String!,$states:[IssueState!],$cursor:String){
     repository(owner:$owner,name:$repo){
-      issues(first:100, after:$cursor, states:$state,
+      issues(first:100, after:$cursor, states:$states,
              orderBy:{field:CREATED_AT, direction:DESC}){
         pageInfo { hasNextPage endCursor }
         nodes{
@@ -615,10 +719,13 @@ def iter_issue_meta(
     """
     if limit is not None and limit <= 0:
         return []
-    # One state or none. The query declares `$state: IssueState` and wraps it in
-    # the list position itself, so nothing here depends on GraphQL's
-    # scalar-to-list coercion — and a future second state has to change the
-    # query, which is where it would be noticed.
+    # One state or none. `issues(states:)` takes `[IssueState!]`, and the query
+    # declares `$states` with exactly that type. It used to declare a bare
+    # `$state: IssueState` — which GitHub refuses at validation ("List dimension
+    # mismatch") whatever the value, so the audit never ran against the real
+    # API — while this comment claimed the query wrapped it in a list. It did
+    # not; the fakes do not parse GraphQL, so nothing noticed. `all` omits the
+    # variable rather than sending `[null]`, which breaks the non-null element.
     wanted_state = None if state == "all" else state.upper()
     collected: list[dict] = []
     cursor: str | None = None
@@ -627,7 +734,7 @@ def iter_issue_meta(
         if cursor:
             variables["cursor"] = cursor
         if wanted_state:
-            variables["state"] = wanted_state
+            variables["states"] = [wanted_state]
         data = _graphql(_LIST_ISSUES_QUERY, variables, run=run)
         issues = ((data.get("repository") or {}).get("issues")) or {}
         for node in issues.get("nodes") or []:
@@ -793,12 +900,24 @@ def ensure_project_item(
 def set_single_select(
     project_id: str, item_id: str, field_id: str, option_id: str, *, run: Run | None = None
 ) -> None:
-    """Write one single-select field value on one project item."""
-    _graphql(
+    """Write one single-select field value on one project item.
+
+    The mutation answers with the item it wrote. An answer without it is a write
+    that cannot be shown to have happened, and discarding the response — what
+    this did — reported it as done.
+    """
+    data = _graphql(
         _SET_OPTION_MUTATION,
         {"project": project_id, "item": item_id, "field": field_id, "option": option_id},
         run=run,
     )
+    result = data.get("updateProjectV2ItemFieldValue")
+    item = result.get("projectV2Item") if isinstance(result, dict) else None
+    if not (isinstance(item, dict) and item.get("id")):
+        raise GraphQLError(
+            ["api", "graphql"],
+            "updateProjectV2ItemFieldValue returned no item; the value was not confirmed written",
+        )
 
 
 def apply_field_values(
@@ -849,6 +968,16 @@ def _mismatches(requested: Mapping, observed: Mapping) -> list[str]:
     Labels are a *superset* check: a repository default label or an automation
     may add one, which is worth reporting but is not a failure to apply what was
     asked. Every other slot is exact.
+
+    Labels also compare by label identity — :func:`_normalize`, case folded —
+    where every other slot records the board's spelling and compares exactly.
+    The difference is where the canonical spelling lives. An option's is on the
+    board, which the command has already read; a label's is on the repository,
+    which it has not. GitHub keeps label names unique regardless of case and
+    attaches its existing ``BE`` to a request for ``be``, so a case difference
+    here is never a label that failed to apply — reporting it as one put two
+    drift sentences on every such create. Separators still count: ``B-E`` and
+    ``BE`` are two labels, which is why this is not :func:`_label_key`.
     """
     drift: list[str] = []
     for key, want in requested.items():
@@ -856,8 +985,14 @@ def _mismatches(requested: Mapping, observed: Mapping) -> list[str]:
             continue
         got = observed.get(key)
         if key == "labels":
-            missing = [label for label in want if label not in (got or [])]
-            extra = [label for label in (got or []) if label not in want]
+            wanted_keys = {_normalize(label) for label in want}
+            got_keys = {_normalize(label) for label in (got or [])}
+            # One sentence entry per label, not per spelling of it: `--label be
+            # --label BE` asked for one label. The first spelling is kept.
+            missing = _first_per_label(label for label in want if _normalize(label) not in got_keys)
+            extra = _first_per_label(
+                label for label in (got or []) if _normalize(label) not in wanted_keys
+            )
             if missing:
                 drift.append(f"labels requested but not applied: {missing}")
             if extra:
@@ -865,6 +1000,35 @@ def _mismatches(requested: Mapping, observed: Mapping) -> list[str]:
         elif got != want:
             drift.append(f"{key}: requested {want!r}, observed {got!r}")
     return drift
+
+
+def _canonical_labels(labels: Sequence[str], allowed_labels: Iterable[str] | None) -> list[str]:
+    """The spelling ``create-issue`` records for each label it asked for.
+
+    With ``allowed_labels`` declared, the declared spelling — the one stage one
+    matched, and the only canonical spelling this command knows before the
+    create. Only the *record* changes: the labels are sent as typed, because
+    rewriting what goes out is the conversion :func:`reserved_label_violations`
+    refuses to do. Without a declared list there is no canonical spelling to
+    record, and the typed one stands.
+
+    The first declaration of a name wins, surrounding whitespace is not part of
+    it, and two requests for one label are recorded once.
+    """
+    if allowed_labels is None:
+        return list(labels)
+    canonical: dict[str, str] = {}
+    for declared in allowed_labels:
+        canonical.setdefault(_normalize(declared), declared.strip())
+    return list(dict.fromkeys(canonical.get(_normalize(label), label) for label in labels))
+
+
+def _first_per_label(labels: Iterable[str]) -> list[str]:
+    """Labels in order, one per label identity, each in its first spelling."""
+    seen: dict[str, str] = {}
+    for label in labels:
+        seen.setdefault(_normalize(label), label)
+    return list(seen.values())
 
 
 def _resolve_body(body_file: str) -> str:
@@ -953,6 +1117,8 @@ def _create_issue_handler(args) -> int:
     if violations:
         print_error("\n".join(violations))
         return 2
+    # Worked out now, not after the create: past that point nothing may raise.
+    requested_labels = _canonical_labels(labels, config["allowed_labels"])
 
     # No `except GhError`: `repo_issue_type_names` turns a failed read into None,
     # which the next line already refuses on. Catching it as well was dead code.
@@ -1069,7 +1235,7 @@ def _create_issue_handler(args) -> int:
     # there was not. Recording the value either way is what puts an unapplied
     # field into `drift`; dropping the key would report a silent absence as if
     # nothing had been asked for.
-    requested: dict[str, object] = {"type": issue_type, "labels": labels}
+    requested: dict[str, object] = {"type": issue_type, "labels": requested_labels}
     if initial_status:
         requested["status"] = resolved.get("status", initial_status)
     for slot, value in (("priority", args.priority), ("size", args.size)):
@@ -1317,6 +1483,23 @@ def _audit_fields_handler(args) -> int:
     judgement and is named in ``warnings``, so a half audit never reads as a
     clean bill of health. The issue list is the exception — with no issues read
     there is nothing to degrade *to*, so that one is a 2.
+
+    The exit code says whether the judgement is **complete**; the JSON says what
+    it found. So drift alone is still 0, and a degraded run is 3 even when it
+    found nothing — "no drift on the axes that could be read" is not "no drift":
+
+    - **0** — every axis was read; stdout carries the findings, drift or not.
+    - **2** — the issue list could not be read; stdout is empty.
+    - **3** — an axis could not be read; stdout still carries the audit of the
+      axes that could, and ``warnings`` names the ones that were not. Unlike
+      ``create-issue``'s 3 this is not a repair instruction: nothing was
+      written, and the fix is whatever stopped the read.
+
+    A 3 rather than a 0 because ``warnings`` is a field nobody reads. #19 made
+    ``create-issue`` refuse a board it could not read, instead of creating the
+    issue and naming the gap in ``drift``, on exactly that observation: callers
+    branch on the exit code. A gate that checks ``with_drift`` turned green here
+    over a read that never happened.
     """
     config = args.github
     slots = _field_slots(config["field_names"])
@@ -1381,7 +1564,7 @@ def _audit_fields_handler(args) -> int:
             "issues": findings,
         }
     )
-    return 0
+    return 3 if warnings else 0
 
 
 def register_github_commands(
