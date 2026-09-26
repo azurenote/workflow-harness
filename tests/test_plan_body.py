@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from harness_core import plan_body
+from harness_core.exitcodes import ExitCode
 from harness_core.git import MainWorktreeUnresolvedError
-from harness_core.plan_body import EXIT_SEEN, LIMITS, build, main, marker, revision, seen, summarize
+from harness_core.plan_body import LIMITS, build, main, marker, revision, seen, summarize
 
 PLAN = """\
 ---
@@ -296,7 +297,7 @@ def test_cli_too_large_writes_nothing(tmp_path: Path, main_root: Path, limits, c
     _write(main_root / ".task" / "plan" / "plan-45.md", PLAN)
     limits(forgejo=40)
     out = _write(tmp_path / "body", "")
-    assert main(["forgejo", "--issue", "45", "--out", str(out)]) == 1
+    assert main(["forgejo", "--issue", "45", "--out", str(out)]) == ExitCode.REFUSED
     assert out.read_bytes() == b""
     assert "stop (too large)" in capsys.readouterr().err
 
@@ -306,7 +307,7 @@ def test_cli_seen_exits_3_and_writes_nothing(tmp_path: Path, main_root: Path, ca
     rev = revision(plan.read_bytes())
     read = _write(tmp_path / "read", _fj(f"{marker('45', rev)}\n\nx"))
     out = _write(tmp_path / "body", "")
-    assert main(["forgejo", "--issue", "45", "--seen", str(read), "--out", str(out)]) == EXIT_SEEN
+    assert main(["forgejo", "--issue", "45", "--seen", str(read), "--out", str(out)]) == ExitCode.NOOP
     assert out.read_bytes() == b""
     assert capsys.readouterr().out == f"SEEN=revision REV={rev}\n"
 
@@ -321,20 +322,20 @@ def test_cli_seen_counts_a_create_mode_summary_body(tmp_path: Path, main_root: P
     # Built from the literal format, not from create_summary: the CLI calls that.
     summary = SUMMARY_TAIL.format(full=len(PLAN), limit=65536, where="`plan-<이슈 번호>.md`(등록 뒤 이름)")
     read = _write(tmp_path / "read", _gh(summary, "딴 댓글"))
-    assert main(["github", "--issue", "45", "--seen", str(read), "--dry-run"]) == EXIT_SEEN
+    assert main(["github", "--issue", "45", "--seen", str(read), "--dry-run"]) == ExitCode.NOOP
 
 
 def test_cli_seen_is_checked_even_when_the_summary_is_too_large(tmp_path: Path, main_root: Path, limits) -> None:
     plan = _write(main_root / ".task" / "plan" / "plan-45.md", PLAN)
     limits(forgejo=40)
     read = _write(tmp_path / "read", _fj(marker("45", revision(plan.read_bytes()))))
-    assert main(["forgejo", "--issue", "45", "--seen", str(read), "--dry-run"]) == EXIT_SEEN
+    assert main(["forgejo", "--issue", "45", "--seen", str(read), "--dry-run"]) == ExitCode.NOOP
 
 
 def test_cli_expect_rev_mismatch_refuses(tmp_path: Path, main_root: Path, capsys) -> None:
     plan = _write(main_root / ".task" / "plan" / "plan-45.md", PLAN)
     out = _write(tmp_path / "body", "")
-    assert main(["forgejo", "--issue", "45", "--expect-rev", "00000000", "--out", str(out)]) == 1
+    assert main(["forgejo", "--issue", "45", "--expect-rev", "00000000", "--out", str(out)]) == ExitCode.REFUSED
     assert out.read_bytes() == b"" and "stop (rev)" in capsys.readouterr().err
     rev = revision(plan.read_bytes())
     assert main(["forgejo", "--issue", "45", "--expect-rev", rev, "--out", str(out)]) == 0
@@ -364,7 +365,7 @@ def test_cli_refusals(argv: list[str], message: str, main_root: Path, capsys) ->
     empty = _write(main_root / ".task" / "plan" / "plan-draft-empty.md", " \n")
     missing = main_root / "no-such-read"
     argv = [a.format(plan4=plan4, plan45=plan45, notes=notes, stray=stray, empty=empty, missing=missing) for a in argv]
-    assert main(argv) == 1
+    assert main(argv) == ExitCode.REFUSED
     assert message in capsys.readouterr().err
 
 
@@ -385,6 +386,6 @@ def test_cli_stops_when_the_main_checkout_cannot_be_resolved(monkeypatch: pytest
         raise MainWorktreeUnresolvedError("the first worktree entry /x has no work tree")
     monkeypatch.setattr(plan_body, "main_worktree_root", unresolved)
     for argv in (["forgejo", "--issue", "45", "--dry-run"], ["forgejo", "/abs/plan-draft-x.md", "--dry-run"]):
-        assert main(argv) == 1
+        assert main(argv) == ExitCode.REFUSED
         err = capsys.readouterr().err
         assert err.startswith("stop (main checkout):") and err.count("\n") == 1

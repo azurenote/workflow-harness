@@ -60,7 +60,8 @@ def register(sub) -> None:
         # else: what to do without a block is this project's policy. Fail-open,
         # as here: leave the board commands unregistered — the shared
         # contract's "not applied". Fail-closed: register them as a stub that
-        # prints `reason` and exits 2, so a board command says why instead of
+        # prints `reason` and returns `ExitCode.REFUSED`
+        # (`harness_core.exitcodes`), so a board command says why instead of
         # argparse's "invalid choice". Either way, no early `return`: the
         # project's own commands registered after this must still register.
 

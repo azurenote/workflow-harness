@@ -153,6 +153,7 @@ harness 를 못 쓰고 gh 로 내려가도 type·priority·size·status 가 적�
 | `_shared/references/worktree.md` | 워크트리 CWD 주의사항, main checkout 해석 정본 | project-start · project-done · project-clean · project-adr |
 | `_shared/references/github-issue-fields.md` | GitHub 이슈 메타데이터 계약과 `github_project` 스키마 | project-issue · project-start · project-done |
 | `_shared/references/forgejo.md` | `fj` 표면 사실 — 플래그 표면, 격리 문자, 조용한 성공, 조회 표면, CI·상태·의존성 | project-issue · project-start · project-done |
+| `_shared/references/exit-codes.md` | harness 종료코드 열거형과 명령별 뜻 | project-issue |
 | `_shared/references/codex.md` | Codex 호스트 메커니즘 | Codex 에서 실행할 때만 |
 
 경로는 `~/.claude/skills/` 기준이다.

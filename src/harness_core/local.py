@@ -38,6 +38,18 @@ class InvalidIssueIdError(ValueError):
     """Issue id is neither an issue number nor a ticket key."""
 
 
+class PlanFileNotFoundError(FileNotFoundError):
+    """``plan-<id>.md`` does not exist.
+
+    A subclass so a caller can refuse this one case without catching every
+    ``FileNotFoundError`` — a missing ``git`` binary raises that too.
+    """
+
+
+class PlanFileExistsError(FileExistsError):
+    """``plan-<id>.md`` already exists, so a draft cannot be renamed onto it."""
+
+
 def _checked_issue_id(issue_id: int | str) -> str:
     """Return issue_id as the string that goes into a plan file name.
 
@@ -136,7 +148,7 @@ def rename_plan_to_issue(
         InvalidIssueIdError: issue_id is not an issue number or ticket key.
         InvalidPlanFileError: plan_path is a symlink, is not an existing file,
             is not a draft plan name, or is not directly in plan_dir.
-        FileExistsError: Target file already exists.
+        PlanFileExistsError: Target file already exists (a FileExistsError).
     """
     issue_id = _checked_issue_id(issue_id)
     if plan_dir is None:
@@ -161,7 +173,7 @@ def rename_plan_to_issue(
 
     target = plan_dir / f"plan-{issue_id}.md"
     if target.exists():
-        raise FileExistsError(
+        raise PlanFileExistsError(
             f"Target already exists: {target}\n"
             f"Issue #{issue_id} may already have a plan file."
         )
@@ -174,11 +186,11 @@ def plan_file_for_issue(issue_id: int | str, plan_dir: Path) -> Path:
 
     Raises:
         InvalidIssueIdError: issue_id is not an issue number or ticket key.
-        FileNotFoundError: The plan file does not exist.
+        PlanFileNotFoundError: The plan file does not exist.
     """
     path = plan_dir / f"plan-{_checked_issue_id(issue_id)}.md"
     if not path.exists():
-        raise FileNotFoundError(
+        raise PlanFileNotFoundError(
             f"Plan file not found: {path}\n"
             f"Run /project:plan and /project:issue first."
         )

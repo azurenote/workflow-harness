@@ -1043,7 +1043,7 @@ SKILL_REFERENCE_NEEDS = {
     "project-done": {"review-guidelines", "base-branch", "hooks", "worktree", "github-issue-fields", "forgejo"},
     "project-harness-init": {"base-branch"},
     "project-harness-update": set(),
-    "project-issue": {"base-branch", "github-issue-fields", "forgejo"},
+    "project-issue": {"base-branch", "github-issue-fields", "forgejo", "exit-codes"},
     "project-iterate": set(),
     "project-plan": {"review-guidelines", "base-branch"},
     "project-release": {"release", "base-branch"},
@@ -3154,12 +3154,12 @@ _GOLDEN_ISSUE_LINK_FORGEJO = (
     'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >> "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }',
     'python -m harness_core.plan_body forgejo --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --out "$BODY_FILE"',
     'RC=$?',
-    '[ "$RC" = 3 ] && { echo "COMMENT=skipped"; exit 0; }',
+    '[ "$RC" = 5 ] && { echo "COMMENT=skipped"; exit 0; }',
     '[ "$RC" = 0 ] || { echo "COMMENT=미반영 (no body)"; exit 1; }',
     'fj -H <forgejo_host> issue comment \'<forgejo_repo>#<id>\' --body-file "$BODY_FILE"',
     'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments >| "$SEEN" || { echo "COMMENT=미반영 (read-back failed)"; exit 1; }',
     'python -m harness_core.plan_body forgejo --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --dry-run > /dev/null',
-    '[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }',
+    '[ "$?" = 5 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }',
     '```',
     '- The Forgejo comment takes the repository in the issue argument, and its success is silent, so the read-back is the only evidence; the surface behind both is in `~/.claude/skills/_shared/references/forgejo.md`.',
     "- The module splits a Forgejo read into one entry per run of quoted lines — how `fj` prints bodies and comments is in `~/.claude/skills/_shared/references/forgejo.md` — and takes GitHub's `--json body,comments` output as it is. The reads write with `>|` so a shell with `noclobber` set can still overwrite the file `mktemp` made.",
@@ -6151,7 +6151,7 @@ _I45_RULE_NO_CUT = '- A summary that is itself over the limit is never cut to fi
 _I45_RULE_MARKER = "- Every comment starts with a marker line, `<!-- plan-<id> rev:<rev> -->`, where `<rev>` is the first 8 hex digits of the plan file's sha1, and the marker counts toward the limit. A create-mode body carries no marker, because it is the plan as written."
 _I45_RULE_ONCE = '- The same content is never posted twice. Before posting, the issue body and comments are read, and the post is skipped when one of them starts with this marker line, or is this plan (or its create-mode summary) as a whole — an issue created from this plan. Each body and comment is compared on its own and in full, so a revision that only drops lines from the end is still posted.'
 _I45_RULE_READ = '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.'
-_I45_RULES_FENCES = 'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 3 when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.'
+_I45_RULES_FENCES = 'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 5 (`NOOP`) when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.'
 _I45_INSTRUCTIONS_REVISION = '- With `--issue <id>` and no `<plan-path>`, go straight to Step 1-R: Steps 1, 1-L and 2–8 do not run, and the flow ends at Step 9.'
 _I45_USAGE_REVISION = '- **Given alone, when `plan-<id>.md` already exists** — revision mode: that plan is posted to `<id>` again as a new comment; Step 1-R below runs.'
 _I45_L2_POINTER = '- On a tracker with a row in `## Plan Body Rules`, to post that existing plan to `<id>` again instead, run `project-issue --issue <id>` with no plan path (Step 1-R).'
@@ -6196,12 +6196,12 @@ _I45_GITHUB_POST = (
     'gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read failed)"; exit 1; }',
     'python -m harness_core.plan_body github --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --out "$BODY_FILE"',
     'RC=$?',
-    '[ "$RC" = 3 ] && { echo "COMMENT=skipped"; exit 0; }',
+    '[ "$RC" = 5 ] && { echo "COMMENT=skipped"; exit 0; }',
     '[ "$RC" = 0 ] || { echo "COMMENT=미반영 (no body)"; exit 1; }',
     'gh issue comment "<id>" --body-file "$BODY_FILE"',
     'gh issue view "<id>" --json body,comments >| "$SEEN" || { echo "COMMENT=미반영 (read-back failed)"; exit 1; }',
     'python -m harness_core.plan_body github --issue \'<id>\' --expect-rev \'<rev>\' --seen "$SEEN" --dry-run > /dev/null',
-    '[ "$?" = 3 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }',
+    '[ "$?" = 5 ] && echo "COMMENT=posted" || { echo "COMMENT=미반영"; exit 1; }',
 )
 _I45_GITHUB_HARNESS_CREATE = (
     "DRAFT_PLAN='<draft-plan-path>'",
@@ -6553,6 +6553,7 @@ def test_i45_post_then_repost_in_every_shell(shell: str, tracker: str, tmp_path:
 
 @pytest.mark.parametrize("tracker", ["github", "forgejo"])
 def test_i45_check_fence_posts_nothing(tracker: str, tmp_path: Path) -> None:
+    from harness_core.exitcodes import ExitCode
     from harness_core.plan_body import marker
     env, main, store = _i45_env(tmp_path)
     rev = _i45_plan(main)
@@ -6561,7 +6562,7 @@ def test_i45_check_fence_posts_nothing(tracker: str, tmp_path: Path) -> None:
     assert ran.returncode == 0 and ran.stdout == f"KIND=full CHARS={len(marker('45', rev)) + 2 + len(_I45_PLAN)} LIMIT=65536 REV={rev}\n"
     (store / "comments" / "0").write_text(f"{marker('45', rev)}\n\nx\n", encoding="utf-8")
     ran = _i45_run("bash", script, env, main)
-    assert ran.returncode == 3 and ran.stdout == f"SEEN=revision REV={rev}\n"
+    assert ran.returncode == ExitCode.NOOP and ran.stdout == f"SEEN=revision REV={rev}\n"
     assert not _i45_posts(store)
 
 
@@ -8113,7 +8114,7 @@ _I41_PROSE = {
     ),
     'issue/rules': (
         '- A failed read is not an empty one. When the read before posting fails, nothing is posted and the comment is 미반영, and the fence exits 1. For these reads the exit code is the evidence (the Forgejo surface: `~/.claude/skills/_shared/references/forgejo.md`). Whether `gh issue view --json comments` returns every comment of a long thread is unverified.',
-        'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 3 when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.',
+        'The check fence reads the issue and prints what a comment would be — `KIND=full|summary CHARS=<n> LIMIT=<n> REV=<rev>`, or `SEEN=<why>` with exit 5 (`NOOP`) when it is already there — and posts nothing. The post fence posts it: `<rev>` is the `REV=` value the approval screen showed, so a plan edited after that yes is refused instead of posted, and its last line is `COMMENT=posted`, `COMMENT=skipped` or `COMMENT=미반영`. Both find `plan-<id>.md` in the main checkout from `<id>` alone. **Run each fence as one shell invocation** — later lines read the variables earlier ones set.',
         '**GitHub** check:',
         '**GitHub** post:',
         '**Forgejo** check:',
@@ -8436,6 +8437,11 @@ def test_i41_fences_match_the_branch_point() -> None:
         pytest.skip("git is not installed")
     if base.returncode != 0 or not base.stdout.strip():
         pytest.skip("no origin/main to find the branch point against")
+    # On a later branch the branch point is not HEAD but a main that already
+    # holds #41 — forgejo.md is its mark — and that branch's fence edits are
+    # its own (#37 moved the Plan Body Rules comparisons from 3 to 5).
+    if git("cat-file", "-e", f"{base.stdout.strip()}:skills/_shared/references/forgejo.md").returncode == 0:
+        pytest.skip("#41 is already on the branch point; later fence edits are not #41's to judge")
     for path in _I41_SKILLS:
         shown = git("show", f"{base.stdout.strip()}:{path}")
         if shown.returncode != 0:
@@ -8640,3 +8646,119 @@ def test_i54_each_mutant_fails_the_rows_meant_for_it(mutant: str, _i50_matrix) -
     failures = _i54_failures(code.replace(old, new), tmp, env)
     missed = _I54_CATCHERS[mutant] - set(failures)
     assert not missed, f"mutant {mutant!r} passed rows {sorted(missed)}; failed {sorted(failures)}"
+
+
+# ---------------------------------------------------------------------------
+# #37: the harness's exit codes are one enum, `harness_core.exitcodes.ExitCode`,
+# and one table, skills/_shared/references/exit-codes.md. The code side is held
+# in tests/test_exitcodes.py; these hold the skills: the shell compares numbers
+# because it cannot read the enum, so every number a skill compares or names is
+# bound to the enum here.
+
+_I37_REFERENCE = "skills/_shared/references/exit-codes.md"
+_I37_COMPARE = re.compile(r'^\[ "\$(?:RC|\?)" = (\d+) \]')
+_I37_RC_PROSE = re.compile(r"\bexit(?:s|ed)? [0-6]\b|\brc [0-6]\b|\*\*[0-6]\*\*")
+
+# Every exit-code number in skill prose outside fences, per file, as it stands
+# after #37. A new one fails: a number belongs in exit-codes.md, or next to the
+# member name it stands for.
+_I37_RC_PROSE_SNAPSHOT = {
+    "skills/project-done/SKILL.md": {"**0**": 1, "**1**": 1, "exit 0": 2, "exit 1": 1, "exits 1": 1},
+    "skills/project-issue/SKILL.md": {
+        "**0**": 1, "**2**": 1, "**3**": 1, "**4**": 1, "exit 0": 1, "exit 3": 1,
+        "exit 4": 1, "exit 5": 1, "exits 1": 1, "exits 2": 1,
+    },
+    "skills/project-plan/SKILL.md": {"exit 1": 1, "exits 1": 1},
+}
+
+
+def _i37_post_comparisons() -> dict[str, list[int]]:
+    """The exit codes each Plan Body Rules fence compares `plan_body`'s result against."""
+    text = read_skill("skills/project-issue/SKILL.md")
+    start = text.index("\n## Plan Body Rules\n")
+    section = text[start:text.index("\n## ", start + 1)]
+    found: dict[str, list[int]] = {}
+    label = ""
+    for line in section.splitlines():
+        if re.match(r"^\*\*(GitHub|Forgejo)\*\* (check|post):$", line):
+            label = line.strip("*:").replace("** ", " ")
+            found[label] = []
+        match = _I37_COMPARE.match(line.strip())
+        if match:
+            found[label].append(int(match.group(1)))
+    return found
+
+
+def _i37_rc_prose(root: Path) -> dict[str, dict[str, int]]:
+    found: dict[str, dict[str, int]] = {}
+    for md in sorted((root / "skills").rglob("*.md")):
+        rel = str(md.relative_to(root))
+        if rel == _I37_REFERENCE:
+            continue
+        inside = False
+        for line in md.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("```"):
+                inside = not inside
+                continue
+            if inside:
+                continue
+            for match in _I37_RC_PROSE.finditer(line):
+                counts = found.setdefault(rel, {})
+                counts[match.group(0)] = counts.get(match.group(0), 0) + 1
+    return found
+
+
+def test_i37_plan_body_fences_compare_against_the_enum() -> None:
+    from harness_core.exitcodes import ExitCode
+
+    noop, ok = int(ExitCode.NOOP), int(ExitCode.OK)
+    # Exactly these, in this order: skipped when already there, a body to post,
+    # posted when the read-back sees it. A comparison rewritten as `-eq`, dropped,
+    # or left at the old 3 changes the list.
+    assert _i37_post_comparisons() == {
+        "GitHub check": [], "GitHub post": [noop, ok, noop],
+        "Forgejo check": [], "Forgejo post": [noop, ok, noop],
+    }
+
+
+def test_i37_plan_body_prose_names_the_member() -> None:
+    from harness_core.exitcodes import ExitCode
+
+    line = rule_line(read_skill("skills/project-issue/SKILL.md"), "`SEEN=<why>` with exit")
+    assert f"with exit {int(ExitCode.NOOP)} (`NOOP`)" in line
+
+
+def test_i37_create_issue_codes_are_the_enum() -> None:
+    from harness_core.exitcodes import ExitCode
+
+    text = read_skill("skills/project-issue/SKILL.md")
+    listed = re.findall(r"^- \*\*(\d)\*\* `([A-Z]+)` — ", text, re.M)
+    assert [(n, name) for n, name in listed] == [("0", "OK"), ("2", "REFUSED"), ("3", "INCOMPLETE"), ("4", "UNKNOWN")]
+    for number, name in listed:
+        assert ExitCode[name] == int(number), name
+    assert "_shared/references/exit-codes.md" in rule_line(text, "Exit codes (names from")
+
+
+def test_i37_config_indexes_the_table_for_its_readers() -> None:
+    row = rule_line(read_skill("skills/SKILL-CONFIG.md"), "| `_shared/references/exit-codes.md` |")
+    readers = {r.strip() for r in row.rstrip("|").rsplit("|", 1)[1].split("·")}
+    assert readers == {s for s, needs in SKILL_REFERENCE_NEEDS.items() if "exit-codes" in needs}
+
+
+def test_i37_find_draft_plan_prose_matches_the_refusal() -> None:
+    text = read_skill("skills/project-issue/SKILL.md")
+    assert "MultiplePlanFilesError" not in text, "the harness path no longer raises it at the caller"
+    assert "`find-draft-plan` exits `REFUSED` for no draft, several drafts and an unlocated plan directory" in text
+
+
+def test_i37_rc_numbers_in_prose_do_not_spread() -> None:
+    assert _i37_rc_prose(ROOT) == _I37_RC_PROSE_SNAPSHOT
+
+
+def test_i37_rc_prose_scan_sees_a_new_number(tmp_path: Path) -> None:
+    """The snapshot proves nothing unless the scan finds a number someone adds."""
+    shutil.copytree(ROOT / "skills", tmp_path / "skills")
+    plan = tmp_path / "skills" / "project-plan" / "SKILL.md"
+    plan.write_text(plan.read_text(encoding="utf-8") + "\nThe helper exits 3 when it gives up.\n", encoding="utf-8")
+    assert _i37_rc_prose(tmp_path) != _I37_RC_PROSE_SNAPSHOT
+    assert _i37_rc_prose(tmp_path)["skills/project-plan/SKILL.md"]["exits 3"] == 1

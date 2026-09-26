@@ -14,7 +14,10 @@ rule, kept here so the skill document and the code cannot hold two versions:
   what a create-mode body is — is how the same content is never posted twice.
 
 The skill fences call this module as ``python -m harness_core.plan_body``; it
-reads and writes local files only and never calls a tracker.
+reads and writes local files only and never calls a tracker. It exits ``OK``
+with the body chosen, ``REFUSED`` on a plan, id, revision or size it will not
+post, and ``NOOP`` when the tracker already holds the content (``SEEN=``); see
+``skills/_shared/references/exit-codes.md``.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import is_draft_plan
+from .exitcodes import ExitCode
 from .git import MainWorktreeUnresolvedError, main_worktree_root
 from .local import InvalidIssueIdError, _checked_issue_id, abs_under_main, plan_file_for_issue, split_frontmatter
 
@@ -36,8 +40,6 @@ from .local import InvalidIssueIdError, _checked_issue_id, abs_under_main, plan_
 # rules: the skill leaves its path as it was.
 LIMITS = {"github": 65536, "forgejo": 65536}
 
-EXIT_SEEN = 3
-
 _SECTION_MISSING = "(섹션 없음)"
 _NO_ITEMS = "(항목 없음)"
 _ISOLATES = str.maketrans("", "", "\u2068\u2069")
@@ -45,7 +47,7 @@ _NO_TITLE = "(제목 없음)"
 
 
 class PlanBodyError(Exception):
-    """A refusal the CLI reports as one line and exit 1."""
+    """A refusal the CLI reports as one line and ``ExitCode.REFUSED``."""
 
 
 @dataclass(frozen=True)
@@ -313,7 +315,7 @@ def resolve_plan(path_arg: str | None, issue_id: str | None) -> Path:
     return path
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> ExitCode:
     parser = argparse.ArgumentParser(
         prog="python -m harness_core.plan_body",
         description="Choose the body project-issue posts for a plan (full or summary).",
@@ -360,18 +362,18 @@ def main(argv: list[str] | None = None) -> int:
                        bodies=(text, create_summary(text, args.tracker)))
             if why:
                 print(f"SEEN={why} REV={rev}")
-                return EXIT_SEEN
+                return ExitCode.NOOP
         if too_large is not None:
             raise too_large
     except (PlanBodyError, InvalidIssueIdError) as exc:
         print(exc, file=sys.stderr)
-        return 1
+        return ExitCode.REFUSED
 
     assert body is not None
     if not args.dry_run:
         Path(args.out).write_bytes(body.text.encode("utf-8"))
     print(body.info())
-    return 0
+    return ExitCode.OK
 
 
 if __name__ == "__main__":

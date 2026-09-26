@@ -3363,3 +3363,71 @@ def test_i52_the_kept_body_is_not_in_the_message() -> None:
 
     assert "PVTI_secret" not in str(failed)
     assert "PVTI_secret" not in str(refused)
+
+
+# ── audit-fields --fail-on-drift (#37) ───────────────────────────────────────
+#
+# The flag changes the exit code only. FINDINGS wins over INCOMPLETE: a CI that
+# tolerates an incomplete audit must not see a drift that was found turn green.
+
+
+def _i37_audit(kind: str) -> "FakeGh":
+    board_unread = kind in ("warnings", "drift+warnings")
+    drifted = kind in ("drift", "drift+warnings")
+    labels = ("BE", TYPE_NAMES[0].lower()) if drifted else ("BE",)
+    fake = FakeGh(
+        types=_types_response(),
+        fields=None if board_unread else _fields_response(),
+        list_issues=None if kind == "no list" else _issue_list_page([1], has_next=False, labels=labels),
+    )
+    if board_unread:
+        fake.fail("fields", github.GhError(["api", "graphql"], 1, "missing 'project' scope"))
+    if kind == "no list":
+        fake.fail("list_issues", github.GhError(["api", "graphql"], 1, "Bad credentials"))
+    return fake
+
+
+# kind -> (exit code without the flag, with it)
+_I37_AUDIT = {
+    "clean": ("OK", "OK"),
+    "drift": ("OK", "FINDINGS"),
+    "warnings": ("INCOMPLETE", "INCOMPLETE"),
+    "drift+warnings": ("INCOMPLETE", "FINDINGS"),
+    "no list": ("REFUSED", "REFUSED"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_I37_AUDIT))
+def test_i37_fail_on_drift_changes_the_exit_code_only(monkeypatch, capsys, kind) -> None:
+    from harness_core.exitcodes import ExitCode
+
+    without, with_flag = _I37_AUDIT[kind]
+    plain = _run(monkeypatch, _i37_audit(kind), ["audit-fields"])
+    plain_out = capsys.readouterr().out
+    flagged = _run(monkeypatch, _i37_audit(kind), ["audit-fields", "--fail-on-drift"])
+    flagged_out = capsys.readouterr().out
+
+    assert (plain, flagged) == (ExitCode[without], ExitCode[with_flag])
+    assert flagged_out == plain_out, "the flag changed the JSON"
+    if kind == "no list":
+        assert flagged_out == ""
+        return
+    out = json.loads(flagged_out)
+    # The cells are what their names say, so each exit code is judged on its own input.
+    assert (out["with_drift"] > 0) == ("drift" in kind), out
+    assert bool(out["warnings"]) == ("warnings" in kind), out
+
+
+def test_i37_findings_beats_incomplete_and_keeps_the_warnings(monkeypatch, capsys) -> None:
+    from harness_core.exitcodes import ExitCode
+
+    code = _run(monkeypatch, _i37_audit("drift+warnings"), ["audit-fields", "--fail-on-drift"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == ExitCode.FINDINGS
+    assert out["with_drift"] >= 1 and out["warnings"], out
+
+
+def test_i37_fail_on_drift_help_names_the_table() -> None:
+    audit = _parser()._subparsers._group_actions[0].choices["audit-fields"]  # noqa: SLF001
+    help_text = next(a.help for a in audit._actions if "--fail-on-drift" in a.option_strings)  # noqa: SLF001
+    assert "FINDINGS" in help_text and "exit-codes.md" in help_text
