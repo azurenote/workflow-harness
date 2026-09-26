@@ -1,6 +1,6 @@
 ---
 name: project-done
-description: Run completion in one flow: verify DoD -> write impl-report -> commit -> create PR (GitHub) or merge branch (Jira) -> update issue status.
+description: Run completion in one flow: verify DoD -> write impl-report -> commit -> create PR (GitHub/Forgejo) or merge branch (Jira) -> update issue status.
 ---
 
 # project-done - Complete Work
@@ -38,7 +38,7 @@ Do not translate the completion report to English unless the user explicitly req
 project-done <issue-id> [adr]
 ```
 
-- `<issue-id>`: GitHub issue number or Jira ticket ID
+- `<issue-id>`: GitHub or Forgejo issue number, or Jira ticket ID
   - If omitted, infer it from conversation context or the current branch name.
 - `[adr]`: write ADR before commit
 
@@ -248,12 +248,60 @@ git checkout <base_branch> && git merge --no-ff "<branch-name>" && git push orig
 - **Do not reach for `git worktree remove -f -f`.** Losing work is not a way out of a blocked checkout; removal belongs to `project-clean`, after the merge landed.
 - **The CWD stays on the base branch for the rest of this skill.** That is intentional, not leftover state: Steps 8 through 12 run from here, and the `project-clean` handoff at the end of Step 12 assumes the base is checked out. Do not `cd` back to the worktree to tidy up. Note this is the Jira path only — the GitHub path above does not change directory, so the two paths reach Step 8 from different places.
 
+### Forgejo (`issue_tracker: forgejo`)
+
+**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다 — 조회가 증거다.** `project-issue` 의 Forgejo 절이 이슈 생성에 세운 원칙과 같은 원칙이고, 이 절은 그것을 PR 생성에 적용한다.
+
+harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 무관하게 `fj` 직접 호출이 유일한 경로다. 전역 옵션(`-H`)은 서브커맨드 앞에 온다. 이 경로는 디렉터리를 바꾸지 않는다 — GitHub 경로처럼 작업 CWD 그대로 8단계로 간다.
+
+Forgejo 는 PR 이 있으므로 위 Jira 의 직접 병합 경로로 보내지 않는다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:
+
+```bash
+REPORT_ROOT="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+[ -n "$REPORT_ROOT" ] && [ -d "$REPORT_ROOT" ] || {
+  echo "could not resolve the main checkout"; exit 1; }
+REPORT="$REPORT_ROOT/.task/plan/impl-report-<id>.md"
+[ -f "$REPORT" ] || { echo "no impl-report at $REPORT"; exit 1; }
+grep -qxF "<trailer>" "$REPORT" || printf '\n%s\n' "<trailer>" >> "$REPORT"
+TITLE="$(sed -n 's/^# 구현 보고서: //p' "$REPORT" | head -1)"
+[ -n "$TITLE" ] || { echo "no '# 구현 보고서: ' title line in $REPORT"; exit 1; }
+CREATED="$(fj -H <forgejo_host> pr create "$TITLE" --body-file "$REPORT" --base "<base_branch>" --head "<branch-name>" -r <forgejo_repo>)" || CREATE_FAILED=1
+PR_NUMBER="$(printf '%s\n' "$CREATED" \
+  | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().replace("\u2068", "").replace("\u2069", ""))' \
+  | sed -n 's/^created pull request #\([0-9][0-9]*\).*/\1/p')"
+printf 'REPORT=%s\nCREATE_FAILED=%s\nPR_NUMBER=%s\n' "$REPORT" "${CREATE_FAILED:-0}" "$PR_NUMBER"
+printf '%s\n' "$CREATED"
+```
+
+- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 파일이 없으면 PR 을 만들지 않고 멈춘다. 이 확인은 4단계가 보고서를 어디에 썼는지 대신 정해 주지 않는다 — 작업 CWD 에 쓰인 보고서는 여기서 "없음" 으로 드러나고, 그때는 메인 체크아웃의 이 경로로 옮긴 뒤 다시 실행한다.
+- **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합 시 Forgejo 가 `Closes` 로 이슈를 닫는 것은 실측 네 건에서 확인됐다. 네 건 모두 본문과 커밋 트레일러 양쪽에 줄이 있었으므로, 어느 쪽이 닫았는지는 **가르지 못했다** — 그래서 둘 다 둔다.
+- **서브-PR 의 본문에는 `Closes #<id>` 가 없어야 한다.** 보고서에 습관처럼 그 줄이 남아 있으면 지운 뒤 펜스를 실행한다 — 5단계가 서브-PR 에서 `Closes` 를 뺀 이유가 본문에서 되살아나지 않게 한다.
+- **`--base`/`--head` 를 명시한다.** GitHub 절과 같은 이유다 — 세 계층이 한 출처에 합의해야 한다. 저장소는 `-r <forgejo_repo>` 로만 준다. 이 리프 명령에는 `-R` 이 없다.
+- **제목은 보고서 첫 줄 한 곳에서 읽어 변수로 넘긴다.** 리터럴로 붙여넣으면 백틱이 명령 치환으로 실행된다. 그 줄이 없으면(영어 보고서 등) 빈 제목으로 PR 을 만들지 않고 멈춘다. 제목이 `WIP: ` 로 시작하면 Forgejo 는 draft PR 로 만든다.
+- **본문을 대신 채우는 플래그를 쓰지 않는다.** 이 명령의 `-A`(`--autofill`)는 커밋에서 본문을 만들어 impl-report 를 버린다. `-a` 는 라벨이 아니라 `--agit` 이고, `-w` 는 `--web` 이다 — 셋 다 이 경로에서 쓰지 않는다.
+- **격리 제거는 추출보다 앞에 둔다.** 생성 출력은 `issue create` 와 같은 모양(`created pull request #N: <title>`)이고 번호가 양방향 격리 문자로 감싸여 있다. 빼거나 뒤로 옮기면 추출이 에러 없이 빈 문자열을 돌려준다.
+
+두 실패의 복구가 다르다. 생성과 추출을 한 파이프라인으로 합치지 않은 이유가 이것이다:
+
+- `CREATE_FAILED` 가 `1` — PR 은 **만들어지지 않았다**(같은 head 의 PR 이 이미 열려 있는 경우 포함). 웹 UI 에서 사람이 `<branch-name>` 의 PR 을 확인하거나 만들어 번호를 돌려받는다. 검색으로 번호를 추측하지 않는다.
+- 생성은 됐는데 `PR_NUMBER` 가 비었다 — 펜스가 출력한 생성 출력 원문에서 번호를 읽는다. 읽을 수 없으면 웹 UI 에서 `<branch-name>` 의 열린 PR 을 찾는다. 제목 검색은 쓰지 않는다 — 결과를 좁히지 못하고 출력에 head 브랜치가 없어 같은 제목의 다른 PR 과 가를 수 없다.
+
+PR URL 은 `https://<forgejo_host>/<forgejo_repo>/pulls/<PR_NUMBER>` 로 조립한다 — `pr view` 출력에는 URL 이 없다. 읽기 확인:
+
+```bash
+fj -H <forgejo_host> pr view "<forgejo_repo>#<PR_NUMBER>" > "<log-file>" 2>&1
+python3 -c 'import sys; sys.stdout.write(sys.stdin.read().replace("\u2068", "").replace("\u2069", ""))' < "<log-file>"
+```
+
+- 격리 제거한 출력의 1행은 `<TITLE> #<PR_NUMBER>`, 2행의 상태는 `Open`, 3행은 `From` 뒤에 `<branch-name>`, `into` 뒤에 `<base_branch>` 가 백틱으로 감싸여 나온다. 셋 중 하나라도 다르면 PR 을 **잘못 만든 것**으로 보고한다 — GitHub 절의 세 계층 합의를 Forgejo 에서 확인하는 자리가 여기다.
+
 **8. Project status -> In Review**
 
 ```bash
 <harness_cli> set-review <issue-id>
 # fallback (GitHub): gh project item-edit <github_project.number> --owner <github_project.owner> --url <issue-url> --field Status --value "<status_names.in_review>" || echo "status not applied"
 # fallback (Jira):   jira issue move "<ticket-id>" "<target-state>"   # then read it back, below
+# fallback (Forgejo): none - see the Forgejo paragraph at the end of this step
 ```
 
 Same contract as `project-start` Step 3: the status is a project field. A failure here is reported as **not applied** and does not stop the flow, and it is never worked around with a label. See `~/.claude/skills/_shared/references/github-issue-fields.md`.
@@ -272,13 +320,30 @@ jira issue view "<ticket-id>" --raw      # read the status field out of this res
 
 > Limitation: this skillset's own repo has no Jira project, so this path was checked against the installed CLI's flag surface and this document's internal consistency. It has not been executed against a live Jira.
 
+**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Review 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이다.
+
 **9. Post issue comment**
 
 ```bash
 <harness_cli> add-comment <id> "Implementation complete. PR: <PR_URL>"
 # fallback (GitHub): gh issue comment <id> --body "Implementation complete. PR: <PR_URL>"
 # fallback (Jira):   jira issue comment add <ticket-id> "Implementation complete. Branch: <branch-name>"
+# fallback (Forgejo): fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' 'Implementation complete. PR: <PR_URL>'
 ```
+
+Forgejo 에서는 `harness_enabled` 와 무관하게 위 Forgejo 줄로 게시한다 — forgejo 어댑터가 없으므로 첫 줄의 `add-comment` 는 부르지 않는다.
+
+- **저장소는 이슈 인자에 넣는다.** 이 명령은 `-r` 을 받지 않는다(`unexpected argument '-r'`). `-R` 은 저장소가 아니라 로컬 git remote 이름이라, owner/repo 를 넣으면 `no repo info specified` 로 실패한다. remote 이름으로 게시하는 형태는 실측되지 않았으므로 쓰지 않는다. 형제 명령(`pr create` 는 `-r` 을 받는다)과 표면이 다르다 — 한쪽에 맞춰 통일하지 않는다.
+- **성공이 조용하다 — 게시 여부는 조회로만 확인한다.** 성공 시 stdout 이 0 바이트이므로 종료코드와 출력으로는 알 수 없다:
+
+  ```bash
+  fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments > "<log-file>" 2>&1
+  ```
+
+- 로그에서 방금 쓴 PR URL 을 찾는다. 코멘트 본문 줄은 `> ` 로 시작하는 평문이다(격리 문자는 작성자 줄에만 있다).
+- **코멘트 개수 비교로 게시를 확인하지 않는다 — 기본 `issue view` 표면은 개수만 보여 주고 본문이 없다.**
+- 찾지 못하면 코멘트를 **미반영**으로 보고하고 웹 UI 게시를 안내한다.
+- 본문에 백틱이나 따옴표가 들어가면 위치 인자 대신 절대 경로 `--body-file` 로 넘긴다.
 
 **9-H. `post_done` hook (only if present)**
 
@@ -294,11 +359,27 @@ For a **sub-PR (base != default)**, `Closes` does not fire, so the issue remains
 <harness_cli> clean-temp <issue-id>
 ```
 
+Forgejo 에서는 프로젝트 harness 가 `clean-temp` 를 노출할 때만 실행한다. 없으면 이 단계를 건너뛰고 건너뛴 사실을 보고한다.
+
 **11. Check CI**
 
 Creating the PR, or merging the branch, is not the end of the step. Watch the checks that change triggered and report what they did.
 
 - **PR path (GitHub)**: prefer the host's PR-watching path if one is available; otherwise poll with the CLI (`gh pr checks <PR_URL>`). Do not use a blocking `--watch` without a bound — it can outlive the command timeout and come back as an interrupted tool call rather than a result. Poll, report the state, and poll again.
+- **PR path (Forgejo)**: `gh pr checks` 의 대응물은 `fj pr status` 다. 저장소의 작업 목록과 함께 파일로 받아 읽는다. `--wait` 는 끝이 없으므로 쓰지 않는다:
+
+  ```bash
+  fj -H <forgejo_host> pr status "<forgejo_repo>#<PR_NUMBER>" > "<log-file>" 2>&1
+  fj -H <forgejo_host> actions tasks -r <forgejo_repo> > "<tasks-log-file>" 2>&1
+  ```
+
+  - 판정은 로그의 체크 줄이 한다. `pr status` 는 체크가 Pending 이어도 종료코드 0 으로 끝나므로 종료코드 0 은 통과의 증거가 아니다.
+  - 종료코드가 0 이 아니거나(병합된 PR 에서 이 명령은 패닉한다) 로그를 읽을 수 없으면 CI 상태를 unknown 으로 보고한다.
+  - 체크 줄에 실패가 하나라도 있으면 실패로, 모두 성공이면 통과로 보고한다.
+  - Pending 이고 `actions tasks` 가 총 0건이면 러너가 작업을 받지 않은 것이다 — "no checks ran" 발견사항으로 보고하고 통과로 세지 않는다.
+  - `actions tasks` 는 저장소 전체의 작업 이력이다. 과거에 작업이 한 번이라도 돌았다면 총 0건 분기는 나오지 않고 아래 1건 이상 분기로 간다.
+  - Pending 이고 `actions tasks` 가 1건 이상이면 그 작업이 이 PR 의 것인지 가를 수 없다(목록은 저장소 전체다) — "CI pending" 으로 보고하고 한도를 두고 다시 읽는다.
+  - 체크가 돌지 않았으면 CI 가 돌렸어야 할 스위트를 로컬에서 돌린 결과를 함께 적는다 — 대체 게이트일 뿐 CI 결과를 대신하지 않는다.
 - **Branch-merge path (Jira, or any tracker without PRs)**: there is no PR to check. Read the CI run for the merge commit through whatever the project uses; if the project has no CI on that branch, say exactly that.
 - **Do not pipe the check command.** Its output is long, which is exactly what tempts a `| tail` or a `| grep`, and that hands you the filter's exit code instead of the check's. Redirect to a file (`> "<log-file>" 2>&1`) and read the file. **Read the result from the exit code and the verdict line together** — neither is sufficient alone, and when they disagree the run is reported as failed. Do not rely on `set -o pipefail`; the caller's shell options are not ours to assume.
 - `gh pr checks` exits non-zero when a PR has no checks at all. That is a **finding**, not a tool error — report it as "no checks ran".
@@ -310,6 +391,6 @@ Creating the PR, or merging the branch, is not the end of the step. Watch the ch
 **12. Output**
 
 - commit hash
-- PR URL (GitHub), or merge commit hash (Jira)
+- PR URL (GitHub/Forgejo), or merge commit hash (Jira)
 - CI state: which checks ran, and their result (or `pending` / `unknown` with the reason)
 - after merge: run `project-clean` to clean branches/worktrees

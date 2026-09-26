@@ -1058,7 +1058,7 @@ def _declared_references(skill: str) -> set[str]:
 
 
 def test_every_declared_reference_exists() -> None:
-    """A pointer to a file that is not there is worse than no pointer.
+    r"""A pointer to a file that is not there is worse than no pointer.
 
     Match the whole filename, extension included. An earlier version matched
     `\.md` without a boundary, so a pointer renamed to `hooks.markdown` was read
@@ -2086,12 +2086,13 @@ def test_codex_reference_shows_the_plan_path_argument() -> None:
 
 
 def test_skill_config_scopes_the_forgejo_write_contract() -> None:
-    """Creation is contracted; status transitions and comments are not.
+    """Issue creation, comments and PR creation are contracted; status transitions are not.
 
-    Three skills read this document first, and none of them documents an `fj`
-    status-transition or comment command. Declaring write support unscoped sends
-    them hunting for a path that does not exist — which this document forbids
-    two lines above ("확인 명령을 추측하지 말 것").
+    Comments and PR creation were measured live and are documented in
+    project-done; no skill documents an `fj` status-transition command.
+    Declaring write support unscoped sends a reader hunting for a path that does
+    not exist — which this document forbids two lines above ("확인 명령을 추측하지
+    말 것"). The two halves sit on separate lines so each is pinned on its own.
     """
     text = read_skill("skills/SKILL-CONFIG.md")
 
@@ -2100,12 +2101,13 @@ def test_skill_config_scopes_the_forgejo_write_contract() -> None:
         assert retraction not in text, f"the write contract is retracted in prose: {retraction}"
 
     assert_rule(
-        text, "쓰기(write) 중 **이슈 생성까지**가 계약이다",
+        text, "쓰기(write) 중 **이슈 생성·이슈 코멘트·PR 생성**이 계약이다",
         starts_with="`forgejo` 는 조회(read) 전체와",
     )
-    assert "상태 전환과 코멘트에는 아직 `fj` 계약이 없다" in text, (
-        "the unwritten half of the forgejo surface is no longer named"
-    )
+    assert_whole_line(text, (
+        "**상태 전환에는 아직 `fj` 계약이 없다** — 그 쓰기는 아래 웹 UI 수동 처리로 가거나, "
+        "미반영으로 보고하고 계속한다."
+    ))
     # Both fallbacks survive the correction, in substance and not just in word.
     assert_rule(
         text, '"미확인" 으로 표기한 뒤 절차를 계속한다',
@@ -2857,10 +2859,15 @@ def test_link_mode_comment_needs_its_own_yes_after_step_8() -> None:
     assert "gh issue comment \"<id>\" --body-file '<plan-file>'" in lines
     assert "jira issue comment add \"<id>\" --template '<plan-file>' --no-input" in lines
 
-    forgejo = section.split("**Forgejo** — `~/.claude/skills/SKILL-CONFIG.md` gives comments", 1)
+    forgejo = section.split("- **Forgejo** — comments are part of the `fj` write contract", 1)
     assert len(forgejo) == 2, "the Forgejo comment branch is gone"
-    assert "미반영" in forgejo[1]
-    assert "fj " not in _fenced(forgejo[1]), "a Forgejo comment command was invented"
+    assert "미반영" in forgejo[1] and "`comments` surface" in forgejo[1], (
+        "the Forgejo comment is no longer read back, or a missing one is no longer reported"
+    )
+    # The one measured form: repository in the issue argument, body from the file.
+    assert (
+        "fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file '<plan-file>'" in lines
+    ), "the Forgejo comment is not posted through the measured fj form"
 
 
 def test_link_mode_changes_the_confirmation_and_the_output() -> None:
@@ -2984,3 +2991,503 @@ def test_start_requires_the_local_plan_before_side_effects() -> None:
     assert_whole_line(step5, "Read the `plan-<issue-id>.md` that Step 1-A found in the main worktree's plan directory.")
     assert "issue body" not in step5, "the issue-body fallback is back"
     assert ".task/plan/plan-<issue-id>.md" not in text, "a CWD-relative plan path is back"
+
+# --------------------------------------------------------------------------
+# project-done's Forgejo branch (#28)
+#
+# Every procedure here was run live before it was written down, and every
+# failure it guards is silent: a comment that posts nothing prints nothing, a
+# comment that *did* post also prints nothing, `pr status` exits 0 on a check
+# that will stay Pending forever, and a PR body read from a worktree-relative
+# path is an absolute path to a file that is not there.
+#
+# Two layers, on purpose. The shape guards pin argument roles, raw command
+# lines and redirects, and say *why* each shape matters. The golden tuples pin
+# every Forgejo prose line whole: a review showed keyword and anchor guards
+# surviving a rule inverted in its result clause ("warn and continue"), a
+# contradicting bullet added beside it, and a lower-case "pending" read as a
+# pass. A whole-line pin is the only shape none of those walk past, so editing
+# a Forgejo rule means editing its tuple here — deliberately.
+#
+# `_fj_invocations` stays the scanner; the parser below is local because the
+# shared `_FJ_VALUE_FLAGS` does not know `--base`/`--head` or the long aliases,
+# and the shared helpers are not ours to widen from here.
+# --------------------------------------------------------------------------
+
+_DONE_SKILL = "skills/project-done/SKILL.md"
+_DONE_FORGEJO_HEADING = "### Forgejo (`issue_tracker: forgejo`)"
+_FJ_FLAG_ALIASES = {
+    "--repo": "-r", "--remote": "-R", "--autofill": "-A", "--agit": "-a",
+    "--web": "-w", "--host": "-H", "--cwd": "-C",
+}
+_DONE_FJ_VALUE_FLAGS = {"-H", "-C", "-r", "-R", "--base", "--head", "--body", "--body-file", "--style"}
+_SINGLE_PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+_REDIRECTED = re.compile(r'>\s*"<[^"]+>"\s+2>&1$')
+
+_GOLDEN_DONE_FORGEJO = (
+    '### Forgejo (`issue_tracker: forgejo`)',
+    '**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다 — 조회가 증거다.** `project-issue` 의 Forgejo 절이 이슈 생성에 세운 원칙과 같은 원칙이고, 이 절은 그것을 PR 생성에 적용한다.',
+    'harness 분기는 없다. forgejo 어댑터가 존재하지 않으므로 `harness_enabled` 값과 무관하게 `fj` 직접 호출이 유일한 경로다. 전역 옵션(`-H`)은 서브커맨드 앞에 온다. 이 경로는 디렉터리를 바꾸지 않는다 — GitHub 경로처럼 작업 CWD 그대로 8단계로 간다.',
+    'Forgejo 는 PR 이 있으므로 위 Jira 의 직접 병합 경로로 보내지 않는다. **아래 펜스는 한 셸 호출로 실행한다** — 뒤 줄이 앞 줄의 변수를 읽고, 셸 변수는 다음 호출로 넘어가지 않으므로 뒤 단계가 쓸 값은 마지막 두 줄이 출력한다:',
+    '```bash',
+    'REPORT_ROOT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"',
+    '[ -n "$REPORT_ROOT" ] && [ -d "$REPORT_ROOT" ] || {',
+    'echo "could not resolve the main checkout"; exit 1; }',
+    'REPORT="$REPORT_ROOT/.task/plan/impl-report-<id>.md"',
+    '[ -f "$REPORT" ] || { echo "no impl-report at $REPORT"; exit 1; }',
+    'grep -qxF "<trailer>" "$REPORT" || printf \'\\n%s\\n\' "<trailer>" >> "$REPORT"',
+    'TITLE="$(sed -n \'s/^# 구현 보고서: //p\' "$REPORT" | head -1)"',
+    '[ -n "$TITLE" ] || { echo "no \'# 구현 보고서: \' title line in $REPORT"; exit 1; }',
+    'CREATED="$(fj -H <forgejo_host> pr create "$TITLE" --body-file "$REPORT" --base "<base_branch>" --head "<branch-name>" -r <forgejo_repo>)" || CREATE_FAILED=1',
+    'PR_NUMBER="$(printf \'%s\\n\' "$CREATED" \\',
+    '| python3 -c \'import sys; sys.stdout.write(sys.stdin.read().replace("\\u2068", "").replace("\\u2069", ""))\' \\',
+    '| sed -n \'s/^created pull request #\\([0-9][0-9]*\\).*/\\1/p\')"',
+    'printf \'REPORT=%s\\nCREATE_FAILED=%s\\nPR_NUMBER=%s\\n\' "$REPORT" "${CREATE_FAILED:-0}" "$PR_NUMBER"',
+    'printf \'%s\\n\' "$CREATED"',
+    '```',
+    '- **보고서는 절대 경로로 넘긴다.** `.task/plan/` 은 gitignore 되어 메인 체크아웃에만 있고, 작업 CWD 는 워크트리일 수 있다. 경로는 git 에게 메인 체크아웃을 물어 얻는다 — 작업 트리 루트나 현재 디렉터리에서 조립하면 워크트리에서 **절대 경로이지만 틀린 경로**가 된다. 파일이 없으면 PR 을 만들지 않고 멈춘다. 이 확인은 4단계가 보고서를 어디에 썼는지 대신 정해 주지 않는다 — 작업 CWD 에 쓰인 보고서는 여기서 "없음" 으로 드러나고, 그때는 메인 체크아웃의 이 경로로 옮긴 뒤 다시 실행한다.',
+    '- **본문에 닫는 트레일러가 있어야 한다.** `<trailer>` 는 5단계의 커밋 트레일러와 같은 줄이다 — 기본 base 면 `Closes #<id>`, 서브-PR 이면 `Part of #<parent_issue>`. 기본 base 의 `Closes` 줄은 4단계 템플릿에 없으므로 여기서 확인하고 없으면 덧붙인다. 병합 시 Forgejo 가 `Closes` 로 이슈를 닫는 것은 실측 네 건에서 확인됐다. 네 건 모두 본문과 커밋 트레일러 양쪽에 줄이 있었으므로, 어느 쪽이 닫았는지는 **가르지 못했다** — 그래서 둘 다 둔다.',
+    '- **서브-PR 의 본문에는 `Closes #<id>` 가 없어야 한다.** 보고서에 습관처럼 그 줄이 남아 있으면 지운 뒤 펜스를 실행한다 — 5단계가 서브-PR 에서 `Closes` 를 뺀 이유가 본문에서 되살아나지 않게 한다.',
+    '- **`--base`/`--head` 를 명시한다.** GitHub 절과 같은 이유다 — 세 계층이 한 출처에 합의해야 한다. 저장소는 `-r <forgejo_repo>` 로만 준다. 이 리프 명령에는 `-R` 이 없다.',
+    '- **제목은 보고서 첫 줄 한 곳에서 읽어 변수로 넘긴다.** 리터럴로 붙여넣으면 백틱이 명령 치환으로 실행된다. 그 줄이 없으면(영어 보고서 등) 빈 제목으로 PR 을 만들지 않고 멈춘다. 제목이 `WIP: ` 로 시작하면 Forgejo 는 draft PR 로 만든다.',
+    '- **본문을 대신 채우는 플래그를 쓰지 않는다.** 이 명령의 `-A`(`--autofill`)는 커밋에서 본문을 만들어 impl-report 를 버린다. `-a` 는 라벨이 아니라 `--agit` 이고, `-w` 는 `--web` 이다 — 셋 다 이 경로에서 쓰지 않는다.',
+    '- **격리 제거는 추출보다 앞에 둔다.** 생성 출력은 `issue create` 와 같은 모양(`created pull request #N: <title>`)이고 번호가 양방향 격리 문자로 감싸여 있다. 빼거나 뒤로 옮기면 추출이 에러 없이 빈 문자열을 돌려준다.',
+    '두 실패의 복구가 다르다. 생성과 추출을 한 파이프라인으로 합치지 않은 이유가 이것이다:',
+    '- `CREATE_FAILED` 가 `1` — PR 은 **만들어지지 않았다**(같은 head 의 PR 이 이미 열려 있는 경우 포함). 웹 UI 에서 사람이 `<branch-name>` 의 PR 을 확인하거나 만들어 번호를 돌려받는다. 검색으로 번호를 추측하지 않는다.',
+    '- 생성은 됐는데 `PR_NUMBER` 가 비었다 — 펜스가 출력한 생성 출력 원문에서 번호를 읽는다. 읽을 수 없으면 웹 UI 에서 `<branch-name>` 의 열린 PR 을 찾는다. 제목 검색은 쓰지 않는다 — 결과를 좁히지 못하고 출력에 head 브랜치가 없어 같은 제목의 다른 PR 과 가를 수 없다.',
+    'PR URL 은 `https://<forgejo_host>/<forgejo_repo>/pulls/<PR_NUMBER>` 로 조립한다 — `pr view` 출력에는 URL 이 없다. 읽기 확인:',
+    '```bash',
+    'fj -H <forgejo_host> pr view "<forgejo_repo>#<PR_NUMBER>" > "<log-file>" 2>&1',
+    'python3 -c \'import sys; sys.stdout.write(sys.stdin.read().replace("\\u2068", "").replace("\\u2069", ""))\' < "<log-file>"',
+    '```',
+    '- 격리 제거한 출력의 1행은 `<TITLE> #<PR_NUMBER>`, 2행의 상태는 `Open`, 3행은 `From` 뒤에 `<branch-name>`, `into` 뒤에 `<base_branch>` 가 백틱으로 감싸여 나온다. 셋 중 하나라도 다르면 PR 을 **잘못 만든 것**으로 보고한다 — GitHub 절의 세 계층 합의를 Forgejo 에서 확인하는 자리가 여기다.',
+)
+
+_GOLDEN_DONE_STEP9_FORGEJO = (
+    'Forgejo 에서는 `harness_enabled` 와 무관하게 위 Forgejo 줄로 게시한다 — forgejo 어댑터가 없으므로 첫 줄의 `add-comment` 는 부르지 않는다.',
+    "- **저장소는 이슈 인자에 넣는다.** 이 명령은 `-r` 을 받지 않는다(`unexpected argument '-r'`). `-R` 은 저장소가 아니라 로컬 git remote 이름이라, owner/repo 를 넣으면 `no repo info specified` 로 실패한다. remote 이름으로 게시하는 형태는 실측되지 않았으므로 쓰지 않는다. 형제 명령(`pr create` 는 `-r` 을 받는다)과 표면이 다르다 — 한쪽에 맞춰 통일하지 않는다.",
+    '- **성공이 조용하다 — 게시 여부는 조회로만 확인한다.** 성공 시 stdout 이 0 바이트이므로 종료코드와 출력으로는 알 수 없다:',
+    '```bash',
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments > "<log-file>" 2>&1',
+    '```',
+    '- 로그에서 방금 쓴 PR URL 을 찾는다. 코멘트 본문 줄은 `> ` 로 시작하는 평문이다(격리 문자는 작성자 줄에만 있다).',
+    '- **코멘트 개수 비교로 게시를 확인하지 않는다 — 기본 `issue view` 표면은 개수만 보여 주고 본문이 없다.**',
+    '- 찾지 못하면 코멘트를 **미반영**으로 보고하고 웹 UI 게시를 안내한다.',
+    '- 본문에 백틱이나 따옴표가 들어가면 위치 인자 대신 절대 경로 `--body-file` 로 넘긴다.',
+)
+
+_GOLDEN_DONE_STEP11_FORGEJO = (
+    '- **PR path (Forgejo)**: `gh pr checks` 의 대응물은 `fj pr status` 다. 저장소의 작업 목록과 함께 파일로 받아 읽는다. `--wait` 는 끝이 없으므로 쓰지 않는다:',
+    '```bash',
+    'fj -H <forgejo_host> pr status "<forgejo_repo>#<PR_NUMBER>" > "<log-file>" 2>&1',
+    'fj -H <forgejo_host> actions tasks -r <forgejo_repo> > "<tasks-log-file>" 2>&1',
+    '```',
+    '- 판정은 로그의 체크 줄이 한다. `pr status` 는 체크가 Pending 이어도 종료코드 0 으로 끝나므로 종료코드 0 은 통과의 증거가 아니다.',
+    '- 종료코드가 0 이 아니거나(병합된 PR 에서 이 명령은 패닉한다) 로그를 읽을 수 없으면 CI 상태를 unknown 으로 보고한다.',
+    '- 체크 줄에 실패가 하나라도 있으면 실패로, 모두 성공이면 통과로 보고한다.',
+    '- Pending 이고 `actions tasks` 가 총 0건이면 러너가 작업을 받지 않은 것이다 — "no checks ran" 발견사항으로 보고하고 통과로 세지 않는다.',
+    '- `actions tasks` 는 저장소 전체의 작업 이력이다. 과거에 작업이 한 번이라도 돌았다면 총 0건 분기는 나오지 않고 아래 1건 이상 분기로 간다.',
+    '- Pending 이고 `actions tasks` 가 1건 이상이면 그 작업이 이 PR 의 것인지 가를 수 없다(목록은 저장소 전체다) — "CI pending" 으로 보고하고 한도를 두고 다시 읽는다.',
+    '- 체크가 돌지 않았으면 CI 가 돌렸어야 할 스위트를 로컬에서 돌린 결과를 함께 적는다 — 대체 게이트일 뿐 CI 결과를 대신하지 않는다.',
+)
+
+_GOLDEN_ISSUE_LINK_FORGEJO = (
+    '- **Forgejo** — comments are part of the `fj` write contract in `~/.claude/skills/SKILL-CONFIG.md`.',
+    'The repository goes in the issue argument: this command takes no `-r`, and its `-R` names a git',
+    'remote, not `owner/repo`. Success prints nothing, so read it back with the `comments` surface and',
+    "look for the plan's title line, quoted as `> # Plan: <title>`; if it is not there, report the",
+    'comment as 미반영 (`project-done` Step 9 applies the same read-back to its own comment):',
+    '```bash',
+    "fj -H <forgejo_host> issue comment '<forgejo_repo>#<id>' --body-file '<plan-file>'",
+    'fj -H <forgejo_host> --style minimal issue view "<forgejo_repo>#<id>" comments > "<log-file>" 2>&1',
+    '```',
+)
+
+_GOLDEN_DONE_STEP8_FORGEJO = '**Forgejo 에는 상태 전환 `fj` 계약이 없다.** `harness_enabled` 와 무관하게 이 단계의 명령을 부르지 않고, 상태를 **미반영**으로 보고한 뒤 계속한다. 라벨로 In Review 를 흉내 내지 않는다 — 근거는 `~/.claude/skills/SKILL-CONFIG.md` 의 "이슈 트래커" 절이다.'
+
+_GOLDEN_DONE_STEP8_FENCE = '# fallback (Forgejo): none - see the Forgejo paragraph at the end of this step'
+
+_GOLDEN_DONE_STEP10_FORGEJO = 'Forgejo 에서는 프로젝트 harness 가 `clean-temp` 를 노출할 때만 실행한다. 없으면 이 단계를 건너뛰고 건너뛴 사실을 보고한다.'
+
+_GOLDEN_CONFIG_CONTRACT = '`forgejo` 는 조회(read) 전체와, 쓰기(write) 중 **이슈 생성·이슈 코멘트·PR 생성**이 계약이다. 이슈 생성의 상세 절차 — 필수 플래그, 이슈 번호 추출, 라벨 적용과 읽기 확인 — 는 `project-issue` 본문의 `### Forgejo` 절에, 이슈 코멘트와 PR 생성의 상세 절차 — 저장소 지정 형태, 조용한 성공과 조회 확인 — 는 `project-done` 의 7·9단계에 있다. 여기에 복제하지 않고 가리킨다.'
+
+_GOLDEN_CONFIG_WRITE_FAILURE = '**이슈 생성은 `fj` 가 1순위이고, 웹 UI 수동 처리는 그 뒤의 마지막 단**이다. 계약이 있는 쓰기에서 `fj` 경로가 실패하면 웹 UI 수동 처리를 안내한다. 뒤 단계가 결과를 입력으로 쓰는 쓰기(이슈 번호·PR 번호)는 수동 결과를 받아 이후 단계를 진행한다 — 읽기 실패는 "미확인" 으로 넘길 수 있지만 이 쓰기의 실패는 그럴 수 없다. 번호는 로컬에서 합성할 수 없고 `project-start` 와 `project-done` 의 뒷단계가 그것을 입력으로 요구한다.'
+
+_GOLDEN_CONFIG_UNCONSUMED = '결과를 아무도 입력으로 쓰지 않는 쓰기 — 이슈 코멘트, 그리고 위 줄의 상태 전환 — 가 되지 않았으면 미반영으로 보고하고 계속한다.'
+
+_GOLDEN_ISSUE_OUTPUT_COMMENT = '- the comment result from Step 1-L: posted (with where it can be seen), declined, skipped for a recovery run, or 미반영 when the posted comment could not be read back. For every result but posted, include the Step 1-L command that would post `plan-<id>.md` later.'
+
+
+def _done_skill() -> str:
+    return read_skill(_DONE_SKILL)
+
+
+def _stripped_lines(text: str, start: str, end: str) -> list[str]:
+    """Non-blank stripped lines from the one line starting `start` up to `end`."""
+    lines = text.splitlines()
+    starts = [i for i, l in enumerate(lines) if l.strip().startswith(start)]
+    assert len(starts) == 1, f"expected one line starting {start!r}, got {len(starts)}"
+    stop = next((k for k in range(starts[0] + 1, len(lines)) if lines[k].strip().startswith(end)), None)
+    assert stop is not None, f"no {end!r} after {start!r}"
+    return [l.strip() for l in lines[starts[0]:stop] if l.strip()]
+
+
+def _done_forgejo() -> str:
+    """Step 7's Forgejo section: its heading line up to Step 8's heading."""
+    section = "\n".join(_stripped_lines(_done_skill(), _DONE_FORGEJO_HEADING, "**8. Project status"))
+    assert "pr create" in section, "the Forgejo section lost its PR creation"
+    return section
+
+
+def _done_step(heading: str) -> str:
+    section = skill_section(_done_skill(), heading)
+    assert section, f"project-done has no step starting {heading!r}"
+    return section
+
+
+def _fj_argv(invocation: str) -> list[str]:
+    """Shell words up to the first redirect, with flag spellings normalised.
+
+    `--repo=x` becomes `-r x`, `-rX` becomes `-r X` for a value flag, a cluster
+    such as `-Aw` becomes `-A -w`, and every long alias becomes its short form.
+    Without this, each flag ban below is a string comparison that another
+    spelling of the same flag walks past.
+    """
+    import shlex
+
+    words: list[str] = []
+    for token in shlex.split(invocation):
+        if re.match(r"^\d*>", token):
+            break
+        if token.startswith("--") and "=" in token:
+            flag, value = token.split("=", 1)
+            words.extend([_FJ_FLAG_ALIASES.get(flag, flag), value])
+        elif token.startswith("--"):
+            words.append(_FJ_FLAG_ALIASES.get(token, token))
+        elif re.fullmatch(r"-[A-Za-z]\S+", token):
+            if token[:2] in _DONE_FJ_VALUE_FLAGS:
+                words.extend([token[:2], token[2:]])
+            else:
+                words.extend("-" + ch for ch in token[1:])
+        else:
+            words.append(token)
+    return words
+
+
+def _fj_roles(invocation: str) -> tuple[dict[str, list[str]], list[str]]:
+    """({flag: [values]}, positionals) — positionals include `fj` and the subcommand path.
+
+    A value flag with no value after it (end of line, or another flag next) is
+    recorded with the value `None`, so `--body-file` alone cannot pass as a body.
+    """
+    flags: dict[str, list] = {}
+    positionals: list[str] = []
+    words = _fj_argv(invocation)
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word.startswith("-"):
+            value = None
+            if word in _DONE_FJ_VALUE_FLAGS:
+                nxt = words[index + 1] if index + 1 < len(words) else None
+                if nxt is not None and not nxt.startswith("-"):
+                    value = nxt
+                    index += 1
+            flags.setdefault(word, []).append(value)
+        else:
+            positionals.append(word)
+        index += 1
+    return flags, positionals
+
+
+def _fenced_fj_lines(text: str) -> list[str]:
+    return [l for l in _logical_lines(_fenced(text)) if re.search(r"\bfj\s", l)]
+
+
+def _inline_fj_spans(text: str) -> list[str]:
+    return re.findall(r"`(fj\s[^`]*)`", text)
+
+
+def _all_done_fj() -> list[str]:
+    return _fj_invocations(_done_skill()) + _inline_fj_spans(_done_skill())
+
+
+def test_fj_parser_normalises_spellings_and_needs_values() -> None:
+    """The parser is a guard too; a parser that mis-reads passes bad documents."""
+    flags, positionals = _fj_roles("fj -H h pr create \"$T\" --repo=o/r -Aw --body-file")
+    assert flags["-r"] == ["o/r"] and "-A" in flags and "-w" in flags
+    assert flags["--body-file"] == [None], "a value flag with no value was read as satisfied"
+    assert positionals == ["fj", "pr", "create", "$T"]
+    flags, positionals = _fj_roles("fj -H h issue view \"o/r#1\" comments > \"<log>\" 2>&1")
+    assert positionals == ["fj", "issue", "view", "o/r#1", "comments"] and "-H" in flags
+
+
+def test_done_forgejo_section_sits_after_jira_and_before_step_8() -> None:
+    lines = [l.strip() for l in _done_skill().splitlines()]
+    assert lines.count(_DONE_FORGEJO_HEADING) == 1
+    jira = lines.index("### Jira (`issue_tracker: jira`)")
+    forgejo = lines.index(_DONE_FORGEJO_HEADING)
+    step8 = next(i for i, l in enumerate(lines) if l.startswith("**8. Project status"))
+    assert jira < forgejo < step8, "the Forgejo section is out of place"
+
+
+def test_done_forgejo_prose_and_fences_are_pinned_whole() -> None:
+    """Golden pins: every Forgejo line in project-done, SKILL-CONFIG and link mode."""
+    text = _done_skill()
+    assert tuple(_stripped_lines(text, _DONE_FORGEJO_HEADING, "**8. Project status")) == _GOLDEN_DONE_FORGEJO
+    assert tuple(_stripped_lines(
+        text, "Forgejo 에서는 `harness_enabled` 와 무관하게 위 Forgejo 줄로", "**9-H."
+    )) == _GOLDEN_DONE_STEP9_FORGEJO
+    assert tuple(_stripped_lines(
+        text, "- **PR path (Forgejo)**", "- **Branch-merge path"
+    )) == _GOLDEN_DONE_STEP11_FORGEJO
+    assert tuple(_stripped_lines(
+        _issue_skill(), "- **Forgejo** — comments are part of the `fj` write contract",
+        "**2. User Confirmation**",
+    )) == _GOLDEN_ISSUE_LINK_FORGEJO
+
+    config = read_skill("skills/SKILL-CONFIG.md")
+    for line in (_GOLDEN_CONFIG_CONTRACT, _GOLDEN_CONFIG_WRITE_FAILURE, _GOLDEN_CONFIG_UNCONSUMED):
+        assert_whole_line(config, line)
+    assert_whole_line(_issue_skill(), _GOLDEN_ISSUE_OUTPUT_COMMENT)
+    assert_whole_line(_done_step("**10. Clean temporary files**"), _GOLDEN_DONE_STEP10_FORGEJO)
+
+
+def test_done_every_fenced_fj_call_is_visible_to_the_scanner() -> None:
+    """A call the scanner cannot see is a call no flag ban below applies to.
+
+    `timeout 60 fj …`, `if fj …; then`, `env X=1 fj …` are all real shell and
+    all invisible to `_FJ_LINE_RE`, so the count of fenced lines naming fj has
+    to equal the count the scanner parsed.
+    """
+    text = _done_skill()
+    fenced = _fenced_fj_lines(text)
+    parsed = _fj_invocations(_fenced(text))
+    assert len(fenced) == len(parsed), (
+        "a fenced fj call is written in a form the scanner does not parse:\n" + "\n".join(fenced)
+    )
+    for shape in ("pr create", "pr view", "issue comment", "issue view", "pr status", "actions tasks"):
+        assert any(shape in inv for inv in parsed), f"project-done no longer invokes `fj {shape}`"
+
+
+def test_done_forgejo_pr_create_passes_what_it_must_and_nothing_it_must_not() -> None:
+    section = _done_forgejo()
+    creates = [inv for inv in _fj_invocations(section) if "pr create" in inv]
+    everywhere = [inv for inv in _all_done_fj() if "pr create" in inv]
+    assert len(creates) == 1 and len(everywhere) == 1, (
+        f"expected exactly one documented `fj pr create`, got {everywhere}"
+    )
+
+    flags, positionals = _fj_roles(creates[0])
+    for required in ("--base", "--head", "--body-file", "-r"):
+        assert flags.get(required) and None not in flags[required], (
+            f"`fj pr create` does not pass {required} with a value: {creates[0]}"
+        )
+    for banned in ("-A", "-a", "-w", "-R", "--body"):
+        assert banned not in flags, f"`fj pr create` passes {banned}: {creates[0]}"
+    assert flags["--body-file"] == ["$REPORT"], "the PR body is not the resolved absolute report path"
+    assert positionals == ["fj", "pr", "create", "$TITLE"], (
+        f"the title is not the one variable positional: {positionals}"
+    )
+
+    raw = [l for l in _fenced_fj_lines(section) if "pr create" in l]
+    assert raw[0].startswith('CREATED="$(fj ') and raw[0].endswith("|| CREATE_FAILED=1"), (
+        "PR creation is no longer captured on its own, apart from the parse"
+    )
+    commands = _logical_lines(_fenced(section))
+    titles = [c for c in commands if c.startswith("TITLE=")]
+    assert len(titles) == 1 and titles[0].startswith('TITLE="$(sed -n \'s/^# 구현 보고서: //p\' "$REPORT"'), (
+        f"the title is not read from the report: {titles}"
+    )
+    title_at = commands.index(titles[0])
+    assert commands[title_at + 1].startswith('[ -n "$TITLE" ] ||') and "exit 1" in commands[title_at + 1], (
+        "an empty title is no longer stopped before `pr create`"
+    )
+
+
+def test_done_forgejo_prints_what_later_steps_need() -> None:
+    """Shell variables die with the call; the fence has to print its results."""
+    commands = _logical_lines(_fenced(_done_forgejo()))
+    report = [c for c in commands if c.startswith("printf 'REPORT=%s")]
+    assert len(report) == 1, "the fence no longer prints REPORT/CREATE_FAILED/PR_NUMBER"
+    for var in ('"$REPORT"', '"${CREATE_FAILED:-0}"', '"$PR_NUMBER"'):
+        assert var in report[0], f"the printed state lost {var}"
+    assert commands[commands.index(report[0]) + 1] == "printf '%s\\n' \"$CREATED\"", (
+        "the raw create output is no longer printed for a human to read"
+    )
+
+
+def test_done_forgejo_resolves_the_report_in_the_main_checkout() -> None:
+    section = _done_forgejo()
+    commands = _logical_lines(_fenced(section))
+
+    roots = [c for c in commands if c.startswith("REPORT_ROOT=")]
+    assert roots == ['REPORT_ROOT="$(git worktree list --porcelain | sed -n \'1s/^worktree //p\')"'], (
+        f"the main checkout is not the first worktree git reports: {roots}"
+    )
+    guard = commands.index('[ -n "$REPORT_ROOT" ] && [ -d "$REPORT_ROOT" ] || {')
+    assert commands[guard + 1] == 'echo "could not resolve the main checkout"; exit 1; }', (
+        "an unresolved main checkout no longer stops the fence"
+    )
+    assert '[ -f "$REPORT" ] || { echo "no impl-report at $REPORT"; exit 1; }' in commands, (
+        "a missing report no longer stops the fence before `--body-file` reads it"
+    )
+    for wrong in ("--show-toplevel", "--git-common-dir", "--path-format", "$PWD", "$(pwd)"):
+        offenders = [c for c in commands if wrong in c]
+        assert not offenders, f"the report path is derived from {wrong}, wrong in a worktree: {offenders}"
+    assert "MAIN_CHECKOUT" not in section, (
+        "the Jira merge's variable is reused; Step 7's one-resolution guard counts it"
+    )
+
+
+def test_done_forgejo_puts_the_closing_trailer_in_the_pr_body() -> None:
+    assert 'grep -qxF "<trailer>" "$REPORT" || printf \'\\n%s\\n\' "<trailer>" >> "$REPORT"' in (
+        _logical_lines(_fenced(_done_forgejo()))
+    ), "the PR body is no longer checked for its closing trailer"
+
+
+def test_done_forgejo_isolate_strip_actually_yields_the_number() -> None:
+    """Run the documented extraction on a real-shaped create output.
+
+    A text check on order passed a `tr -d` rewrite that deletes the digits of
+    the escape sequence along with the number. Running the pipeline is the
+    check that cannot be satisfied by wording.
+    """
+    import subprocess
+
+    lines = _logical_lines(_fenced(_done_forgejo()))
+    extract = [l for l in lines if l.startswith("PR_NUMBER=")]
+    assert len(extract) == 1, f"expected one PR number extraction, got {extract}"
+    line = extract[0]
+    assert line.index("\\u2068") < line.index("created pull request #"), (
+        "the isolate strip runs after the extraction"
+    )
+    sample = "created pull request #\u2068" + "27" + "\u2069: \u2068t\u2069"
+    result = subprocess.run(
+        ["bash", "-c", line + '\nprintf "%s" "$PR_NUMBER"'],
+        env={"CREATED": sample, "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        capture_output=True, text=True,
+    )
+    assert result.stdout == "27", f"the extraction yields {result.stdout!r} (stderr {result.stderr!r})"
+
+    strip = [l for l in lines if l.startswith("python3 -c") and l.endswith('< "<log-file>"')]
+    assert len(strip) == 1, "the read-back no longer strips isolates before comparing"
+
+
+def test_done_forgejo_reads_the_created_pr_back_and_never_searches() -> None:
+    section = _done_forgejo()
+    views = [l for l in _fenced_fj_lines(section) if "pr view" in l]
+    assert len(views) == 1, f"expected one PR read-back, got {views}"
+    _, positionals = _fj_roles(views[0])
+    assert positionals == ["fj", "pr", "view", "<forgejo_repo>#<PR_NUMBER>"]
+    assert _REDIRECTED.search(views[0]) and not _SINGLE_PIPE.search(views[0])
+    searches = [inv for inv in _all_done_fj() if "search" in inv]
+    assert not searches, f"a title search stands in for the PR number: {searches}"
+
+
+def test_done_step8_reports_forgejo_status_as_not_applied() -> None:
+    step8 = _done_step("**8. Project status")
+    assert_whole_line(step8, _GOLDEN_DONE_STEP8_FORGEJO)
+    assert_whole_line(step8, _GOLDEN_DONE_STEP8_FENCE)
+    assert step8.index(_GOLDEN_DONE_STEP8_FORGEJO) > step8.index("> Limitation:"), (
+        "the Forgejo paragraph sits where the GitHub-only paragraphs read as applying to it"
+    )
+    assert not _fj_invocations(step8), "Step 8 invokes fj, which has no status contract"
+    labels = [l.strip() for l in step8.splitlines() if re.search(r"라벨|label", l, re.IGNORECASE)]
+    assert len(labels) == 3 and _GOLDEN_DONE_STEP8_FORGEJO in labels, (
+        f"a label line was added to the status step: {labels}"
+    )
+    edits = [inv for inv in _all_done_fj() if "issue edit" in inv or "labels" in inv]
+    assert not edits, f"a label stands in for a status: {edits}"
+
+
+def test_done_step9_posts_the_forgejo_comment_in_the_measured_form() -> None:
+    step9 = _done_step("**9. Post issue comment**")
+    invocations = _fj_invocations(step9)
+
+    comments = [inv for inv in invocations if "issue comment" in inv]
+    assert len(comments) == 1, f"expected one Forgejo comment call, got {comments}"
+    flags, positionals = _fj_roles(comments[0])
+    for banned in ("-r", "-R"):
+        assert banned not in flags, f"`fj issue comment` passes {banned}: {comments[0]}"
+    assert positionals[:4] == ["fj", "issue", "comment", "<forgejo_repo>#<id>"], positionals
+    assert len(positionals) == 5 or (flags.get("--body-file") and None not in flags["--body-file"]), (
+        "the comment has no body, so fj opens an editor"
+    )
+
+    views = [l for l in _fenced_fj_lines(step9) if "issue view" in l]
+    assert len(views) == 1, f"expected one comment read-back, got {views}"
+    _, positionals = _fj_roles(views[0])
+    assert positionals == ["fj", "issue", "view", "<forgejo_repo>#<id>", "comments"], positionals
+    assert _REDIRECTED.search(views[0]) and not _SINGLE_PIPE.search(views[0])
+
+
+def test_done_step11_reads_forgejo_checks_without_trusting_the_exit_code() -> None:
+    step11 = _done_step("**11. Check CI**")
+    invocations = _fj_invocations(step11)
+
+    statuses = [inv for inv in invocations if "pr status" in inv]
+    tasks = [inv for inv in invocations if "actions tasks" in inv]
+    assert len(statuses) == 1 and len(tasks) == 1, f"{statuses} / {tasks}"
+    flags, positionals = _fj_roles(statuses[0])
+    assert positionals == ["fj", "pr", "status", "<forgejo_repo>#<PR_NUMBER>"], positionals
+    for banned in ("--wait", "-r", "-R"):
+        assert banned not in flags, f"`fj pr status` passes {banned}"
+    waits = [inv for inv in _all_done_fj() if "--wait" in _fj_argv(inv)]
+    assert not waits, f"an unbounded `--wait` is documented: {waits}"
+
+    for line in _fenced_fj_lines(step11):
+        assert not _SINGLE_PIPE.search(line), f"a CI read is piped: {line}"
+        assert _REDIRECTED.search(line), f"a CI read is not redirected to a file: {line}"
+
+    # Across the whole step, not only the Forgejo group, and in any case: a
+    # line anywhere in Step 11 that pairs pending with a pass is a pass rule.
+    pinned = set(_GOLDEN_DONE_STEP11_FORGEJO) | {
+        # The pre-existing shared rule, which says the opposite of a pass.
+        '- **Do not report "complete" while CI is unverified.** A PR whose checks have not been '
+        'read is an unknown, not a pass. Say "CI pending" and what you are waiting on.',
+    }
+    loose = [
+        l.strip() for l in step11.splitlines()
+        if re.search(r"pending|대기", l, re.IGNORECASE)
+        and re.search(r"통과|\bpass|green|성공", l, re.IGNORECASE)
+        and l.strip() not in pinned
+    ]
+    assert not loose, f"a line reads Pending as a pass: {loose}"
+
+
+def test_done_step12_reports_the_forgejo_pr_url() -> None:
+    assert_whole_line(
+        _done_step("**12. Output**"), "- PR URL (GitHub/Forgejo), or merge commit hash (Jira)"
+    )
+
+
+def test_done_cites_the_principle_and_carries_no_language_command() -> None:
+    text = _done_skill()
+    assert "읽기 확인이 증거다" not in text, "project-issue's principle was copied, not cited"
+    assert_rule(
+        text, "조회가 증거다",
+        starts_with="**이 CLI 에서 종료코드와 stdout 은 효과의 증거가 아니다",
+    )
+    for command in ("pytest", "uv run"):
+        assert command not in text, f"a language-specific command leaked into project-done: {command}"
+
+
+def test_skill_config_names_the_forgejo_surface_whole() -> None:
+    assert_whole_line(read_skill("skills/SKILL-CONFIG.md"), (
+        "issue_tracker = forgejo → fj CLI (forgejo-cli 필요) — 조회: issue view/search · "
+        "생성: issue create · 코멘트: issue comment · PR: pr create"
+    ))
+
+
+def test_no_skill_still_says_comments_have_no_fj_contract() -> None:
+    """SKILL-CONFIG and project-issue's link mode disagreed once; neither may regress alone."""
+    offenders: list[str] = []
+    for md in _skill_docs():
+        for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            lowered = line.lower()
+            if not re.search(r"comment|코멘트|댓글", lowered):
+                continue
+            if re.search(r"no `?fj`? contract|계약이 없|계약 밖|웹 UI 가 1순위", lowered):
+                offenders.append(f"{md.relative_to(ROOT)}:{lineno}: {line.strip()}")
+    assert not offenders, "comments are declared uncontracted again:\n" + "\n".join(offenders)
